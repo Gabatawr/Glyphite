@@ -1,0 +1,521 @@
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using Glyphite.Cli.Services;
+using Glyphite.Host.Data;
+using Glyphite.Abstractions.Models;
+using Glyphite.Host.Memory;
+using Glyphite.Host.Services;
+using Glyphite.Host.Tools;
+using Microsoft.Extensions.AI;
+namespace Glyphite.Cli;
+
+public partial class ChatRepl
+{
+    private async Task<bool> HandleCommandAsync(string input)
+    {
+        switch (input)
+        {
+            case "/new":
+                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                Console.Write("Enter new agent name: ");
+                Console.ResetColor();
+                var newAgentName = Console.ReadLine()?.Trim();
+                if (string.IsNullOrEmpty(newAgentName))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("Cancelled.\n");
+                    Console.ResetColor();
+                    return true;
+                }
+
+                if (!AgentManager.IsValidAgentName(newAgentName))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Invalid agent name '{newAgentName}'. Use letters, digits, hyphens, underscores (max 100 chars).\n");
+                    Console.ResetColor();
+                    return true;
+                }
+
+                if (await _store.AgentExistsAsync(newAgentName))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write($"Agent '{newAgentName}' already exists. Delete and recreate? (y/N): ");
+                    Console.ResetColor();
+                    var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
+                    if (confirm == "y" || confirm == "yes")
+                    {
+                        await _store.DeleteSessionAsync(newAgentName);
+                        _agentId = await _agentManager.CreateAgentAsync(
+                            newAgentName, _deepseek.Model, Directory.GetCurrentDirectory());
+                        _agentOpts.AgentName = newAgentName;
+                        await LoadAgentConfigAsync(_agentId, Directory.GetCurrentDirectory());
+                        await ResetSessionStateAsync();
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($"Agent '{newAgentName}' recreated.\n");
+                        Console.ResetColor();
+                    }
+                    else
+                    {
+                        Console.ForegroundColor = ConsoleColor.Gray;
+                        Console.WriteLine("Cancelled.\n");
+                        Console.ResetColor();
+                    }
+                    return true;
+                }
+
+                _agentId = await _agentManager.CreateAgentAsync(
+                    newAgentName, _deepseek.Model, Directory.GetCurrentDirectory());
+                _agentOpts.AgentName = newAgentName;
+
+                await LoadAgentConfigAsync(_agentId, Directory.GetCurrentDirectory());
+                await ResetSessionStateAsync();
+
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"Agent '{newAgentName}' created.\n");
+                Console.ResetColor();
+                return true;
+
+            case "/clone":
+            {
+                var sessions = await _store.ListAgentsAsync();
+                if (sessions.Count == 0)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("No agents found. Create one with /new first.\n");
+                    Console.ResetColor();
+                    return true;
+                }
+
+                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                Console.WriteLine("Clone copies an agent's history to a new name.\n");
+
+                Console.WriteLine("Pick source agent to copy from:");
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    var isCurrent = string.Equals(sessions[i], _agentId, StringComparison.Ordinal);
+                    var blockCount = await _store.GetBlockCountAsync(sessions[i]);
+                    var marker = isCurrent ? " ← current" : "";
+                    Console.ForegroundColor = isCurrent ? ConsoleColor.Green : ConsoleColor.Gray;
+                    Console.WriteLine($"  [{i + 1}] {sessions[i]} ({blockCount} blocks){marker}");
+                }
+
+                Console.ResetColor();
+                Console.Write($"\nSelect source [1, default=current]: ");
+                var selection = Console.ReadLine()?.Trim();
+
+                string sourceName;
+                if (string.IsNullOrEmpty(selection))
+                {
+                    sourceName = _agentId;
+                }
+                else if (int.TryParse(selection, out var idx) && idx >= 1 && idx <= sessions.Count)
+                {
+                    sourceName = sessions[idx - 1];
+                }
+                else
+                {
+                    if (!sessions.Contains(selection))
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"Agent '{selection}' not found.\n");
+                        Console.ResetColor();
+                        return true;
+                    }
+                    sourceName = selection;
+                }
+
+                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                Console.Write($"\nEnter new agent name (clone of '{sourceName}'): ");
+                Console.ResetColor();
+                var cloneName = Console.ReadLine()?.Trim();
+
+                if (string.IsNullOrEmpty(cloneName))
+                {
+                    Console.ForegroundColor = ConsoleColor.Gray;
+                    Console.WriteLine("Cancelled.\n");
+                    Console.ResetColor();
+                    return true;
+                }
+
+                if (!AgentManager.IsValidAgentName(cloneName))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Invalid agent name '{cloneName}'. Use letters, digits, hyphens, underscores (max 100 chars).\n");
+                    Console.ResetColor();
+                    return true;
+                }
+
+                if (await _store.AgentExistsAsync(cloneName))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Agent '{cloneName}' already exists. Choose a different name.\n");
+                    Console.ResetColor();
+                    return true;
+                }
+
+                await _store.ForkSessionAsync(sourceName, cloneName, Directory.GetCurrentDirectory());
+                _agentId = cloneName;
+                _agentOpts.AgentName = cloneName;
+
+                await LoadAgentConfigAsync(_agentId, Directory.GetCurrentDirectory());
+                await ResetSessionStateAsync();
+
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"Agent '{cloneName}' cloned from '{sourceName}'.\n");
+                Console.ResetColor();
+                return true;
+            }
+
+            case "/use":
+            {
+                var sessions = await _store.ListAgentsAsync();
+                if (sessions.Count == 0)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("No agents found. Create one with /new first.\n");
+                    Console.ResetColor();
+                    return true;
+                }
+
+                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                Console.WriteLine("Select agent to use:\n");
+                Console.ResetColor();
+
+                var cwd = Directory.GetCurrentDirectory();
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    var isCurrent = string.Equals(sessions[i], _agentId, StringComparison.Ordinal);
+                    var agentHome = await _store.GetAgentHomePathAsync(sessions[i]) ?? "";
+                    var createdAt = await _store.GetAgentCreatedAtAsync(sessions[i]) ?? "";
+                    var blockCount = await _store.GetBlockCountAsync(sessions[i]);
+                    var lastLaunch = await _store.GetLastLaunchPathAsync(sessions[i]);
+
+                    var marker = isCurrent ? " ← current" : "";
+                    var atHome = (string.Equals(agentHome, cwd, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(agentHome)) ? " [🏠 home]" : "";
+                    var createdDate = createdAt.Length >= 10 ? createdAt[..10] : "";
+                    var lastStr = lastLaunch is not null ? $" last: {lastLaunch}" : "";
+
+                    Console.ForegroundColor = isCurrent ? ConsoleColor.Green : ConsoleColor.Gray;
+                    Console.WriteLine($"  [{i + 1}] {sessions[i]} ({blockCount} blocks, {createdDate}){atHome}{lastStr}{marker}");
+                }
+
+                Console.ResetColor();
+                Console.Write($"\nSelect agent [1-{sessions.Count}, default=cancel]: ");
+                var selection = Console.ReadLine()?.Trim();
+
+                if (string.IsNullOrEmpty(selection))
+                {
+                    Console.ForegroundColor = ConsoleColor.Gray;
+                    Console.WriteLine("Cancelled.\n");
+                    Console.ResetColor();
+                    return true;
+                }
+
+                string targetName;
+                if (int.TryParse(selection, out var idx) && idx >= 1 && idx <= sessions.Count)
+                {
+                    targetName = sessions[idx - 1];
+                }
+                else if (sessions.Contains(selection))
+                {
+                    targetName = selection;
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Agent '{selection}' not found.\n");
+                    Console.ResetColor();
+                    return true;
+                }
+
+                _agentId = targetName;
+                _agentOpts.AgentName = targetName;
+
+                await _store.RecordLaunchAsync(targetName, cwd);
+
+                await LoadAgentConfigAsync(targetName, cwd);
+                await ResetSessionStateAsync();
+
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"Switched to agent '{targetName}'.\n");
+                Console.ResetColor();
+                return true;
+            }
+
+            case "/reload":
+                Console.Clear();
+                Console.WriteLine();
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("========= RELOAD =========");
+                Console.ResetColor();
+                Console.WriteLine();
+                await _renderer.ReplayBlocksAsync(_agentId!, _store, showResumed: false);
+                return true;
+
+            case "/stats":
+                var (totalBlocks, totalTokens, typeStats) = await _blockMemory.ComputeStatsAsync(_agentId!);
+                if (totalBlocks == 0)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("No stats available yet.");
+                    Console.ResetColor();
+                    Console.WriteLine();
+                    return true;
+                }
+
+                var ctxWindow = _deepseek.ContextWindow;
+                var threshold = ctxWindow * _compressionOpts.AutoThreshold / 100;
+                var pct = ctxWindow > 0 ? (double)totalTokens / ctxWindow * 100 : 0.0;
+
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("── Stats ──────────────────────────────");
+                Console.ResetColor();
+
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                foreach (var kv in typeStats)
+                {
+                    if (kv.Key is "system_info" or "agent_data") continue;
+                    var label = kv.Key switch
+                    {
+                        "user_message" => "👤 user_message",
+                        "agent_message" => "💬 agent_message",
+                        "agent_reasoning" => "🧠 agent_reasoning",
+                        "tool" => "🔧 tool",
+                        "auto_tool" => "🤖 auto_tool",
+                        "file" => "📄 file",
+                        "todo" or "todo_update" => "📋 todo",
+                        _ => kv.Key
+                    };
+                    Console.WriteLine($"  {label,-22}: {kv.Value,4}");
+                }
+                Console.ResetColor();
+
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine("  ───────────────────────────────────");
+                Console.ResetColor();
+
+                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.WriteLine($"  Blocks:    {totalBlocks}");
+                Console.WriteLine($"  Tokens:    {ConsoleRenderer.FormatTokenCount(totalTokens)} ({pct:F1}%)");
+                Console.WriteLine($"  Limits:    {ConsoleRenderer.FormatTokenCount(threshold)} ({_compressionOpts.AutoThreshold}%)");
+                Console.ResetColor();
+                Console.WriteLine();
+                return true;
+
+            case "/diff":
+            {
+                var snap = _snapshot;
+                if (snap is null)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("No context snapshot available.");
+                    Console.ResetColor();
+                    Console.WriteLine();
+                    return true;
+                }
+                if (!snap.HasChanges || snap.PreviousText is null)
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine("Context unchanged since last turn.");
+                    Console.ResetColor();
+                    Console.WriteLine();
+                    return true;
+                }
+
+                var currentTokens = BlockMemoryProvider.EstimateTokens(snap.CurrentText);
+                var previousTokens = BlockMemoryProvider.EstimateTokens(snap.PreviousText);
+                var deltaTokens = currentTokens - previousTokens;
+
+                var currentLines = snap.CurrentText.Split('\n');
+                var textBeforeBreak = string.Join("\n", currentLines.Take(snap.FirstBreakLine - 1));
+                var tokensBeforeBreak = BlockMemoryProvider.EstimateTokens(textBeforeBreak);
+                var firstBreakPct = currentTokens > 0 ? tokensBeforeBreak * 100.0 / currentTokens : 0.0;
+
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("── Context Diff ──────────────────────────");
+                Console.ResetColor();
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine($"  First change at:  {firstBreakPct:F1}%  (line {snap.FirstBreakLine}/{snap.TotalLines}, {ConsoleRenderer.FormatTokenCount(currentTokens)})");
+                Console.WriteLine($"  Delta tokens:     {(deltaTokens >= 0 ? "+" : "")}{deltaTokens}");
+                Console.ResetColor();
+                Console.WriteLine();
+                return true;
+            }
+
+            case "/diffprint":
+            {
+                var snap = _snapshot;
+                if (snap is null || string.IsNullOrEmpty(snap.Diff))
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine("No diff available.");
+                    Console.ResetColor();
+                    Console.WriteLine();
+                    return true;
+                }
+
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("── Context Diff Full ─────────────────────");
+                Console.ResetColor();
+                Console.WriteLine(snap.Diff);
+                Console.WriteLine();
+                return true;
+            }
+
+            case "/version":
+                var ver = System.Reflection.Assembly.GetEntryAssembly()?.GetName()?.Version;
+                if (ver is not null)
+                {
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine($"Glyphite v{ver.Major}.{ver.Minor}.{ver.Build}");
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("Version not available.");
+                    Console.ResetColor();
+                }
+                Console.WriteLine();
+                return true;
+
+            case "/models":
+                await ShowModelSelectionAsync();
+                return true;
+        }
+
+        return false;
+    }
+    private async Task ShowModelSelectionAsync()
+    {
+        var models = _deepseek.Models.Select(m => m.Name).Distinct().ToArray();
+        if (models.Length == 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("No models configured.");
+            Console.ResetColor();
+            Console.WriteLine();
+            return;
+        }
+
+        var currentModel = await _blockMemory.GetAgentModelAsync(_agentId!) ?? _deepseek.Model;
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("── Models ─────────────────────────────");
+        Console.ResetColor();
+        for (var i = 0; i < models.Length; i++)
+        {
+            var marker = models[i] == currentModel ? " ←" : "";
+            Console.ForegroundColor = models[i] == currentModel ? ConsoleColor.White : ConsoleColor.Gray;
+            Console.WriteLine($"  {i + 1}. {models[i]}{marker}");
+        }
+        Console.ResetColor();
+
+        while (true)
+        {
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            Console.Write("Select model (1-{0}) or Enter to cancel: ", models.Length);
+            Console.ResetColor();
+            var choice = Console.ReadLine()?.Trim();
+            if (string.IsNullOrEmpty(choice))
+            {
+                Console.WriteLine();
+                break;
+            }
+            if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= models.Length)
+            {
+                var selected = models[idx - 1];
+                await _blockMemory.SetAgentModelAsync(_agentId!, selected);
+                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.WriteLine($"Model changed to {selected}.");
+                Console.ResetColor();
+                Console.WriteLine();
+                break;
+            }
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Invalid input. Enter 1-{models.Length} or press Enter to cancel.");
+            Console.ResetColor();
+        }
+    }
+
+
+    private static async Task MonitorEscapeAsync(CancellationTokenSource cts)
+    {
+        await Task.Run(() =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                if (Console.KeyAvailable)
+                {
+                    var key = Console.ReadKey(intercept: true);
+                    if (key.Key == ConsoleKey.Escape)
+                        cts.Cancel();
+                }
+                else
+                {
+                    Thread.Sleep(100);
+                }
+            }
+        });
+    }
+
+    private static void FlattenJsonElement(string prefix, System.Text.Json.JsonElement el, Dictionary<string, string> result)
+    {
+        switch (el.ValueKind)
+        {
+            case System.Text.Json.JsonValueKind.Object:
+                foreach (var prop in el.EnumerateObject())
+                    FlattenJsonElement($"{prefix}:{prop.Name}", prop.Value, result);
+                break;
+            case System.Text.Json.JsonValueKind.Array:
+                var i = 0;
+                foreach (var item in el.EnumerateArray())
+                    FlattenJsonElement($"{prefix}:{i++}", item, result);
+                break;
+            case System.Text.Json.JsonValueKind.String:
+                result[prefix] = el.GetString() ?? "";
+                break;
+            case System.Text.Json.JsonValueKind.Number:
+                result[prefix] = el.GetRawText();
+                break;
+            case System.Text.Json.JsonValueKind.True:
+                result[prefix] = "True";
+                break;
+            case System.Text.Json.JsonValueKind.False:
+                result[prefix] = "False";
+                break;
+            case System.Text.Json.JsonValueKind.Null:
+                break;
+        }
+    }
+
+    private async Task LoadAgentConfigAsync(string agentId, string cwd)
+    {
+        var merge = new Dictionary<string, string>();
+        var glPath = Path.Combine(cwd, "Glyphite.json");
+        if (File.Exists(glPath))
+        {
+            var glJson = File.ReadAllText(glPath);
+            var glConfig = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(glJson);
+            if (glConfig is not null && glConfig.TryGetValue("Glyphite", out var gl) && gl is System.Text.Json.JsonElement el)
+                FlattenJsonElement("Glyphite", el, merge);
+        }
+
+        var agentPath = Path.Combine(cwd, $"Glyphite.{agentId}.json");
+        if (File.Exists(agentPath))
+        {
+            var agentJson = File.ReadAllText(agentPath);
+            var agentConfig = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(agentJson);
+            if (agentConfig is not null && agentConfig.TryGetValue("Glyphite", out var ac) && ac is System.Text.Json.JsonElement ael)
+                FlattenJsonElement("Glyphite", ael, merge);
+        }
+
+        var homePath = await _store.GetAgentHomePathAsync(agentId);
+        if (string.Equals(homePath, cwd, StringComparison.OrdinalIgnoreCase))
+        {
+            if (merge.Count > 0)
+                await _cfgService.UpdateConfigAsync(merge, scope: "session", sessionId: agentId);
+        }
+    }
+}

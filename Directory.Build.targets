@@ -1,0 +1,23 @@
+<Project>
+  <PropertyGroup Condition="Exists('$(MSBuildThisFileDirectory)version.txt')">
+    <_GlyphiteRoot>$(MSBuildThisFileDirectory)</_GlyphiteRoot>
+  </PropertyGroup>
+
+  <Target Name="BumpVersion" BeforeTargets="BeforeBuild" Condition="$(_GlyphiteRoot) != '' And '$(MSBuildProjectName)'=='Glyphite.Cli'">
+    <PropertyGroup>
+      <_VersionFile>$(_GlyphiteRoot)version.txt</_VersionFile>
+      <_ScriptFile>$(_GlyphiteRoot)bump_version.py</_ScriptFile>
+      <_ExecArgs Condition="'$(Configuration)'=='Debug'">build</_ExecArgs>
+      <_ExecArgs Condition="'$(Configuration)'!='Debug'">release</_ExecArgs>
+    </PropertyGroup>
+    <Exec Command="python &quot;$(_ScriptFile)&quot; $(_ExecArgs) &quot;$(_VersionFile)&quot; 2>/dev/null" ConsoleToMSBuild="true" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_Version" />
+    </Exec>
+    <Exec Condition="'$(_Version)' == ''" Command="python3 &quot;$(_ScriptFile)&quot; $(_ExecArgs) &quot;$(_VersionFile)&quot;" ConsoleToMSBuild="true" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_Version" />
+    </Exec>
+    <PropertyGroup>
+      <Version>$(_Version.Trim())</Version>
+    </PropertyGroup>
+  </Target>
+</Project>

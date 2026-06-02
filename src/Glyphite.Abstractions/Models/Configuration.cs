@@ -1,0 +1,209 @@
+namespace Glyphite.Abstractions.Models;
+
+public class DeepSeekOptions
+{
+    public const string Section = "DeepSeek";
+    public string Endpoint { get; set; } = string.Empty;
+    public string ApiKey { get; set; } = string.Empty;
+    public string Model { get; set; } = string.Empty;
+    public DeepSeekModel[] Models { get; set; } = [];
+    public int ContextWindow { get; set; }
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Endpoint))
+            throw new InvalidOperationException("DeepSeek:Endpoint is not configured.");
+        if (string.IsNullOrWhiteSpace(Model))
+            throw new InvalidOperationException("DeepSeek:Model is not configured.");
+        if (ContextWindow <= 0)
+            throw new InvalidOperationException("DeepSeek:ContextWindow must be > 0.");
+        if (Models.Length == 0)
+            throw new InvalidOperationException("DeepSeek:Models must have at least one model entry.");
+        if (string.IsNullOrWhiteSpace(ApiKey))
+            throw new InvalidOperationException(
+                "DeepSeek API key is not configured. Set DEEPSEEK_API_KEY environment variable " +
+                "or configure it in appsettings.json under DeepSeek:ApiKey.");
+    }
+}
+
+public class DeepSeekModel
+{
+    public string Name { get; set; } = string.Empty;
+    public double Miss { get; set; }
+    public double Hit { get; set; }
+    public double Output { get; set; }
+}
+
+public class WebFetchOptions
+{
+    public const string Section = "WebFetch";
+    public int TimeoutSeconds { get; set; }
+    public string UserAgent { get; set; } = string.Empty;
+    public int MaxContentLength { get; set; }
+    public string DefaultFormat { get; set; } = string.Empty;
+    public void Validate()
+    {
+        if (TimeoutSeconds <= 0)
+            throw new InvalidOperationException("WebFetch:TimeoutSeconds must be > 0.");
+        if (string.IsNullOrWhiteSpace(UserAgent))
+            throw new InvalidOperationException("WebFetch:UserAgent is not configured.");
+        if (MaxContentLength <= 0)
+            throw new InvalidOperationException("WebFetch:MaxContentLength must be > 0.");
+        if (string.IsNullOrWhiteSpace(DefaultFormat))
+            throw new InvalidOperationException("WebFetch:DefaultFormat is not configured.");
+    }
+}
+
+public class ContentDedupOptions
+{
+    public const string Section = "ContentDedup";
+    public int MinLines { get; set; }
+    public double FrequencyThreshold { get; set; }
+    public int MinLineLength { get; set; }
+    public int MaxAliases { get; set; }
+    public string[] AutoDedupExtensions { get; set; } = [];
+    public void Validate()
+    {
+        if (MinLines <= 0)
+            throw new InvalidOperationException("ContentDedup:MinLines must be > 0.");
+        if (FrequencyThreshold <= 0 || FrequencyThreshold > 1)
+            throw new InvalidOperationException("ContentDedup:FrequencyThreshold must be in (0, 1].");
+        if (MinLineLength <= 0)
+            throw new InvalidOperationException("ContentDedup:MinLineLength must be > 0.");
+        if (MaxAliases <= 0)
+            throw new InvalidOperationException("ContentDedup:MaxAliases must be > 0.");
+    }
+}
+
+public class BashOptions
+{
+    public const string Section = "Bash";
+    public string ExecutablePath { get; set; } = string.Empty;
+    public string Arguments { get; set; } = string.Empty;
+    public string InitCommand { get; set; } = string.Empty;
+    public string DefaultDirectory { get; set; } = string.Empty;
+    public int DiscoveryTimeoutMs { get; set; }
+    public int DefaultTimeoutMs { get; set; }
+    public int MaxOutputBytes { get; set; }
+    public string[] AllowedExecutables { get; set; } = [];
+    public string[] ForbiddenCommands { get; set; } = [];
+    public string[] ForbiddenDirectories { get; set; } = [];
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(ExecutablePath))
+            throw new InvalidOperationException("Bash:ExecutablePath is not configured.");
+        if (DiscoveryTimeoutMs <= 0)
+            throw new InvalidOperationException("Bash:DiscoveryTimeoutMs must be > 0.");
+        if (DefaultTimeoutMs <= 0)
+            throw new InvalidOperationException("Bash:DefaultTimeoutMs must be > 0.");
+        if (MaxOutputBytes <= 0)
+            throw new InvalidOperationException("Bash:MaxOutputBytes must be > 0.");
+    }
+}
+
+public class MemoryOptions
+{
+    public const string Section = "Memory";
+    public string[] ProtectedBlockTypes { get; set; } = [];
+    public void Validate()
+    {
+        if (ProtectedBlockTypes.Length == 0)
+            throw new InvalidOperationException("Memory:ProtectedBlockTypes must have at least one type.");
+    }
+}
+
+public class TodoOptions
+{
+    public const string Section = "Todo";
+    public string[] ValidStatuses { get; set; } = [];
+    public string DefaultStatus { get; set; } = string.Empty;
+    public string DefaultPriority { get; set; } = string.Empty;
+    public void Validate()
+    {
+        if (ValidStatuses.Length == 0)
+            throw new InvalidOperationException("Todo:ValidStatuses must have at least one status.");
+        if (string.IsNullOrWhiteSpace(DefaultStatus))
+            throw new InvalidOperationException("Todo:DefaultStatus is not configured.");
+        if (string.IsNullOrWhiteSpace(DefaultPriority))
+            throw new InvalidOperationException("Todo:DefaultPriority is not configured.");
+        if (!ValidStatuses.Contains(DefaultStatus))
+            throw new InvalidOperationException($"Todo:DefaultStatus '{DefaultStatus}' is not in ValidStatuses.");
+    }
+}
+
+public class AgentOptions
+{
+    public const string Section = "Agent";
+    public int MaxToolIterations { get; set; }
+    public string AgentName { get; set; } = "Glyphite.MainAgent";
+    public bool PeekReasoning { get; set; } = true;
+    public bool PeekToolReasoning { get; set; } = false;
+    public void Validate()
+    {
+        if (MaxToolIterations <= 0)
+            throw new InvalidOperationException("Agent:MaxToolIterations must be > 0.");
+        if (string.IsNullOrWhiteSpace(AgentName))
+            throw new InvalidOperationException("Agent:AgentName is not configured.");
+    }
+}
+
+public class SearchOptions
+{
+    public const string Section = "Search";
+    public string[] ExcludedDirectories { get; set; } = [];
+    public string[] BinaryExtensions { get; set; } = [];
+    public int MaxResultCount { get; set; }
+    public int MaxTextFileSize { get; set; }
+    public int MaxLineLength { get; set; }
+    public int DetectBinarySampleSize { get; set; }
+    public int MaxEnumerationFiles { get; set; } = 50000;
+    public void Validate()
+    {
+        if (MaxResultCount <= 0)
+            throw new InvalidOperationException("Search:MaxResultCount must be > 0.");
+        if (MaxTextFileSize <= 0)
+            throw new InvalidOperationException("Search:MaxTextFileSize must be > 0.");
+        if (MaxLineLength <= 0)
+            throw new InvalidOperationException("Search:MaxLineLength must be > 0.");
+        if (DetectBinarySampleSize <= 0)
+            throw new InvalidOperationException("Search:DetectBinarySampleSize must be > 0.");
+        if (MaxEnumerationFiles <= 0)
+            throw new InvalidOperationException("Search:MaxEnumerationFiles must be > 0.");
+    }
+}
+
+public class DataOptions
+{
+    public const string Section = "Data";
+    public string Directory { get; set; } = string.Empty;
+    public string DatabaseFileName { get; set; } = string.Empty;
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Directory))
+            throw new InvalidOperationException("Data:Directory is not configured.");
+        if (string.IsNullOrWhiteSpace(DatabaseFileName))
+            throw new InvalidOperationException("Data:DatabaseFileName is not configured.");
+    }
+}
+
+public class ToolStreamingOptions
+{
+    public const string Section = "ToolStreaming";
+    public Dictionary<string, int> ToolMaxLength { get; set; } = [];
+    public Dictionary<string, string[]> ToolHiddenArgs { get; set; } = [];
+}
+
+public class CompressionOptions
+{
+    public const string Section = "Compression";
+    public int AutoThreshold { get; set; }
+    public bool AutoCompress { get; set; }
+    public int CacheHitRateThreshold { get; set; } = 80;
+    public void Validate()
+    {
+        if (AutoThreshold < 0 || AutoThreshold > 100)
+            throw new InvalidOperationException("Compression:AutoThreshold must be between 0 and 100.");
+        if (CacheHitRateThreshold < 0 || CacheHitRateThreshold > 100)
+            throw new InvalidOperationException("Compression:CacheHitRateThreshold must be between 0 and 100.");
+    }
+}
+

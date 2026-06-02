@@ -1,0 +1,290 @@
+using System.ComponentModel;
+using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Glyphite.Abstractions.Interfaces;
+using Glyphite.Abstractions.Models;
+using Microsoft.Extensions.AI;
+
+namespace Glyphite.Host.Tools;
+
+public record TodoItem(
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("status")] string Status = "pending",
+    [property: JsonPropertyName("priority")] string Priority = "medium"
+);
+
+public record TodoAction(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("index")] int? Index = null,
+    [property: JsonPropertyName("text")] string? Text = null,
+    [property: JsonPropertyName("status")] string? Status = null,
+    [property: JsonPropertyName("priority")] string? Priority = null
+);
+
+public static class TodoTool
+{
+    private static readonly string[] DefaultValidStatuses = ["pending", "in_progress", "done", "cancelled", "blocked"];
+
+    [Description("Create a todo list block to plan and track task progress. Use this FREQUENTLY for complex/multi-step tasks to break them down and show progress. Statuses: pending (not started), in_progress (actively working), done (completed), cancelled (abandoned), blocked (waiting on something). Priority: low, medium, high. Returns the block number for later updates via todo_update.")]
+    public static async Task<string> TodoWrite(
+        [Description("Title/description of the todo list, e.g. 'Implement user authentication'")] string title,
+        [Description("Optional array of items: [{text: 'Task description', status: 'pending', priority: 'medium'}]. Status and priority are optional (defaults: pending, medium).")] TodoItem[]? items,
+        IMemoryStore store,
+        string sessionId,
+        TodoOptions opts)
+    {
+        var nextNumber = await store.GetNextNumberAsync(sessionId);
+        await store.SetNextNumberAsync(sessionId, nextNumber + 1);
+
+        items ??= [];
+
+        var dictItems = items.Select(i => (object)new Dictionary<string, object>
+        {
+            ["text"] = i.Text,
+            ["status"] = opts.ValidStatuses.Contains(i.Status) ? i.Status : opts.DefaultStatus,
+            ["priority"] = i.Priority
+        }).ToList();
+
+        var data = new Dictionary<string, object> { ["items"] = dictItems };
+        var block = MemoryBlock.Create(BlockType.todo, title, toolName: "todo_write", data: data);
+        block.Number = nextNumber;
+
+        await store.AppendBlocksAsync(sessionId, [block], nextNumber + 1);
+
+        return FormattableString.Invariant($"Created todo list '{title}' as block {nextNumber:F1} with {items.Length} items\n") + FormatItems(dictItems);
+    }
+
+    [Description("Modify a todo list block. Action types: set_status (change item status by index), update (change text/status/priority by index), add (insert new item at end or at index), remove (delete item by index). Mark items as in_progress when starting work, done when complete. Update the plan as you go, not just at the end. Also creates a todo_update snapshot block to track progress history.")]
+    public static async Task<string> TodoUpdate(
+        [Description("Block number of the todo list to modify. Can be the original todo block or a todo_update snapshot (will redirect to parent).")] double block,
+        [Description("Array of action objects: {type: 'set_status'|'update'|'add'|'remove', index?: number, text?: string, status?: string, priority?: string}")] TodoAction[] actions,
+        IMemoryStore store,
+        string sessionId,
+        TodoOptions opts)
+    {
+        var existing = await store.GetBlockAsync(sessionId, block);
+        if (existing is null)
+            return FormattableString.Invariant($"Block {block:F1} not found");
+
+        // Resolve to the root todo block
+        double rootBlock;
+        if (existing.Type == BlockType.todo_update)
+        {
+            if (existing.ParentNumber is null)
+                return FormattableString.Invariant($"Block {block:F1} is a todo_update but has no parent reference");
+            rootBlock = existing.ParentNumber.Value;
+        }
+        else if (existing.Type == BlockType.todo)
+        {
+            rootBlock = block;
+        }
+        else
+        {
+            return FormattableString.Invariant($"Block {block:F1} is not a todo or todo_update block");
+        }
+
+        // Use items from the latest snapshot in the chain, or fall back to original todo
+        List<Dictionary<string, object?>> items;
+        MemoryBlock? rootTodo = existing.Type == BlockType.todo ? existing : null;
+        var snapshots = await store.LoadBlocksByTypeAsync(sessionId, BlockType.todo_update, null, true);
+        var latestSnapshot = snapshots.FirstOrDefault(s => s.ParentNumber == rootBlock);
+
+        if (latestSnapshot is not null && latestSnapshot.Data?.TryGetValue("items", out var snapItemsObj) == true)
+        {
+            items = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(((JsonElement)snapItemsObj).GetRawText());
+        }
+        else
+        {
+            rootTodo ??= await store.GetBlockAsync(sessionId, rootBlock);
+            if (rootTodo?.Data?.TryGetValue("items", out var itemsObj) != true)
+                return FormattableString.Invariant($"Block {rootBlock:F1} has no items");
+            items = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(((JsonElement)itemsObj).GetRawText());
+        }
+
+        if (items is null)
+            return "Cannot parse items";
+
+        var results = new List<string>();
+
+        foreach (var action in actions)
+        {
+            switch (action.Type)
+            {
+                case "set_status":
+                {
+                    if (action.Index is null || action.Status is null)
+                    {
+                        results.Add("set_status: missing index or status");
+                        continue;
+                    }
+                    if (action.Index < 0 || action.Index >= items.Count)
+                    {
+                        results.Add($"set_status: index {action.Index} out of range");
+                        continue;
+                    }
+                    if (!opts.ValidStatuses.Contains(action.Status))
+                    {
+                        results.Add($"set_status: invalid status '{action.Status}'");
+                        continue;
+                    }
+                    var old = items[action.Index.Value]["status"]?.ToString() ?? "?";
+                    items[action.Index.Value]["status"] = action.Status;
+                    results.Add($"[{action.Index}] status {old}→{action.Status}");
+                    break;
+                }
+
+                case "update":
+                {
+                    if (action.Index is null)
+                    {
+                        results.Add("update: missing index");
+                        continue;
+                    }
+                    if (action.Index < 0 || action.Index >= items.Count)
+                    {
+                        results.Add($"update: index {action.Index} out of range");
+                        continue;
+                    }
+                    var item = items[action.Index.Value];
+                    if (action.Text is not null)
+                    {
+                        var old = item["text"]?.ToString() ?? "";
+                        item["text"] = action.Text;
+                        results.Add($"[{action.Index}] text changed");
+                    }
+                    if (action.Status is not null)
+                    {
+                        if (opts.ValidStatuses.Contains(action.Status))
+                        {
+                            var old = item["status"]?.ToString() ?? "";
+                            item["status"] = action.Status;
+                            results.Add($"[{action.Index}] status {old}→{action.Status}");
+                        }
+                        else
+                        {
+                            results.Add($"update: invalid status '{action.Status}'");
+                        }
+                    }
+                    if (action.Priority is not null)
+                    {
+                        var old = item["priority"]?.ToString() ?? "";
+                        item["priority"] = action.Priority;
+                        results.Add($"[{action.Index}] priority {old}→{action.Priority}");
+                    }
+                    if (action.Text is null && action.Status is null && action.Priority is null)
+                        results.Add($"update: no fields to update for index {action.Index}");
+                    break;
+                }
+
+                case "add":
+                {
+                    if (string.IsNullOrWhiteSpace(action.Text))
+                    {
+                        results.Add("add: missing text");
+                        continue;
+                    }
+                    var newItem = new Dictionary<string, object?>
+                    {
+                        ["text"] = action.Text,
+                        ["status"] = opts.ValidStatuses.Contains(action.Status ?? opts.DefaultStatus) ? action.Status! : opts.DefaultStatus,
+                        ["priority"] = action.Priority ?? opts.DefaultPriority
+                    };
+
+                    if (action.Index is not null && action.Index >= 0 && action.Index <= items.Count)
+                    {
+                        items.Insert(action.Index.Value, newItem);
+                        results.Add($"add: inserted '{action.Text}' at [{action.Index}]");
+                    }
+                    else
+                    {
+                        items.Add(newItem);
+                        results.Add($"add: appended '{action.Text}' at [{items.Count - 1}]");
+                    }
+                    break;
+                }
+
+                case "remove":
+                {
+                    if (action.Index is null)
+                    {
+                        results.Add("remove: missing index");
+                        continue;
+                    }
+                    if (action.Index < 0 || action.Index >= items.Count)
+                    {
+                        results.Add($"remove: index {action.Index} out of range");
+                        continue;
+                    }
+                    var removed = items[action.Index.Value]["text"]?.ToString() ?? "?";
+                    items.RemoveAt(action.Index.Value);
+                    results.Add($"remove: '{removed}' at [{action.Index}]");
+                    break;
+                }
+
+                default:
+                    results.Add($"unknown action type '{action.Type}'");
+                    break;
+            }
+        }
+
+        // Create a snapshot todo_update block (parent stays immutable)
+        var snapshotItems = JsonSerializer.Deserialize<object>(JsonSerializer.Serialize(items));
+        var snapshotData = new Dictionary<string, object>
+        {
+            ["items"] = snapshotItems!
+        };
+        rootTodo ??= await store.GetBlockAsync(sessionId, rootBlock);
+        var nextNumber = await store.GetNextNumberAsync(sessionId);
+        var snapshot = MemoryBlock.Create(BlockType.todo_update, rootTodo?.Content ?? "", toolName: "todo_update", data: snapshotData);
+        snapshot.Number = nextNumber;
+        snapshot.ParentNumber = rootBlock;
+        await store.AppendBlocksAsync(sessionId, [snapshot], nextNumber + 1);
+
+        return FormattableString.Invariant($"Updated block {rootBlock:F1}: {string.Join("; ", results)}\n") + FormatItems(items);
+    }
+
+    private static string FormatItems(IEnumerable<object> dictItems)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var item in dictItems)
+        {
+            if (item is not Dictionary<string, object> dict)
+                continue;
+            var text = dict.GetValueOrDefault("text")?.ToString() ?? "";
+            var status = dict.GetValueOrDefault("status")?.ToString() ?? "?";
+            var priority = dict.GetValueOrDefault("priority")?.ToString() ?? "";
+            var statusIcon = status switch
+            {
+                "done" => "x",
+                "in_progress" => "*",
+                "blocked" => "!",
+                "cancelled" => "-",
+                _ => " "
+            };
+            sb.Append($"  [{statusIcon}] {text}");
+            if (!string.IsNullOrEmpty(priority) && priority != "medium")
+                sb.Append($" ({priority})");
+            sb.AppendLine();
+        }
+        return sb.ToString().TrimEnd('\n', '\r');
+    }
+
+    public static AIFunction AsTodoWriteFunction(IMemoryStore store, string sessionId, IConfigService? cfg)
+        => AIFunctionFactory.Create(
+            async (string title, TodoItem[]? items) =>
+            {
+                var opts = cfg is not null ? await cfg.GetOptionsAsync<TodoOptions>("Todo") : new();
+                return await TodoWrite(title, items, store, sessionId, opts);
+            },
+            "todo_write");
+
+    public static AIFunction AsTodoUpdateFunction(IMemoryStore store, string sessionId, IConfigService? cfg)
+        => AIFunctionFactory.Create(
+            async (double block, TodoAction[] actions) =>
+            {
+                var opts = cfg is not null ? await cfg.GetOptionsAsync<TodoOptions>("Todo") : new();
+                return await TodoUpdate(block, actions, store, sessionId, opts);
+            },
+            "todo_update");
+}

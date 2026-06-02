@@ -1,0 +1,361 @@
+using System.Diagnostics;
+
+namespace Glyphite.Cli;
+
+public partial class ChatRepl
+{
+    private readonly List<string> _inputHistory = [];
+    private int _historyIndex = -1;
+    private string? _pendingInput;
+    private int _lastBufferLen;
+    private int _promptLine;
+    private int _maxVisualLine;
+
+    private string _promptPrefix = "> ";
+
+    private static string FormatCost(double? missPrice, double? hitPrice, double? outputPrice, long miss, long hit, long output)
+    {
+        if (missPrice is null) return "";
+        var cost = miss * missPrice.Value + (hitPrice ?? 0) * hit + (outputPrice ?? missPrice.Value) * output;
+        cost /= 1_000_000;
+        return cost >= 0.01 ? $"${cost:F2}" : $"${cost:F6}";
+    }
+
+    private static int? GetCacheHitRate(long hit, long miss)
+    {
+        var total = hit + miss;
+        return total > 0 ? (int)(hit * 100.0 / total) : null;
+    }
+
+    private async Task UpdatePromptPrefixAsync()
+    {
+        var model = await _blockMemory.GetAgentModelAsync(_agentId) ?? _deepseek.Model;
+        var (cumHit, cumMiss, cumOutput) = await _store.GetUsageAsync(_agentId);
+
+        var lastTokens = _lastTurnHit + _lastTurnMiss;
+        var parts = new List<string>();
+        if (lastTokens > 0)
+            parts.Add($"{lastTokens / 1000.0:F1}K");
+
+        var (mPrice, hPrice, oPrice) = GetPricing(model);
+        var cumCost = FormatCost(mPrice, hPrice, oPrice, cumMiss, cumHit, cumOutput);
+        if (!string.IsNullOrEmpty(cumCost))
+            parts.Add(cumCost);
+
+        var lastCost = FormatCost(mPrice, hPrice, oPrice, _lastTurnMiss, _lastTurnHit, _lastTurnOutput);
+        if (!string.IsNullOrEmpty(lastCost))
+            parts.Add($"+{lastCost}");
+
+        var rate = GetCacheHitRate(_lastTurnHit, _lastTurnMiss);
+        if (rate.HasValue)
+            parts.Add($"{rate}%");
+
+        _promptPrefix = parts.Count > 0
+            ? $"{string.Join(" / ", parts)} > "
+            : "> ";
+    }
+
+    private void UpdatePromptInline(long turnHit, long turnMiss, long turnOutput)
+    {
+        _lastTurnHit = turnHit;
+        _lastTurnMiss = turnMiss;
+        _lastTurnOutput = turnOutput;
+    }
+
+    private async Task ResetSessionStateAsync()
+    {
+        var last = await _store.GetLastUsageAsync(_agentId!);
+        _lastTurnHit = last.Hit;
+        _lastTurnMiss = last.Miss;
+        _lastTurnOutput = last.Output;
+        await UpdatePromptPrefixAsync();
+    }
+
+    private (double? MissPrice, double? HitPrice, double? OutputPrice) GetPricing(string model)
+    {
+        foreach (var entry in _deepseek.Models)
+            if (string.Equals(entry.Name, model, StringComparison.OrdinalIgnoreCase))
+                return (entry.Miss, entry.Hit, entry.Output);
+        return (null, null, null);
+    }
+    private static bool IsCommand(List<char> buffer) => buffer.Count > 0 && buffer[0] == '/';
+
+    private async Task<string?> ReadLineWithHistoryAsync()
+    {
+        var buffer = new List<char>();
+        var pos = 0;
+        _lastBufferLen = 0;
+        _historyIndex = _inputHistory.Count;
+        _pendingInput = null;
+
+        _promptLine = Console.CursorTop;
+        _maxVisualLine = _promptLine;
+        Console.SetCursorPosition(0, _promptLine);
+        Console.ForegroundColor = ConsoleColor.DarkYellow;
+        Console.Write(_promptPrefix);
+        Console.ResetColor();
+
+        while (true)
+        {
+            var key = Console.ReadKey(intercept: true);
+            var ctrl = key.Modifiers.HasFlag(ConsoleModifiers.Control);
+
+            if (ctrl && key.Key == ConsoleKey.C)
+            {
+                var text = new string(buffer.ToArray());
+                if (text.Length > 0 && OperatingSystem.IsWindows())
+                {
+                    try
+                    {
+                        var psi = new ProcessStartInfo("clip")
+                        {
+                            RedirectStandardInput = true,
+                            UseShellExecute = false
+                        };
+                        var proc = Process.Start(psi);
+                        if (proc is not null)
+                        {
+                            await proc.StandardInput.WriteAsync(text);
+                            proc.StandardInput.Close();
+                        }
+                    }
+                    catch { }
+                }
+                Console.WriteLine();
+                return "";
+            }
+
+            if (ctrl && key.Key == ConsoleKey.Z)
+                return null;
+
+            if ((ctrl && key.Key == ConsoleKey.W) ||
+                (ctrl && key.Key == ConsoleKey.H) ||
+                (ctrl && key.Key == ConsoleKey.Backspace))
+            {
+                DeleteWordBefore(buffer, ref pos);
+                Redraw(new string(buffer.ToArray()));
+                continue;
+            }
+
+            switch (key.Key)
+            {
+                case ConsoleKey.Enter:
+                    var input = new string(buffer.ToArray());
+                    Console.WriteLine();
+                    if (!string.IsNullOrWhiteSpace(input))
+                    {
+                        _inputHistory.Add(input);
+                        _historyIndex = _inputHistory.Count;
+                        _pendingInput = null;
+                    }
+                    return input;
+
+                case ConsoleKey.Escape:
+                    if (pos < buffer.Count)
+                    {
+                        pos = buffer.Count;
+                        MoveCursor(pos);
+                    }
+                    else
+                    {
+                        buffer.Clear();
+                        pos = 0;
+                        _historyIndex = _inputHistory.Count;
+                        _pendingInput = null;
+                        ClearFromPromptToBottom();
+                        Console.SetCursorPosition(0, _promptLine);
+                        Console.ForegroundColor = ConsoleColor.DarkYellow;
+                        Console.Write(_promptPrefix);
+                        Console.ResetColor();
+                        _lastBufferLen = 0;
+                    }
+                    break;
+
+                case ConsoleKey.UpArrow:
+                {
+                    var isCmd = IsCommand(buffer);
+                    if (_historyIndex == _inputHistory.Count)
+                        _pendingInput = new string(buffer.ToArray());
+                    for (var i = _historyIndex - 1; i >= 0; i--)
+                    {
+                        if ((_inputHistory[i][0] == '/') == isCmd)
+                        {
+                            _historyIndex = i;
+                            Redraw(_inputHistory[i]);
+                            buffer = [.. _inputHistory[i]];
+                            pos = buffer.Count;
+                            MoveCursor(pos);
+                            break;
+                        }
+                    }
+                    break;
+                }
+
+                case ConsoleKey.DownArrow:
+                {
+                    var isCmd = IsCommand(buffer);
+                    for (var i = _historyIndex + 1; i <= _inputHistory.Count; i++)
+                    {
+                        if (i == _inputHistory.Count)
+                        {
+                            _historyIndex = _inputHistory.Count;
+                            Redraw(_pendingInput ?? "");
+                            buffer = [.. (_pendingInput ?? "")];
+                        }
+                        else if ((_inputHistory[i][0] == '/') == isCmd)
+                        {
+                            _historyIndex = i;
+                            Redraw(_inputHistory[i]);
+                            buffer = [.. _inputHistory[i]];
+                        }
+                        else
+                        {
+                            continue;
+                        }
+                        pos = buffer.Count;
+                        MoveCursor(pos);
+                        break;
+                    }
+                    break;
+                }
+
+                case ConsoleKey.LeftArrow when ctrl:
+                    WordJumpLeft(buffer, ref pos);
+                    MoveCursor(pos);
+                    break;
+
+                case ConsoleKey.LeftArrow:
+                    if (pos > 0) { pos--; MoveCursor(pos); }
+                    break;
+
+                case ConsoleKey.RightArrow when ctrl:
+                    WordJumpRight(buffer, ref pos);
+                    MoveCursor(pos);
+                    break;
+
+                case ConsoleKey.RightArrow:
+                    if (pos < buffer.Count) { pos++; MoveCursor(pos); }
+                    break;
+
+                case ConsoleKey.Home:
+                    pos = 0;
+                    MoveCursor(pos);
+                    break;
+
+                case ConsoleKey.End:
+                    pos = buffer.Count;
+                    MoveCursor(pos);
+                    break;
+
+                case ConsoleKey.Backspace:
+                    if (pos > 0)
+                    {
+                        buffer.RemoveAt(pos - 1);
+                        pos--;
+                        Redraw(new string(buffer.ToArray()));
+                    }
+                    break;
+
+                case ConsoleKey.Delete:
+                    if (pos < buffer.Count)
+                    {
+                        buffer.RemoveAt(pos);
+                        Redraw(new string(buffer.ToArray()));
+                    }
+                    break;
+
+                default:
+                    if (key.KeyChar >= 32 && !char.IsControl(key.KeyChar))
+                    {
+                        buffer.Insert(pos, key.KeyChar);
+                        pos++;
+                        Redraw(new string(buffer.ToArray()));
+                    }
+                    break;
+            }
+        }
+    }
+
+    private static void DeleteWordBefore(List<char> buffer, ref int pos)
+    {
+        if (pos == 0) return;
+        var end = pos;
+        while (pos > 0 && buffer[pos - 1] == ' ') pos--;
+        while (pos > 0 && buffer[pos - 1] != ' ') pos--;
+        buffer.RemoveRange(pos, end - pos);
+    }
+
+    private static void WordJumpLeft(List<char> buffer, ref int pos)
+    {
+        if (pos == 0) return;
+        pos--;
+        while (pos > 0 && buffer[pos] == ' ') pos--;
+        while (pos > 0 && buffer[pos] != ' ') pos--;
+        if (pos > 0 || buffer[0] != ' ') pos++;
+    }
+
+    private static void WordJumpRight(List<char> buffer, ref int pos)
+    {
+        if (pos >= buffer.Count) return;
+        while (pos < buffer.Count && buffer[pos] != ' ') pos++;
+        while (pos < buffer.Count && buffer[pos] == ' ') pos++;
+    }
+
+    private void Redraw(string text)
+    {
+        var bufWidth = Console.BufferWidth;
+        var bufHeight = Console.BufferHeight;
+        var promptLen = _promptPrefix.Length + text.Length;
+
+        var linesToClear = Math.Max(
+            _lastBufferLen > 0 ? (2 + _lastBufferLen) / bufWidth + 1 : 1,
+            promptLen / bufWidth + 1);
+
+        for (var i = 0; i < linesToClear; i++)
+        {
+            var line = _promptLine + i;
+            if (line >= bufHeight) break;
+            Console.SetCursorPosition(0, line);
+            Console.Write(new string(' ', bufWidth));
+        }
+
+        Console.SetCursorPosition(0, _promptLine);
+        Console.ForegroundColor = ConsoleColor.DarkYellow;
+        Console.Write(_promptPrefix);
+        Console.ResetColor();
+        Console.Write(text);
+
+        var cursorTop = Console.CursorTop;
+        _promptLine = cursorTop - (promptLen > bufWidth ? (promptLen - 1) / bufWidth : 0);
+        if (_promptLine < 0) _promptLine = 0;
+
+        var textLines = promptLen / bufWidth;
+        var visualBottom = _promptLine + textLines;
+        if (visualBottom > _maxVisualLine)
+            _maxVisualLine = visualBottom;
+
+        _lastBufferLen = text.Length;
+    }
+
+    private void ClearFromPromptToBottom()
+    {
+        var bufWidth = Console.BufferWidth;
+        var bufHeight = Console.BufferHeight;
+        for (var line = _promptLine; line <= _maxVisualLine && line < bufHeight; line++)
+        {
+            Console.SetCursorPosition(0, line);
+            Console.Write(new string(' ', bufWidth));
+        }
+        _maxVisualLine = _promptLine;
+    }
+
+    private void MoveCursor(int pos)
+    {
+        var col = _promptPrefix.Length + pos;
+        var bufWidth = Console.BufferWidth;
+        var bufHeight = Console.BufferHeight;
+        var line = _promptLine + col / bufWidth;
+        if (line >= bufHeight) line = bufHeight - 1;
+        Console.SetCursorPosition(col % bufWidth, line);
+    }
+}
