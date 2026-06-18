@@ -31,7 +31,7 @@ public static class MemoryTool
                 return $"Recovered {recovered} block{(recovered == 1 ? "" : "s")}.";
 
             case "stats":
-                var (totalBlocks, totalTokens, typeStats) = await provider.ComputeStatsAsync(sessionId);
+                var (totalBlocks, _, typeStats) = await provider.ComputeStatsAsync(sessionId);
                 var lines = new List<string> { "── Memory Stats ─────────────────────────" };
                 var iconMap = new Dictionary<string, string>
                 {
@@ -46,21 +46,21 @@ public static class MemoryTool
                 }
                 lines.Add("  ───────────────────────────────────────");
                 lines.Add($"  Blocks: {totalBlocks}");
-                lines.Add($"  Tokens: {totalTokens / 1000.0:F1}K");
 
                 // Model
                 var model = await provider.GetAgentModelAsync(sessionId);
                 if (model is not null)
                     lines.Add($"  Model:  {model}");
 
-                // Usage + pricing from config
+                // Real API usage + pricing
                 if (cfg is not null)
                 {
                     var usage = await provider.GetUsageAsync(sessionId);
-                    var totalTokensAll = usage.Hit + usage.Miss + usage.Output;
-                    if (totalTokensAll > 0)
+                    if (usage.Hit + usage.Miss + usage.Output > 0)
                     {
-                        var rate = (int)(usage.Hit * 100.0 / totalTokensAll);
+                        lines.Add($"  Input:  {(usage.Hit + usage.Miss) / 1000.0:F1}K");
+                        lines.Add($"  Output: {usage.Output / 1000.0:F1}K");
+                        var rate = (int)(usage.Hit * 100.0 / (usage.Hit + usage.Miss + usage.Output));
                         lines.Add($"  Cache:  {usage.Hit / 1000.0:F1}K hit / {usage.Miss / 1000.0:F1}K miss ({rate}%)");
                     }
 

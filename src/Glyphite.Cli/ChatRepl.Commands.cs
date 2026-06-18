@@ -31,7 +31,7 @@ public partial class ChatRepl
                 return true;
 
             case "/stats":
-                var (totalBlocks, totalTokens, typeStats) = await _blockMemory.ComputeStatsAsync(_agentId!);
+                var (totalBlocks, _, typeStats) = await _blockMemory.ComputeStatsAsync(_agentId!);
                 if (totalBlocks == 0)
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -40,10 +40,6 @@ public partial class ChatRepl
                     Console.WriteLine();
                     return true;
                 }
-
-                var ctxWindow = _deepseek.ContextWindow;
-                var threshold = ctxWindow * _compressionOpts.AutoThreshold / 100;
-                var pct = ctxWindow > 0 ? (double)totalTokens / ctxWindow * 100 : 0.0;
 
                 Console.ForegroundColor = ConsoleColor.Cyan;
                 Console.WriteLine("── Stats ──────────────────────────────");
@@ -72,25 +68,22 @@ public partial class ChatRepl
                 Console.WriteLine("  ───────────────────────────────────");
                 Console.ResetColor();
 
-                Console.ForegroundColor = ConsoleColor.Gray;
-                Console.WriteLine($"  Blocks:    {totalBlocks}");
-                Console.WriteLine($"  Tokens:    {ConsoleRenderer.FormatTokenCount(totalTokens)} ({pct:F1}%)");
-                Console.WriteLine($"  Limits:    {ConsoleRenderer.FormatTokenCount(threshold)} ({_compressionOpts.AutoThreshold}%)");
-
                 // Model
                 var statsModel = await _blockMemory.GetAgentModelAsync(_agentId!);
+                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.WriteLine($"  Blocks:    {totalBlocks}");
                 if (statsModel is not null)
                     Console.WriteLine($"  Model:     {statsModel}");
 
-                // Cumulative cache + pricing
+                // Real API usage
                 var (cumHit, cumMiss, cumOutput) = await _store.GetUsageAsync(_agentId!);
-                var totalApiTokens = cumHit + cumMiss + cumOutput;
-                if (totalApiTokens > 0)
+                if (cumHit + cumMiss + cumOutput > 0)
                 {
-                    var cumRate = (int)(cumHit * 100.0 / totalApiTokens);
+                    Console.WriteLine($"  Input:     {ConsoleRenderer.FormatTokenCount(cumHit + cumMiss)}");
+                    Console.WriteLine($"  Output:    {ConsoleRenderer.FormatTokenCount(cumOutput)}");
+                    var cumRate = (int)(cumHit * 100.0 / (cumHit + cumMiss + cumOutput));
                     Console.WriteLine($"  Cache:     {ConsoleRenderer.FormatTokenCount(cumHit)} hit / {ConsoleRenderer.FormatTokenCount(cumMiss)} miss ({cumRate}%)");
 
-                    // Pricing
                     var (mPrice, hPrice, oPrice) = GetPricing(statsModel ?? _deepseek.Model);
                     if (mPrice.HasValue)
                     {
