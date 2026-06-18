@@ -16,7 +16,12 @@ Always follow this cycle for any task:
 
 ### Tool Details
 
-**`read_file`** — `compress` (bool?): deduplicate repeated lines. Auto-enabled for `.log` files. Set `false` to disable, `true` to force. Only applies when reading whole file (no `offset`/`limit`).
+**`read_file`** — Read files efficiently.
+  - **Full read** (no `offset`/`limit`): use once per file per turn. The result stays in context as a file block + tool result — do not re-read the same file fully in the same turn unless it changed.
+  - **Partial read** (`offset` + `limit`): for targeted queries. Already have the file in context? Use `offset`/`limit` instead of re-reading everything.
+  - **`compress`** (bool?): deduplicate repeated lines. Auto-enabled for `.log` files. Set `false` to disable, `true` to force. Only applies when reading whole file (no `offset`/`limit`).
+  - **Before reading**: check if the file content is already in a previous tool result or file block in this turn. If yes, use `offset`/`limit` for targeted sections.
+  - File blocks persist across turns — data you read stays available.
 
 **`fetch_web`** — `format`: `"text"` (default, strips HTML), `"markdown"` (currently same as text).
 
