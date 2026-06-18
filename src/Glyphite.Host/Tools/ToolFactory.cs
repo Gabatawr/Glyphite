@@ -21,7 +21,7 @@ public static class ToolFactory
             FileReadTool.AsAIFunction(cfgService, defaultDir, sessionId),
             FileWriteTool.AsAIFunction(memoryStore, sessionId, defaultDir),
             FilePatchTool.AsAIFunction(defaultDir),
-            MemoryTool.AsAIFunction(blockMemory, sessionId),
+            MemoryTool.AsAIFunction(blockMemory, sessionId, cfgService),
             TodoTool.AsTodoWriteFunction(memoryStore, sessionId, cfgService),
             TodoTool.AsTodoUpdateFunction(memoryStore, sessionId, cfgService),
             WebFetchTool.AsFetchFunction(cfgService, sessionId),

@@ -32,7 +32,7 @@ public class ToolRegistry : IToolRegistry
             FileReadTool.AsAIFunction(_cfgService, _defaultDir, sessionId),
             FileWriteTool.AsAIFunction(_memoryStore, sessionId, _defaultDir),
             FilePatchTool.AsAIFunction(_defaultDir),
-            MemoryTool.AsAIFunction(_blockMemory, sessionId),
+            MemoryTool.AsAIFunction(_blockMemory, sessionId, _cfgService),
             TodoTool.AsTodoWriteFunction(_memoryStore, sessionId, _cfgService),
             TodoTool.AsTodoUpdateFunction(_memoryStore, sessionId, _cfgService),
             WebFetchTool.AsFetchFunction(_cfgService, sessionId),

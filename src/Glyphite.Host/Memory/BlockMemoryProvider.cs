@@ -144,6 +144,9 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
         await _store.AppendBlocksAsync(sessionId, [block], nextNum + 1);
     }
 
+    public async Task<(long Hit, long Miss, long Output)> GetUsageAsync(string sessionId)
+        => await _store.GetUsageAsync(sessionId);
+
     // ── ID lifecycle ──
 
     public async Task<string> GetOrCreateIdAsync(AgentSession? session)

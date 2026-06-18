@@ -205,7 +205,7 @@ public class ConsoleRenderer
         }
     }
 
-    public static string FormatTokenCount(int count) => count >= 1000
+    public static string FormatTokenCount(long count) => count >= 1000
         ? $"{count / 1000.0:F1}K"
         : count.ToString();
 }

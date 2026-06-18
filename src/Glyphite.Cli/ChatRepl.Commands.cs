@@ -76,6 +76,29 @@ public partial class ChatRepl
                 Console.WriteLine($"  Blocks:    {totalBlocks}");
                 Console.WriteLine($"  Tokens:    {ConsoleRenderer.FormatTokenCount(totalTokens)} ({pct:F1}%)");
                 Console.WriteLine($"  Limits:    {ConsoleRenderer.FormatTokenCount(threshold)} ({_compressionOpts.AutoThreshold}%)");
+
+                // Model
+                var statsModel = await _blockMemory.GetAgentModelAsync(_agentId!);
+                if (statsModel is not null)
+                    Console.WriteLine($"  Model:     {statsModel}");
+
+                // Cumulative cache + pricing
+                var (cumHit, cumMiss, cumOutput) = await _store.GetUsageAsync(_agentId!);
+                var totalApiTokens = cumHit + cumMiss + cumOutput;
+                if (totalApiTokens > 0)
+                {
+                    var cumRate = (int)(cumHit * 100.0 / totalApiTokens);
+                    Console.WriteLine($"  Cache:     {ConsoleRenderer.FormatTokenCount(cumHit)} hit / {ConsoleRenderer.FormatTokenCount(cumMiss)} miss ({cumRate}%)");
+
+                    // Pricing
+                    var (mPrice, hPrice, oPrice) = GetPricing(statsModel ?? _deepseek.Model);
+                    if (mPrice.HasValue)
+                    {
+                        var totalCost = (cumMiss * mPrice.Value + cumHit * (hPrice ?? 0) + cumOutput * (oPrice ?? mPrice.Value)) / 1_000_000.0;
+                        Console.WriteLine($"  Cost:      ${totalCost:F2}");
+                    }
+                }
+
                 Console.ResetColor();
                 Console.WriteLine();
                 return true;

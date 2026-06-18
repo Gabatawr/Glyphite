@@ -23,4 +23,5 @@ public interface IBlockMemoryProvider
     Task<string?> GetModelAsync(string id);
     Task StoreErrorAsync(string sessionId, string error);
     Task<(int TotalBlocks, int TotalTokens, Dictionary<string, int> TypeStats)> ComputeStatsAsync(string sessionId);
+    Task<(long Hit, long Miss, long Output)> GetUsageAsync(string sessionId);
 }
