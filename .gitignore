@@ -13,8 +13,3 @@ appsettings.Development.json
 repos/
 node_modules/
 docker-compose.override.yml
-
-# VSCode extension build
-src/Glyphite.VSCode/out/
-src/Glyphite.VSCode/node_modules/
-src/Glyphite.VSCode/package-lock.json

@@ -2,7 +2,7 @@
 
 **AI agent with tools — right in your terminal.**
 
-Glyphite is a .NET console-based AI agent that runs commands, works with files, searches for information, manages todos, and interacts with external services — all from the command line.
+Glyphite is a .NET console-based AI agent that runs commands, works with files, searches for information, manages todos, and interacts with external services — all from the command line. Built for agentic workflows with block-based memory, cascading context, and MCP support.
 
 ## Features
 
@@ -16,6 +16,9 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
   - `todo_write` / `todo_update` — task management within the conversation
   - `memory` — context and memory management (stats, delete, recover blocks)
 - **Block-based memory** — full conversation history stored in SQLite with smart deduplication and compression
+  - **`ParentNumber` + cascade** — blocks carry parent references; `memory delete` and `recover` cascade through `Data["parentNumber"]` chains
+  - **Todo chain** — each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
+  - **Indexed queries** — `idx_blocks_agent_deleted` on `(agent_id, is_deleted)` for fast context loading
 - **Rich rendering** — syntax highlighting, diffs, color schemes
 - **Incremental saving** — conversation blocks are saved as they're generated
 - **Live streaming** — text/reasoning chunks rendered in real-time with color transitions and mode switches
@@ -52,7 +55,7 @@ Glyphite/
 │       ├── appsettings.json          # Embedded base config
 │       └── system-prompt.md          # Agent system prompt
 ├── tests/
-│   └── Glyphite.Tests.Unit/      # Unit tests (referenced in .slnx, not yet on disk)
+│   └── Glyphite.Tests.Unit/      # Unit tests (planned, not yet created)
 ├── Glyphite.slnx                   # Solution file (.slnx format)
 ├── AGENTS.md                       # Agent workflow description
 ├── Directory.Build.targets         # MSBuild target: auto-increment version
@@ -129,8 +132,8 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `search_grep` | Search text inside files |
 | `fetch_web` | HTTP request (GET/POST) with text extraction |
 | `todo_write` | Create a structured todo list |
-| `todo_update` | Update tasks in a todo list (status, priority) |
-| `memory` | Memory management: `stats` (type/token breakdown), `delete` (soft-delete), `recover` (restore) |
+| `todo_update` | Update tasks in a todo list (status, priority) — creates a snapshot chain |
+| `memory` | Memory management: `stats` (type/token breakdown), `delete` (soft-delete with optional `cascade=true`), `recover` (restore with optional `cascade=true`) |
 
 ## Models
 
@@ -191,16 +194,16 @@ Peek tools always execute — write_file always writes the file, patch_file alwa
 
 ## Versioning
 
-The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged.
+The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
 
 ```bash
-glyphite -v       # → 0.3.37
-/version          # → Glyphite v0.3.37
+glyphite -v       # → 0.3.61
+/version          # → Glyphite v0.3.61
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.3.37 — MainAgent 🏠
+Glyphite CLI v0.3.61 — MainAgent 🏠
 ```
 
 ## Publishing and backups
@@ -223,11 +226,7 @@ cp ~/.glyphite/backup/glyphite.v0.2.74 ~/.glyphite/glyphite
 
 ## Testing
 
-Tests directory (`tests/Glyphite.Tests.Unit/`) is referenced in the solution but not yet created. Tests will be written as the project matures.
-
-```bash
-dotnet test tests/Glyphite.Tests.Unit
-```
+Tests directory (`tests/Glyphite.Tests.Unit/`) is referenced in the solution but not yet created — planned for future iterations.
 
 ## License
 

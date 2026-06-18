@@ -57,7 +57,7 @@ public static class TodoTool
 
     [Description("Modify a todo list block. Action types: set_status (change item status by index), update (change text/status/priority by index), add (insert new item at end or at index), remove (delete item by index). Mark items as in_progress when starting work, done when complete. Update the plan as you go, not just at the end. Also creates a todo_update snapshot block to track progress history.")]
     public static async Task<string> TodoUpdate(
-        [Description("Block number of the todo list to modify. Can be the original todo block or a todo_update snapshot (will redirect to parent).")] double block,
+        [Description("Block number of the todo list to modify. Can be the original todo block or a todo_update snapshot — follows the forward chain to the latest snapshot.")] double block,
         [Description("Array of action objects: {type: 'set_status'|'update'|'add'|'remove', index?: number, text?: string, status?: string, priority?: string}")] TodoAction[] actions,
         IMemoryStore store,
         string sessionId,
