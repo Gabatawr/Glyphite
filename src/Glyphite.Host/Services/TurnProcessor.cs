@@ -67,7 +67,7 @@ public class TurnProcessor : ITurnProcessor
         _nextNum = await _store.GetNextNumberAsync(sessionId);
         if (_nextNum <= 0) _nextNum = 1;
 
-        // Auto-tool: peek cleanup — visible to user AND model (peek block, cleaned next turn)
+        // Auto-tool: peek cleanup — visible to user AND model
         if (peekCleaned > 0)
         {
             var peekMsg = BuildPeekCleanMessage(peekCleaned, peekStats);
@@ -192,9 +192,12 @@ public class TurnProcessor : ITurnProcessor
                         }
 
                         var fileBlock = MemoryBlock.FileBlock(fileContent, fPath);
+                        fileBlock.ParentNumber = callBlockNumber;
+                        fileBlock.Data ??= [];
+                        fileBlock.Data["parentNumber"] = callBlockNumber;
                         fileBlock.Number = _nextNum++;
                         if (isPeek)
-                            fileBlock.Data = new() { ["peek"] = true };
+                            fileBlock.Data["peek"] = true;
                         await _store.AppendBlocksAsync(_sessionId, [fileBlock], _nextNum);
 
                         var cleanedArgs = CleanToolArgs(args, "content");
@@ -228,6 +231,10 @@ public class TurnProcessor : ITurnProcessor
 
                     events.Add(new ToolResultTurnEvent(name, output));
                 }
+
+                // Inter-iteration: clear peek markers (not reasoning) — block stays, result+peek flag removed
+                if (_pendingToolCalls.Count == 0)
+                    await _store.ClearPeekMarkersAsync(_sessionId, false);
             }
             else
             {
@@ -271,15 +278,15 @@ public class TurnProcessor : ITurnProcessor
         return []; // content already streamed via ReasoningChunkEvent
     }
 
-    private Task<List<TurnEvent>> FlushTextAsync()
+    private async Task<List<TurnEvent>> FlushTextAsync()
     {
-        if (_textAccum.Length == 0) return Task.FromResult<List<TurnEvent>>([]);
+        if (_textAccum.Length == 0) return [];
         var fullText = _textAccum.ToString();
         _textAccum.Clear();
         var block = MemoryBlock.AgentMessage(fullText, model: _modelStr);
         block.Number = _nextNum++;
-        return _store.AppendBlocksAsync(_sessionId, [block], _nextNum).ContinueWith(_ =>
-            (List<TurnEvent>)[]); // content already streamed via TextChunkEvent
+        await _store.AppendBlocksAsync(_sessionId, [block], _nextNum);
+        return []; // content already streamed via TextChunkEvent
     }
 
     private async Task<List<TurnEvent>> FlushAllAsync()

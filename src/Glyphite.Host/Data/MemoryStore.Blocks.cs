@@ -75,33 +75,55 @@ public partial class MemoryStore
         finally { _lock.Release(); }
     }
 
-    public async Task<int> RemovePeekBlocksAsync(string agentId)
+    public async Task<int> RemovePeekBlocksAsync(string agentId, bool includeReasoning = true)
     {
         await _lock.WaitAsync();
         try
         {
-            return await _conn.ExecuteAsync("""
+            var typeFilter = includeReasoning ? "" : " AND type != 'agent_reasoning'";
+            var sql = $"""
                 UPDATE blocks SET is_deleted = 1
                 WHERE agent_id = @sid AND is_deleted = 0
-                  AND data IS NOT NULL AND json_extract(data, '$.peek') = 1
-                """, new { sid = agentId });
+                  AND data IS NOT NULL AND json_extract(data, '$.peek') = 1{typeFilter}
+                """;
+            return await _conn.ExecuteAsync(sql, new { sid = agentId });
         }
         finally { _lock.Release(); }
     }
 
-    public async Task<Dictionary<string, int>> GetPeekBlockStatsAsync(string agentId)
+    public async Task<int> ClearPeekMarkersAsync(string agentId, bool includeReasoning = true)
     {
         await _lock.WaitAsync();
         try
         {
-            var rows = await _conn.QueryAsync<(string type, int count)>("""
+            var typeFilter = includeReasoning ? "" : " AND type != 'agent_reasoning'";
+            var sql = $"""
+                UPDATE blocks SET
+                    data = json_remove(data, '$.peek'),
+                    tool_result = NULL
+                WHERE agent_id = @sid AND is_deleted = 0
+                  AND data IS NOT NULL AND json_extract(data, '$.peek') = 1{typeFilter}
+                """;
+            return await _conn.ExecuteAsync(sql, new { sid = agentId });
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task<Dictionary<string, int>> GetPeekBlockStatsAsync(string agentId, bool includeReasoning = true)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var typeFilter = includeReasoning ? "" : " AND type != 'agent_reasoning'";
+            var sql = $"""
                 SELECT type, COUNT(*) as count
                 FROM blocks
                 WHERE agent_id = @sid AND is_deleted = 0
-                  AND data IS NOT NULL AND json_extract(data, '$.peek') = 1
+                  AND data IS NOT NULL AND json_extract(data, '$.peek') = 1{typeFilter}
                 GROUP BY type
                 ORDER BY count DESC
-                """, new { sid = agentId });
+                """;
+            var rows = await _conn.QueryAsync<(string type, int count)>(sql, new { sid = agentId });
             return rows.ToDictionary(r => r.type, r => r.count);
         }
         finally { _lock.Release(); }
@@ -177,7 +199,7 @@ public partial class MemoryStore
         finally { _lock.Release(); }
     }
 
-    public async Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null)
+    public async Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null, bool cascade = true)
     {
         await _lock.WaitAsync();
         try
@@ -190,7 +212,25 @@ public partial class MemoryStore
             };
 
             var protectedNums = new List<double>();
-            var toRemove = new List<double>();
+            var toRemove = new HashSet<double>();
+
+            void CollectCascade(double num)
+            {
+                if (toRemove.Contains(num)) return;
+                var block = all.FirstOrDefault(b => b.Number == num);
+                if (block is null) return;
+                if (protectedTypes.Contains(block.Type)) return;
+                toRemove.Add(num);
+
+                if (cascade && block.Data?.TryGetValue("parentNumber", out var pnRaw) == true)
+                {
+                    double? pn = pnRaw is JsonElement je && je.ValueKind == JsonValueKind.Number
+                        ? je.GetDouble()
+                        : pnRaw is double d ? d : null;
+                    if (pn.HasValue)
+                        CollectCascade(pn.Value);
+                }
+            }
 
             foreach (var num in numbers)
             {
@@ -201,7 +241,7 @@ public partial class MemoryStore
                     protectedNums.Add(num);
                     continue;
                 }
-                toRemove.Add(num);
+                CollectCascade(num);
             }
 
             var removed = 0;
@@ -220,14 +260,40 @@ public partial class MemoryStore
         finally { _lock.Release(); }
     }
 
-    public async Task<int> RecoverBlocksAsync(string agentId, double[] numbers)
+    public async Task<int> RecoverBlocksAsync(string agentId, double[] numbers, bool cascade = false)
     {
         await _lock.WaitAsync();
         try
         {
+            var toRecover = new HashSet<double>(numbers);
+
+            if (cascade)
+            {
+                // Load all blocks (including deleted) to walk the chain without nested locks
+                var all = await _conn.QueryAsync<BlockEntity>(
+                    "SELECT * FROM blocks WHERE agent_id = @sid ORDER BY number",
+                    new { sid = agentId });
+                var blockIndex = all.ToDictionary(e => e.Number, MapToBlock);
+
+                var queue = new Queue<double>(numbers);
+                while (queue.Count > 0)
+                {
+                    var num = queue.Dequeue();
+                    if (!blockIndex.TryGetValue(num, out var block)) continue;
+                    if (block.Data?.TryGetValue("parentNumber", out var pnRaw) == true)
+                    {
+                        double? pn = pnRaw is JsonElement je && je.ValueKind == JsonValueKind.Number
+                            ? je.GetDouble()
+                            : pnRaw is double d ? d : null;
+                        if (pn.HasValue && toRecover.Add(pn.Value))
+                            queue.Enqueue(pn.Value);
+                    }
+                }
+            }
+
             await using var tx = await _conn.BeginTransactionAsync();
             var removed = 0;
-            foreach (var num in numbers)
+            foreach (var num in toRecover)
                 removed += await _conn.ExecuteAsync(
                     "UPDATE blocks SET is_deleted = 0 WHERE agent_id = @sid AND number = @num AND is_deleted = 1",
                     new { sid = agentId, num });
@@ -369,7 +435,7 @@ public partial class MemoryStore
             return all.FirstOrDefault(b =>
                 b.Type == BlockType.file &&
                 b.Data?.TryGetValue("path", out var p) == true &&
-                p?.ToString() == normalized);
+                string.Equals(p?.ToString(), normalized, StringComparison.OrdinalIgnoreCase) == true);
         }
         finally { _lock.Release(); }
     }
@@ -384,7 +450,7 @@ public partial class MemoryStore
             var toRemove = all.Where(b =>
                 b.Type == BlockType.file &&
                 b.Data?.TryGetValue("path", out var p) == true &&
-                p?.ToString() == normalized)
+                string.Equals(p?.ToString(), normalized, StringComparison.OrdinalIgnoreCase) == true)
                 .Select(b => b.Number).ToList();
 
             if (toRemove.Count == 0) return;
@@ -399,7 +465,7 @@ public partial class MemoryStore
         finally { _lock.Release(); }
     }
 
-    public async Task DeleteFileBlocksWithToolsByPathAsync(string agentId, string filePath)
+    public async Task DeleteFileBlocksCascadeParentToolByPathAsync(string agentId, string filePath)
     {
         await _lock.WaitAsync();
         try
@@ -408,25 +474,28 @@ public partial class MemoryStore
             var all = await LoadBlocksCoreAsync(agentId);
             var allList = all.OrderBy(b => b.Number).ToList();
 
-            var fileNums = allList.Where(b =>
+            var fileBlocks = allList.Where(b =>
                 b.Type == BlockType.file &&
                 b.Data?.TryGetValue("path", out var p) == true &&
-                p?.ToString() == normalized)
-                .Select(b => b.Number).ToHashSet();
+                string.Equals(p?.ToString(), normalized, StringComparison.OrdinalIgnoreCase) == true)
+                .ToList();
 
-            if (fileNums.Count == 0) return;
+            if (fileBlocks.Count == 0) return;
 
-            var toRemove = new HashSet<double>(fileNums);
+            var toRemove = new HashSet<double>(fileBlocks.Select(b => b.Number));
 
-            // Also remove preceding write_file/read_file tool blocks
-            foreach (var num in fileNums)
+            // Cascade to parent tool block via ParentNumber
+            foreach (var fb in fileBlocks)
             {
-                var prev = allList.LastOrDefault(b => b.Number < num && !fileNums.Contains(b.Number));
-                if (prev is not null &&
-                    prev.Type == BlockType.tool &&
-                    (prev.ToolName == "write_file" || prev.ToolName == "read_file"))
+                if (fb.ParentNumber is not null)
                 {
-                    toRemove.Add(prev.Number);
+                    var parent = allList.FirstOrDefault(b => b.Number == fb.ParentNumber.Value);
+                    if (parent is not null &&
+                        parent.Type == BlockType.tool &&
+                        (parent.ToolName == "write_file" || parent.ToolName == "read_file"))
+                    {
+                        toRemove.Add(parent.Number);
+                    }
                 }
             }
 
@@ -452,7 +521,7 @@ public partial class MemoryStore
                 BlockType.user_message, BlockType.agent_message
             };
 
-            var typeSet = types?.Select(t => t.ToLowerInvariant()).ToHashSet();
+            var typeSet = types is not null ? new HashSet<string>(types, StringComparer.OrdinalIgnoreCase) : null;
             var cutoff = recent.HasValue ? DateTime.UtcNow - recent.Value : (DateTime?)null;
 
             var toRemove = new List<double>();

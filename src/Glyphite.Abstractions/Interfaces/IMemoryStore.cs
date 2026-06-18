@@ -26,11 +26,12 @@ public interface IMemoryStore : IDisposable
     Task UpdateBlockDataAsync(string agentId, double number, Dictionary<string, object>? data);
     Task UpdateBlockToolResultAsync(string agentId, double number, string? toolResult);
     Task UpdateBlockContentAsync(string agentId, double number, string content);
-    Task<int> RemovePeekBlocksAsync(string agentId);
-    Task<Dictionary<string, int>> GetPeekBlockStatsAsync(string agentId);
+    Task<int> RemovePeekBlocksAsync(string agentId, bool includeReasoning = true);
+    Task<int> ClearPeekMarkersAsync(string agentId, bool includeReasoning = true);
+    Task<Dictionary<string, int>> GetPeekBlockStatsAsync(string agentId, bool includeReasoning = true);
     Task<int> RemoveBlocksAsync(string agentId, Predicate<MemoryBlock> match);
-    Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null);
-    Task<int> RecoverBlocksAsync(string agentId, double[] numbers);
+    Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null, bool cascade = true);
+    Task<int> RecoverBlocksAsync(string agentId, double[] numbers, bool cascade = false);
     Task<int> DeleteBlocksByFilterAsync(string agentId, string[]? types, TimeSpan? recent, HashSet<BlockType>? protectedTypes = null);
     Task ForkSessionAsync(string sourceId, string targetId, string cwd);
     Task ClearAgentBlocksAsync(string agentId);
@@ -39,7 +40,7 @@ public interface IMemoryStore : IDisposable
     Task<Dictionary<string, int>> GetBlockTypeStatsAsync(string agentId);
     Task<MemoryBlock?> FindFileBlockByPathAsync(string agentId, string filePath);
     Task DeleteFileBlocksByPathAsync(string agentId, string filePath);
-    Task DeleteFileBlocksWithToolsByPathAsync(string agentId, string filePath);
+    Task DeleteFileBlocksCascadeParentToolByPathAsync(string agentId, string filePath);
 
     // Config
     Task<string?> GetConfigAsync(string key, string scope = "global", string? agentId = null);

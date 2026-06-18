@@ -67,39 +67,41 @@ public static class TodoTool
         if (existing is null)
             return FormattableString.Invariant($"Block {block:F1} not found");
 
-        // Resolve to the root todo block
-        double rootBlock;
-        if (existing.Type == BlockType.todo_update)
-        {
-            if (existing.ParentNumber is null)
-                return FormattableString.Invariant($"Block {block:F1} is a todo_update but has no parent reference");
-            rootBlock = existing.ParentNumber.Value;
-        }
-        else if (existing.Type == BlockType.todo)
-        {
-            rootBlock = block;
-        }
-        else
-        {
+        if (existing.Type is not BlockType.todo and not BlockType.todo_update)
             return FormattableString.Invariant($"Block {block:F1} is not a todo or todo_update block");
+
+        // Follow chain forward from the passed block to find the latest todo_update
+        var snapshots = await store.LoadBlocksByTypeAsync(sessionId, BlockType.todo_update, null, true);
+        MemoryBlock? latestSnapshot = existing.Type == BlockType.todo_update ? existing : null;
+        double? chainCursor = existing.Number;
+        while (chainCursor.HasValue)
+        {
+            var next = snapshots.FirstOrDefault(s =>
+            {
+                if (s.Data?.TryGetValue("parentNumber", out var raw) == true &&
+                    raw is JsonElement je && je.ValueKind == JsonValueKind.Number)
+                    return je.GetDouble() == chainCursor.Value;
+                return s.ParentNumber == chainCursor.Value;
+            });
+            if (next is null) break;
+            latestSnapshot = next;
+            chainCursor = next.Number;
         }
 
-        // Use items from the latest snapshot in the chain, or fall back to original todo
         List<Dictionary<string, object?>> items;
-        MemoryBlock? rootTodo = existing.Type == BlockType.todo ? existing : null;
-        var snapshots = await store.LoadBlocksByTypeAsync(sessionId, BlockType.todo_update, null, true);
-        var latestSnapshot = snapshots.FirstOrDefault(s => s.ParentNumber == rootBlock);
-
         if (latestSnapshot is not null && latestSnapshot.Data?.TryGetValue("items", out var snapItemsObj) == true)
         {
-            items = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(((JsonElement)snapItemsObj).GetRawText());
+            items = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(
+                ((JsonElement)snapItemsObj!).GetRawText()) ?? [];
+        }
+        else if (existing.Data?.TryGetValue("items", out var itemsObj) == true)
+        {
+            items = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(
+                ((JsonElement)itemsObj!).GetRawText()) ?? [];
         }
         else
         {
-            rootTodo ??= await store.GetBlockAsync(sessionId, rootBlock);
-            if (rootTodo?.Data?.TryGetValue("items", out var itemsObj) != true)
-                return FormattableString.Invariant($"Block {rootBlock:F1} has no items");
-            items = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(((JsonElement)itemsObj).GetRawText());
+            return FormattableString.Invariant($"Block {block:F1} has no items");
         }
 
         if (items is null)
@@ -234,14 +236,16 @@ public static class TodoTool
         {
             ["items"] = snapshotItems!
         };
-        rootTodo ??= await store.GetBlockAsync(sessionId, rootBlock);
         var nextNumber = await store.GetNextNumberAsync(sessionId);
-        var snapshot = MemoryBlock.Create(BlockType.todo_update, rootTodo?.Content ?? "", toolName: "todo_update", data: snapshotData);
+        var snapshot = MemoryBlock.Create(BlockType.todo_update, existing.Content ?? "", toolName: "todo_update", data: snapshotData);
         snapshot.Number = nextNumber;
-        snapshot.ParentNumber = rootBlock;
+        var parentBlock = latestSnapshot?.Number ?? existing.Number;
+        snapshot.ParentNumber = parentBlock;
+        snapshot.Data ??= [];
+        snapshot.Data["parentNumber"] = parentBlock;
         await store.AppendBlocksAsync(sessionId, [snapshot], nextNumber + 1);
 
-        return FormattableString.Invariant($"Updated block {rootBlock:F1}: {string.Join("; ", results)}\n") + FormatItems(items);
+        return FormattableString.Invariant($"Updated block {existing.Number:F1}: {string.Join("; ", results)}\n") + FormatItems(items);
     }
 
     private static string FormatItems(IEnumerable<object> dictItems)

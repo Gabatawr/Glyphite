@@ -26,6 +26,7 @@ Settings are applied in this order (each overrides the previous):
 - **BashTool subshell workdir** — `(cd "workdir" && command)` prevents persistent directory change
 - **ToolMaxLength truncation moved to UI layer** — `FailSafeChatClient` no longer truncates displayed result; file blocks in DB contain full content
 - **`peek_clean` made persistent** — `Data["peek"] = true` removed → blocks survive `RemovePeekBlocksAsync`; preserves DeepSeek cache across turns
+- **Inter-iteration peek cleanup** — `RemovePeekBlocksAsync` called after each LLM tool batch (at FRC boundary when `_pendingToolCalls` empties); cleans tool/file peek blocks only, not reasoning. Silent — no auto_tool block or event yielded. `includeReasoning` param added to `RemovePeekBlocksAsync`/`GetPeekBlockStatsAsync`. Start-of-turn cleanup kept as safety net.
 
 ### Prompt prefix coloring
 - `_promptSegments` list with per-segment `ConsoleColor`
@@ -57,16 +58,18 @@ Settings are applied in this order (each overrides the previous):
 - File blocks (read_file/write_file) also get `Data["peek"] = true` if peek
 - Tool result NOT saved to block (`UpdateBlockToolResultAsync` skipped for isPeek)
 - Within-turn iterations (tool→LLM→tool): LLM sees full result via `messageList` in FailSafeChatClient, DB blocks not reloaded
-- **Start of each turn** (before streaming): `RemovePeekBlocksAsync` cleans all peek blocks → yields `AutoToolTurnEvent("peek_clean", ...)` (visible auto-tool with stats, dark gray)
+- **Inter-iteration** (after each LLM tool batch, before next LLM call): `RemovePeekBlocksAsync(includeReasoning: false)` cleans tool/file peek blocks only — reasoning peek blocks preserved
+- **Start of each turn** (before streaming): `RemovePeekBlocksAsync(includeReasoning: true)` cleans ALL peek blocks (safety net + reasoning cleanup)
+- `BuildContextAsync` also calls `RemovePeekBlocksAsync` as safety net (replay / crash recovery)
 - **Tools affected by peek:** `read_file`, `write_file`, `patch_file`, `fetch_web`, all others
 
 ### Peek behavior per tool
 | Tool | Peek effect | Always executes? |
 |------|-------------|-----------------|
-| `read_file` | Block cleaned next turn, result not saved to DB | Yes |
-| `write_file` | File block marked peek (cleaned next turn), result skipped | Yes — **file always written** |
-| `patch_file` | Diff result not persisted, block cleaned next turn. Args cleaned (oldString/newString removed). | Yes — **patch always applied** |
-| `fetch_web` | Standard peek behavior (block cleaned next turn) | Yes |
+| `read_file` | Block cleaned after current tool batch, result not saved to DB | Yes |
+| `write_file` | File block marked peek (cleaned after current tool batch), result skipped | Yes — **file always written** |
+| `patch_file` | Diff result not persisted, block cleaned after current tool batch. Args cleaned (oldString/newString removed). | Yes — **patch always applied** |
+| `fetch_web` | Standard peek behavior (block cleaned after current tool batch) | Yes |
 
 ### `read_file.compress`
 - `true` — force dedup on any file
@@ -106,7 +109,7 @@ Settings are applied in this order (each overrides the previous):
 - End of replay: two blank lines before CLI header via `ReplayBlocksAsync`
 
 ### AutoTool display
-- `[AutoTool: peek_clean | {"count":N,"peek":true}]` — dark gray, block type `auto_tool`
+- `[AutoTool: peek_clean | {"count":N}]` — dark gray, block type `auto_tool`
 - `── Cleaned N peek blocks ─────────────────` header with breakdown by type (icons: 🤖 auto_tool, 📄 file, etc.)
 - Result respects `ToolMaxLength["peek_clean"]`: `-1` show, `0` hide, `N` truncate
 - User sees truncated display; LLM sees full result in messageList

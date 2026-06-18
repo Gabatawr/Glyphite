@@ -22,12 +22,6 @@ public partial class ChatRepl
         return cost >= 0.01 ? $"${cost:F2}" : $"${cost:F6}";
     }
 
-    private static int? GetCacheHitRate(long hit, long miss)
-    {
-        var total = hit + miss;
-        return total > 0 ? (int)(hit * 100.0 / total) : null;
-    }
-
     private async Task UpdatePromptPrefixAsync()
     {
         var model = await _blockMemory.GetAgentModelAsync(_agentId) ?? _deepseek.Model;
@@ -38,14 +32,11 @@ public partial class ChatRepl
         var yellow = ConsoleColor.DarkYellow;
         var white = ConsoleColor.White;
 
-        var rate = GetCacheHitRate(_lastTurnHit, _lastTurnMiss);
-        var thr = _compressionOpts.CacheHitRateThreshold;
-
         var lastTokens = _lastTurnLastHit + _lastTurnLastMiss;
         if (lastTokens > 0)
         {
-            var useYellow = rate.HasValue && rate.Value >= thr;
-            _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", useYellow ? yellow : def));
+            var useYellow = lastTokens * 100.0 / _deepseek.ContextWindow >= _compressionOpts.AutoThreshold;
+            _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", useYellow ? yellow : white));
         }
 
         var (mPrice, hPrice, oPrice) = GetPricing(model);
@@ -62,9 +53,12 @@ public partial class ChatRepl
                 _promptSegments.Add(($"+{costStr}", cost >= _compressionOpts.CostSignificantThreshold ? white : def));
         }
 
-        if (rate.HasValue)
+        var totalRate = _lastTurnHit + _lastTurnMiss;
+        if (totalRate > 0)
         {
-            var useWhite = rate.Value < thr;
+            var rate = (int)(_lastTurnHit * 100.0 / totalRate);
+            var thr = _compressionOpts.CacheHitRateThreshold;
+            var useWhite = rate < thr;
             _promptSegments.Add(($"{rate}%", useWhite ? white : def));
         }
 

@@ -104,7 +104,7 @@ public static class SearchTools
             // Skip empty files (no matches possible) and FIFOs (Length==0, block on open)
             if (fi.Length == 0) continue;
 
-            if (!IsTextFile(filePath, binaryExts, opts))
+            if (!await IsTextFileAsync(filePath, binaryExts, opts))
                 continue;
 
             try
@@ -187,7 +187,7 @@ public static class SearchTools
         return files;
     }
 
-    private static bool IsTextFile(string path, HashSet<string> binaryExts, SearchOptions opts)
+    private static async Task<bool> IsTextFileAsync(string path, HashSet<string> binaryExts, SearchOptions opts)
     {
         var ext = Path.GetExtension(path);
         if (binaryExts.Contains(ext)) return false;
@@ -199,18 +199,18 @@ public static class SearchTools
             if (fi.Length > opts.MaxTextFileSize) return false;
             if (fi.Length == 0) return true;
 
-            // Use a timeout to avoid hanging on FIFOs / special files that block on open
-            var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            var task = Task.Run(() =>
-            {
-                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
-                    FileShare.ReadWrite, opts.DetectBinarySampleSize, FileOptions.Asynchronous);
-                var buffer = new byte[Math.Min((int)fs.Length, opts.DetectBinarySampleSize)];
-                fs.ReadExactly(buffer);
-                return !buffer.Contains((byte)0);
-            }, cts.Token);
+            var buffer = new byte[Math.Min((int)fi.Length, opts.DetectBinarySampleSize)];
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite, opts.DetectBinarySampleSize, FileOptions.Asynchronous);
 
-            return task.Wait(2000, cts.Token) && task.Result;
+            var readTask = fs.ReadExactlyAsync(buffer).AsTask();
+            var timeout = Task.Delay(TimeSpan.FromSeconds(2));
+            var completed = await Task.WhenAny(readTask, timeout);
+
+            if (completed == timeout)
+                return false;
+
+            return !buffer.Contains((byte)0);
         }
         catch { return false; }
     }

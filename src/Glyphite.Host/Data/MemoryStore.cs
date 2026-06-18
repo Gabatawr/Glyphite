@@ -92,6 +92,7 @@ public partial class MemoryStore : IMemoryStore
         try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_hit INTEGER NOT NULL DEFAULT 0"); } catch { }
         try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_miss INTEGER NOT NULL DEFAULT 0"); } catch { }
         _conn.Execute("CREATE INDEX IF NOT EXISTS idx_session_usage_agent ON session_usage(agent_id)");
+        _conn.Execute("CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_deleted)");
     }
 
     // ── Session ──

@@ -7,19 +7,25 @@ namespace Glyphite.Host.Tools;
 
 public static class MemoryTool
 {
-    [Description("Memory statistics and recovery tool. Use 'stats' to show block type distribution and token usage, 'recover' to restore soft-deleted blocks by number.")]
+    [Description("Memory management tool. Actions: 'stats' — show block type distribution and token usage; 'delete' — soft-delete blocks by number (cascade=true follows parent chain); 'recover' — restore soft-deleted blocks by number. Cascade defaults: true for delete, false for recover.")]
     public static async Task<string> Execute(
-        [Description("Action to perform: 'stats' (show memory statistics with type breakdown), 'recover' (restore soft-deleted blocks)")] string action,
-        [Description("Block numbers for recover action, e.g. [5.0, 7.0, 9.0]. Not needed for 'stats' action.")] double[]? blocks,
+        [Description("Action to perform: 'stats' (show memory statistics), 'delete' (soft-delete blocks by number), 'recover' (restore soft-deleted blocks by number)")] string action,
+        [Description("Block numbers for delete/recover actions, e.g. [5.0, 7.0, 9.0]. Not needed for 'stats' action.")] double[]? blocks,
+        [Description("Cascade along parent chain: true=follow Data['parentNumber'], false=exact blocks only. Default: true for delete, false for recover.")] bool? cascade,
         IBlockMemoryProvider provider,
         string sessionId)
     {
         switch (action.ToLowerInvariant())
         {
+            case "delete":
+                if (blocks is null || blocks.Length == 0)
+                    return "No block numbers provided for deletion.";
+                return await provider.DeleteBlocksAsync(sessionId, blocks, cascade ?? true);
+
             case "recover":
                 if (blocks is null || blocks.Length == 0)
                     return "No block numbers provided for recovery.";
-                var recovered = await provider.RecoverBlocksAsync(sessionId, blocks);
+                var recovered = await provider.RecoverBlocksAsync(sessionId, blocks, cascade ?? false);
                 return $"Recovered {recovered} block{(recovered == 1 ? "" : "s")}.";
 
             case "stats":
@@ -42,12 +48,12 @@ public static class MemoryTool
                 return string.Join("\n", lines);
 
             default:
-                return $"Unknown action '{action}'. Use 'stats' or 'recover'.";
+                return $"Unknown action '{action}'. Use 'stats', 'delete', or 'recover'.";
         }
     }
 
     public static AIFunction AsAIFunction(IBlockMemoryProvider provider, string sessionId)
         => AIFunctionFactory.Create(
-            (string action, double[]? blocks = null) => Execute(action, blocks, provider, sessionId),
+            (string action, double[]? blocks = null, bool? cascade = null) => Execute(action, blocks, cascade, provider, sessionId),
             "memory");
 }

@@ -31,33 +31,50 @@ public class BashSession : IDisposable
 
     private async Task ReadStdoutAsync(CancellationToken ct)
     {
-        var buf = new byte[65536];
-        var chars = new char[65536];
-        var decoder = Encoding.UTF8.GetDecoder();
-        var stream = _process.StandardOutput.BaseStream;
-        while (!ct.IsCancellationRequested)
+        try
         {
-            var bytesRead = await stream.ReadAsync(buf, ct);
-            if (bytesRead == 0) break;
-
-            var charCount = decoder.GetChars(buf, 0, bytesRead, chars, 0);
-
-            lock (_gate)
+            var buf = new byte[65536];
+            var chars = new char[65536];
+            var decoder = Encoding.UTF8.GetDecoder();
+            var stream = _process.StandardOutput.BaseStream;
+            while (!ct.IsCancellationRequested)
             {
-                for (var i = 0; i < charCount; i++)
+                var bytesRead = await stream.ReadAsync(buf, ct);
+                if (bytesRead == 0) break;
+
+                var charCount = decoder.GetChars(buf, 0, bytesRead, chars, 0);
+
+                lock (_gate)
                 {
-                    var c = chars[i];
-                    if (c == '\n')
+                    for (var i = 0; i < charCount; i++)
                     {
-                        var line = _lineBuf.ToString();
-                        _lineBuf.Clear();
-                        DispatchLine(line);
-                    }
-                    else if (c != '\r')
-                    {
-                        _lineBuf.Append(c);
+                        var c = chars[i];
+                        if (c == '\n')
+                        {
+                            var line = _lineBuf.ToString();
+                            _lineBuf.Clear();
+                            DispatchLine(line);
+                        }
+                        else if (c != '\r')
+                        {
+                            _lineBuf.Append(c);
+                        }
                     }
                 }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // shutdown requested — expected
+        }
+        catch (Exception ex)
+        {
+            try { _process.Kill(entireProcessTree: true); _killed = true; } catch { }
+            lock (_gate)
+            {
+                _pendingTcs?.TrySetException(ex);
+                _pendingTcs = null;
+                _pendingMarker = null;
             }
         }
     }
@@ -209,7 +226,7 @@ public class BashSession : IDisposable
     }
 }
 
-public class BashSessionManager : IBashSessionManager
+public class BashSessionManager : IBashSessionManager, IDisposable
 {
     private readonly ConcurrentDictionary<string, Lazy<BashSession>> _sessions = new();
     private readonly BashOptions _opts;

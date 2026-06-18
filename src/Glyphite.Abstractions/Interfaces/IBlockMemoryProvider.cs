@@ -14,8 +14,8 @@ public interface IBlockMemoryProvider
     Task<MemoryBlock?> GetBlockAsync(string id, double number, bool includeDeleted = false);
     Task UpdateBlockDataAsync(string sessionId, double number, Dictionary<string, object>? data);
     Task<int> RemoveBlocksAsync(string sessionId, Predicate<MemoryBlock> match);
-    Task<string> DeleteBlocksAsync(string sessionId, double[] numbers);
-    Task<int> RecoverBlocksAsync(string sessionId, double[] numbers);
+    Task<string> DeleteBlocksAsync(string sessionId, double[] numbers, bool cascade = true);
+    Task<int> RecoverBlocksAsync(string sessionId, double[] numbers, bool cascade = false);
     Task<string> DeleteBlocksByFilterAsync(string sessionId, string[]? types, string? recent);
     Task<bool> AgentExistsAsync(string sessionId);
     Task<bool> SetAgentModelAsync(string sessionId, string model);
