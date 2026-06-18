@@ -8,12 +8,12 @@ namespace Glyphite.Host.Tools;
 
 public static partial class WebFetchTool
 {
-    public static AIFunction AsFetchFunction(IConfigService? cfg)
+    public static AIFunction AsFetchFunction(IConfigService? cfg, string? sessionId = null)
     {
         return AIFunctionFactory.Create(
             async (string url, string? format, bool? peek = null, CancellationToken ct = default) =>
             {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<WebFetchOptions>("WebFetch") : new();
+                var opts = cfg is not null ? await cfg.GetOptionsAsync<WebFetchOptions>("WebFetch", sessionId) : new();
             using var http = new HttpClient();
             http.Timeout = TimeSpan.FromSeconds(opts.TimeoutSeconds);
             http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", opts.UserAgent);

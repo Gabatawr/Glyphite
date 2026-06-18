@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+using System.Collections.Concurrent;
+using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Microsoft.Extensions.Configuration;
 
@@ -8,6 +9,7 @@ public class ConfigService : IConfigService
 {
     private readonly IMemoryStore _store;
     private readonly IConfiguration _appConfig;
+    private readonly ConcurrentDictionary<string, Dictionary<string, string>> _overlays = new(StringComparer.OrdinalIgnoreCase);
 
     public Action<string>? LogAction { get; set; }
 
@@ -17,7 +19,17 @@ public class ConfigService : IConfigService
         _appConfig = appConfig;
     }
 
-    /// <summary>Hydrate a typed options object from DB-stored flat config.</summary>
+    public void SetSessionOverlay(string sessionId, Dictionary<string, string> config)
+    {
+        _overlays[sessionId] = config;
+    }
+
+    public void ClearSessionOverlay(string sessionId)
+    {
+        _overlays.TryRemove(sessionId, out _);
+    }
+
+    /// <summary>Hydrate a typed options object from DB-stored flat config + in-memory overlay.</summary>
     public async Task<T> GetOptionsAsync<T>(string sectionName, string? sessionId = null) where T : new()
     {
         var all = await GetConfigAsync(sessionId);
@@ -67,7 +79,16 @@ public class ConfigService : IConfigService
 
     public async Task<Dictionary<string, string>> GetConfigAsync(string? sessionId = null)
     {
-        return await _store.GetMergedConfigAsync(sessionId);
+        var merged = await _store.GetMergedConfigAsync(sessionId);
+
+        // Apply in-memory overlay on top of DB config
+        if (sessionId is not null && _overlays.TryGetValue(sessionId, out var overlay))
+        {
+            foreach (var (key, value) in overlay)
+                merged[key] = value;
+        }
+
+        return merged;
     }
 
     public async Task<ConfigDiffResult> UpdateConfigAsync(

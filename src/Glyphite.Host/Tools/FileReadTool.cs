@@ -65,11 +65,11 @@ public static class FileReadTool
         return sb.ToString().TrimEnd();
     }
 
-    public static AIFunction AsAIFunction(IConfigService? cfg = null, string? defaultDirectory = null)
+    public static AIFunction AsAIFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null)
         => AIFunctionFactory.Create(
             async (string path, int? offset = null, int? limit = null, bool? compress = null, bool? peek = null) =>
             {
-                var dedupOpts = await cfg!.GetOptionsAsync<ContentDedupOptions>("ContentDedup");
+                var dedupOpts = await cfg!.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);
                 return await ReadFile(path, dedupOpts, offset, limit, compress, peek, dedupOpts.AutoDedupExtensions, defaultDirectory);
             },
             "read_file");

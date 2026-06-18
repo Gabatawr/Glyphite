@@ -18,15 +18,15 @@ public static class ToolFactory
         return
         [
             BashTool.AsAIFunction(bashManager, sessionId, cfgService),
-            FileReadTool.AsAIFunction(cfgService, defaultDir),
+            FileReadTool.AsAIFunction(cfgService, defaultDir, sessionId),
             FileWriteTool.AsAIFunction(memoryStore, sessionId, defaultDir),
             FilePatchTool.AsAIFunction(defaultDir),
             MemoryTool.AsAIFunction(blockMemory, sessionId),
             TodoTool.AsTodoWriteFunction(memoryStore, sessionId, cfgService),
             TodoTool.AsTodoUpdateFunction(memoryStore, sessionId, cfgService),
-            WebFetchTool.AsFetchFunction(cfgService),
-            SearchTools.AsGlobFunction(cfgService, defaultDir),
-            SearchTools.AsGrepFunction(cfgService, defaultDir),
+            WebFetchTool.AsFetchFunction(cfgService, sessionId),
+            SearchTools.AsGlobFunction(cfgService, defaultDir, sessionId),
+            SearchTools.AsGrepFunction(cfgService, defaultDir, sessionId),
         ];
     }
 }

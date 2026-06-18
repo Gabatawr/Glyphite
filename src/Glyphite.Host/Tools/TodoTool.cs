@@ -278,7 +278,7 @@ public static class TodoTool
         => AIFunctionFactory.Create(
             async (string title, TodoItem[]? items) =>
             {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<TodoOptions>("Todo") : new();
+                var opts = cfg is not null ? await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId) : new();
                 return await TodoWrite(title, items, store, sessionId, opts);
             },
             "todo_write");
@@ -287,7 +287,7 @@ public static class TodoTool
         => AIFunctionFactory.Create(
             async (double block, TodoAction[] actions) =>
             {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<TodoOptions>("Todo") : new();
+                var opts = cfg is not null ? await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId) : new();
                 return await TodoUpdate(block, actions, store, sessionId, opts);
             },
             "todo_update");

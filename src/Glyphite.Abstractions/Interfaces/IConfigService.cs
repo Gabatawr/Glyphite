@@ -13,4 +13,6 @@ public interface IConfigService
     Task<Dictionary<string, string>> GetConfigAsync(string? sessionId = null);
     Task<ConfigDiffResult> UpdateConfigAsync(Dictionary<string, string> changes, string scope = "global", string? sessionId = null, CancellationToken ct = default);
     Task DeleteConfigAsync(string[] keys, string scope = "global", string? sessionId = null);
+    void SetSessionOverlay(string sessionId, Dictionary<string, string> config);
+    void ClearSessionOverlay(string sessionId);
 }

@@ -79,8 +79,8 @@ public static class BashTool
         => AIFunctionFactory.Create(
             async (string command, string? workdir = null, int? timeoutMs = null, bool? peek = null, CancellationToken ct = default) =>
             {
-                var bashOpts = cfg is not null ? await cfg.GetOptionsAsync<BashOptions>("Bash") : new();
-                var dedupOpts = cfg is not null ? await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup") : new();
+                var bashOpts = cfg is not null ? await cfg.GetOptionsAsync<BashOptions>("Bash", sessionId) : new();
+                var dedupOpts = cfg is not null ? await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId) : new();
                 return await ExecuteBash(command, workdir, timeoutMs, manager, sessionId, dedupOpts, bashOpts, peek, ct);
             },
             "execute_bash");

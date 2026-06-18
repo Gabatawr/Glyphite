@@ -226,20 +226,20 @@ public static class SearchTools
         return new Regex($"^{escaped}$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     }
 
-    public static AIFunction AsGlobFunction(IConfigService? cfg = null, string? defaultDirectory = null)
+    public static AIFunction AsGlobFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null)
         => AIFunctionFactory.Create(
             async (string pattern, string? path = null, bool? peek = null) =>
             {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<SearchOptions>("Search") : new();
+                var opts = cfg is not null ? await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId) : new();
                 return await Glob(pattern, path, opts, defaultDirectory, peek);
             },
             "search_glob");
 
-    public static AIFunction AsGrepFunction(IConfigService? cfg = null, string? defaultDirectory = null)
+    public static AIFunction AsGrepFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null)
         => AIFunctionFactory.Create(
             async (string pattern, string? path = null, string? include = null, bool? peek = null) =>
             {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<SearchOptions>("Search") : new();
+                var opts = cfg is not null ? await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId) : new();
                 return await Grep(pattern, path, include, opts, defaultDirectory, peek);
             },
             "search_grep");

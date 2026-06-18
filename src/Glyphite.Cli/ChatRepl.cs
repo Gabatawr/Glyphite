@@ -112,14 +112,18 @@ public partial class ChatRepl
                 Console.ResetColor();
             }
 
-            _agentId = await _agentManager.CreateAgentAsync(firstName, _deepseek.Model, cwd);
+        _agentId = await _agentManager.CreateAgentAsync(firstName, _deepseek.Model, cwd);
             _agentOpts.AgentName = firstName;
             await ResetSessionStateAsync();
+            await LoadAgentConfigAsync(_agentId, cwd);
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"Agent '{firstName}' created.\n");
             Console.ResetColor();
             return;
         }
+
+        // Eager-load all agent configs in cwd
+        await LoadAllAgentConfigsAsync(cwd);
 
         // Try resume last active agent in this directory
         var lastActive = await _store.GetLastActiveAgentAsync(cwd);
@@ -130,6 +134,7 @@ public partial class ChatRepl
             _agentId = lastActive;
             _agentOpts.AgentName = lastActive;
             await ResetSessionStateAsync();
+            await LoadAgentConfigAsync(_agentId, cwd);
             if (await _blockMemory.GetAgentModelAsync(_agentId) is null)
                 await _blockMemory.SetAgentModelAsync(_agentId, _deepseek.Model);
             return;
@@ -203,6 +208,7 @@ public partial class ChatRepl
         _agentId = await _agentManager.CreateAgentAsync(newName, _deepseek.Model, cwd);
         _agentOpts.AgentName = newName;
         await ResetSessionStateAsync();
+        await LoadAgentConfigAsync(_agentId, cwd);
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{newName}' created.\n");
         Console.ResetColor();
@@ -230,6 +236,7 @@ public partial class ChatRepl
             _agentId = agents[0];
         _agentOpts.AgentName = _agentId;
         await ResetSessionStateAsync();
+        await LoadAgentConfigAsync(_agentId, Directory.GetCurrentDirectory());
         if (await _blockMemory.GetAgentModelAsync(_agentId) is null)
             await _blockMemory.SetAgentModelAsync(_agentId, _deepseek.Model);
         Console.ForegroundColor = ConsoleColor.Green;

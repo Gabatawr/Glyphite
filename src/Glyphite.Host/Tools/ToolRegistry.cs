@@ -29,15 +29,15 @@ public class ToolRegistry : IToolRegistry
         return
         [
             BashTool.AsAIFunction(_bashManager, sessionId, _cfgService),
-            FileReadTool.AsAIFunction(_cfgService, _defaultDir),
+            FileReadTool.AsAIFunction(_cfgService, _defaultDir, sessionId),
             FileWriteTool.AsAIFunction(_memoryStore, sessionId, _defaultDir),
             FilePatchTool.AsAIFunction(_defaultDir),
             MemoryTool.AsAIFunction(_blockMemory, sessionId),
             TodoTool.AsTodoWriteFunction(_memoryStore, sessionId, _cfgService),
             TodoTool.AsTodoUpdateFunction(_memoryStore, sessionId, _cfgService),
-            WebFetchTool.AsFetchFunction(_cfgService),
-            SearchTools.AsGlobFunction(_cfgService, _defaultDir),
-            SearchTools.AsGrepFunction(_cfgService, _defaultDir),
+            WebFetchTool.AsFetchFunction(_cfgService, sessionId),
+            SearchTools.AsGlobFunction(_cfgService, _defaultDir, sessionId),
+            SearchTools.AsGrepFunction(_cfgService, _defaultDir, sessionId),
         ];
     }
 }
