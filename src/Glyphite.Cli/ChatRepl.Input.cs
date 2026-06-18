@@ -76,17 +76,6 @@ public partial class ChatRepl
         _lastTurnLastMiss = lastMiss;
     }
 
-    private async Task ResetSessionStateAsync()
-    {
-        var last = await _store.GetLastUsageAsync(_agentId!);
-        _lastTurnHit = last.Hit;
-        _lastTurnMiss = last.Miss;
-        _lastTurnOutput = last.Output;
-        _lastTurnLastHit = last.LastHit;
-        _lastTurnLastMiss = last.LastMiss;
-        await UpdatePromptPrefixAsync();
-    }
-
     private (double? MissPrice, double? HitPrice, double? OutputPrice) GetPricing(string model)
     {
         foreach (var entry in _deepseek.Models)
