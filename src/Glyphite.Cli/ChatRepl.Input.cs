@@ -12,6 +12,7 @@ public partial class ChatRepl
     private int _maxVisualLine;
 
     private string _promptPrefix = "> ";
+    private readonly List<(string Text, ConsoleColor Color)> _promptSegments = [];
 
     private static string FormatCost(double? missPrice, double? hitPrice, double? outputPrice, long miss, long hit, long output)
     {
@@ -32,34 +33,53 @@ public partial class ChatRepl
         var model = await _blockMemory.GetAgentModelAsync(_agentId) ?? _deepseek.Model;
         var (cumHit, cumMiss, cumOutput) = await _store.GetUsageAsync(_agentId);
 
-        var lastTokens = _lastTurnHit + _lastTurnMiss;
-        var parts = new List<string>();
+        _promptSegments.Clear();
+        var def = ConsoleColor.DarkGray;
+        var yellow = ConsoleColor.DarkYellow;
+        var white = ConsoleColor.White;
+
+        var rate = GetCacheHitRate(_lastTurnHit, _lastTurnMiss);
+        var thr = _compressionOpts.CacheHitRateThreshold;
+
+        var lastTokens = _lastTurnLastHit + _lastTurnLastMiss;
         if (lastTokens > 0)
-            parts.Add($"{lastTokens / 1000.0:F1}K");
+        {
+            var useYellow = rate.HasValue && rate.Value >= thr;
+            _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", useYellow ? yellow : def));
+        }
 
         var (mPrice, hPrice, oPrice) = GetPricing(model);
         var cumCost = FormatCost(mPrice, hPrice, oPrice, cumMiss, cumHit, cumOutput);
         if (!string.IsNullOrEmpty(cumCost))
-            parts.Add(cumCost);
+            _promptSegments.Add((cumCost, def));
 
-        var lastCost = FormatCost(mPrice, hPrice, oPrice, _lastTurnMiss, _lastTurnHit, _lastTurnOutput);
-        if (!string.IsNullOrEmpty(lastCost))
-            parts.Add($"+{lastCost}");
+        if (mPrice.HasValue && hPrice.HasValue && oPrice.HasValue)
+        {
+            var cost = _lastTurnMiss * mPrice.Value + _lastTurnHit * hPrice.Value + _lastTurnOutput * oPrice.Value;
+            cost /= 1_000_000;
+            var costStr = FormatCost(mPrice, hPrice, oPrice, _lastTurnMiss, _lastTurnHit, _lastTurnOutput);
+            if (!string.IsNullOrEmpty(costStr))
+                _promptSegments.Add(($"+{costStr}", cost >= _compressionOpts.CostSignificantThreshold ? white : def));
+        }
 
-        var rate = GetCacheHitRate(_lastTurnHit, _lastTurnMiss);
         if (rate.HasValue)
-            parts.Add($"{rate}%");
+        {
+            var useWhite = rate.Value < thr;
+            _promptSegments.Add(($"{rate}%", useWhite ? white : def));
+        }
 
-        _promptPrefix = parts.Count > 0
-            ? $"{string.Join(" / ", parts)} > "
+        _promptPrefix = _promptSegments.Count > 0
+            ? $"{string.Join(" / ", _promptSegments.Select(s => s.Text))} > "
             : "> ";
     }
 
-    private void UpdatePromptInline(long turnHit, long turnMiss, long turnOutput)
+    private void UpdatePromptInline(long turnHit, long turnMiss, long turnOutput, long lastHit = 0, long lastMiss = 0)
     {
         _lastTurnHit = turnHit;
         _lastTurnMiss = turnMiss;
         _lastTurnOutput = turnOutput;
+        _lastTurnLastHit = lastHit;
+        _lastTurnLastMiss = lastMiss;
     }
 
     private async Task ResetSessionStateAsync()
@@ -68,6 +88,8 @@ public partial class ChatRepl
         _lastTurnHit = last.Hit;
         _lastTurnMiss = last.Miss;
         _lastTurnOutput = last.Output;
+        _lastTurnLastHit = last.LastHit;
+        _lastTurnLastMiss = last.LastMiss;
         await UpdatePromptPrefixAsync();
     }
 
@@ -91,8 +113,7 @@ public partial class ChatRepl
         _promptLine = Console.CursorTop;
         _maxVisualLine = _promptLine;
         Console.SetCursorPosition(0, _promptLine);
-        Console.ForegroundColor = ConsoleColor.DarkYellow;
-        Console.Write(_promptPrefix);
+        WriteColoredPrompt();
         Console.ResetColor();
 
         while (true)
@@ -164,8 +185,7 @@ public partial class ChatRepl
                         _pendingInput = null;
                         ClearFromPromptToBottom();
                         Console.SetCursorPosition(0, _promptLine);
-                        Console.ForegroundColor = ConsoleColor.DarkYellow;
-                        Console.Write(_promptPrefix);
+                        WriteColoredPrompt();
                         Console.ResetColor();
                         _lastBufferLen = 0;
                     }
@@ -320,8 +340,7 @@ public partial class ChatRepl
         }
 
         Console.SetCursorPosition(0, _promptLine);
-        Console.ForegroundColor = ConsoleColor.DarkYellow;
-        Console.Write(_promptPrefix);
+        WriteColoredPrompt();
         Console.ResetColor();
         Console.Write(text);
 
@@ -357,5 +376,27 @@ public partial class ChatRepl
         var line = _promptLine + col / bufWidth;
         if (line >= bufHeight) line = bufHeight - 1;
         Console.SetCursorPosition(col % bufWidth, line);
+    }
+
+    private void WriteColoredPrompt()
+    {
+        if (_promptSegments.Count == 0)
+        {
+            Console.Write("> ");
+            return;
+        }
+
+        for (var i = 0; i < _promptSegments.Count; i++)
+        {
+            if (i > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.Write(" / ");
+            }
+            Console.ForegroundColor = _promptSegments[i].Color;
+            Console.Write(_promptSegments[i].Text);
+        }
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.Write(" > ");
     }
 }

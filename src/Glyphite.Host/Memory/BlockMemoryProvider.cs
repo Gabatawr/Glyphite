@@ -24,7 +24,6 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
     private readonly MemoryOptions _memOpts;
     private readonly AgentOptions _agentOpts;
     private readonly CompressionOptions? _compOpts;
-    private readonly Services.ContextSnapshotService _snapshot;
     private string? _defaultSessionId;
 
     private static readonly GptEncoding? _encoding = GetEncoding();
@@ -45,14 +44,13 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
 
     public string? AgentFilePath { get; set; }
 
-    public BlockMemoryProvider(IMemoryStore store, MemoryOptions memOpts, AgentOptions agentOpts, Services.ContextSnapshotService snapshot, string? defaultModel = null, CompressionOptions? compOpts = null)
+    public BlockMemoryProvider(IMemoryStore store, MemoryOptions memOpts, AgentOptions agentOpts, string? defaultModel = null, CompressionOptions? compOpts = null)
     {
         _store = store;
         _defaultModel = defaultModel;
         _memOpts = memOpts;
         _agentOpts = agentOpts;
         _compOpts = compOpts;
-        _snapshot = snapshot;
         _sessionState = new ProviderSessionState<BlockMemoryState>(
             _ => new BlockMemoryState(),
             GetType().Name);

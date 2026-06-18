@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
@@ -24,7 +25,14 @@ public static class FileWriteTool
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             Directory.CreateDirectory(dir);
 
-        await File.WriteAllTextAsync(path, content);
+        using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read, 4096, FileOptions.None))
+        using (var writer = new StreamWriter(fs, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+        {
+            await writer.WriteAsync(content);
+            await writer.FlushAsync();
+            fs.Flush(true);
+        }
+
         return "";
     }
 

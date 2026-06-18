@@ -26,6 +26,9 @@ def main():
 
     if args.action == 'build':
         patch += 1
+        if patch > 99:
+            patch = 0
+            minor += 1
         vf.write_text(f'{major}.{minor}.{patch}\n')
 
     print(f'{major}.{minor}.{patch}', end='')

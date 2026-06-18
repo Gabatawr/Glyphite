@@ -18,6 +18,9 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     public long TotalCacheMissTokens { get; private set; }
     public long TotalOutputTokens { get; private set; }
 
+    public long LastHitTokens { get; private set; }
+    public long LastMissTokens { get; private set; }
+
     public FailSafeChatClient(IChatClient inner, int maxIterations, ToolStreamingOptions streamOpts) : base(inner)
     {
         _maxIterations = maxIterations;
@@ -126,6 +129,8 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     TotalCacheHitTokens += cacheHit;
                     TotalCacheMissTokens += cacheMiss;
                     TotalOutputTokens += cacheOutput;
+                    LastHitTokens = cacheHit;
+                    LastMissTokens = cacheMiss;
                     OnUsage?.Invoke(cacheHit, cacheMiss, cacheOutput);
                 }
                 var finalAssistant = chatResponse.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
@@ -256,11 +261,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                 else
                 {
                     toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText), new TextContent(resultText ?? "")]));
-                    var maxLen = GetMaxLength(toolName);
-                    var display = maxLen > 0 && (resultText?.Length ?? 0) > maxLen
-                        ? resultText![..maxLen] + "..."
-                        : maxLen == 0 ? "" : resultText ?? "";
-                    yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, display)] };
+                    yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
                 }
 
                 ExecutedCallIds.Add(callId);

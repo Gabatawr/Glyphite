@@ -19,8 +19,6 @@ public class TurnProcessor : ITurnProcessor
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
     private readonly ToolStreamingOptions _streamOpts;
-    private readonly ContextSnapshotService _snapshot;
-
     public TurnProcessor(
         IMemoryStore store,
         IBlockMemoryProvider blockMemory,
@@ -29,8 +27,7 @@ public class TurnProcessor : ITurnProcessor
         IConfigService cfgService,
         IOptions<DeepSeekOptions> deepseek,
         IOptions<AgentOptions> agentOpts,
-        IOptions<ToolStreamingOptions> streamOpts,
-        ContextSnapshotService snapshot)
+        IOptions<ToolStreamingOptions> streamOpts)
     {
         _store = store;
         _blockMemory = blockMemory;
@@ -40,7 +37,6 @@ public class TurnProcessor : ITurnProcessor
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
         _streamOpts = streamOpts.Value;
-        _snapshot = snapshot;
     }
 
     private double _nextNum;
@@ -75,11 +71,10 @@ public class TurnProcessor : ITurnProcessor
         if (peekCleaned > 0)
         {
             var peekMsg = BuildPeekCleanMessage(peekCleaned, peekStats);
-            var cleanArgs = $"{{\"count\":{peekCleaned},\"peek\":true}}";
-            yield return new AutoToolTurnEvent("peek_clean", cleanArgs, true, peekMsg);
+            var cleanArgs = $"{{\"count\":{peekCleaned}}}";
+            yield return new AutoToolTurnEvent("peek_clean", cleanArgs, false, peekMsg);
 
             var autoBlock = MemoryBlock.AutoTool("peek_clean", cleanArgs, peekMsg, _modelStr);
-            autoBlock.Data = new() { ["peek"] = true };
             autoBlock.Number = _nextNum++;
             await _store.AppendBlocksAsync(_sessionId, [autoBlock], _nextNum);
 
@@ -109,16 +104,13 @@ public class TurnProcessor : ITurnProcessor
         }
 
         // Persist usage from all iterations
-        await _store.RecordUsageAsync(sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens);
-        yield return new UsageTurnEvent(failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens);
+        await _store.RecordUsageAsync(sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
+        yield return new UsageTurnEvent(failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
 
         var flushEvents = await FlushAllAsync();
         foreach (var e in flushEvents)
             yield return e;
 
-        var postBlocks = await _store.LoadBlocksAsync(sessionId);
-        var postText = string.Join("\n", postBlocks.Select(b => b.ToContextString()));
-        _snapshot.Update(postText);
     }
 
     private async Task<List<TurnEvent>> ProcessUpdateAsync(ChatResponseUpdate update)

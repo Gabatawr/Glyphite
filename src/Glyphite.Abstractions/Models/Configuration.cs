@@ -198,12 +198,15 @@ public class CompressionOptions
     public int AutoThreshold { get; set; }
     public bool AutoCompress { get; set; }
     public int CacheHitRateThreshold { get; set; } = 80;
+    public double CostSignificantThreshold { get; set; } = 0.01;
     public void Validate()
     {
         if (AutoThreshold < 0 || AutoThreshold > 100)
             throw new InvalidOperationException("Compression:AutoThreshold must be between 0 and 100.");
         if (CacheHitRateThreshold < 0 || CacheHitRateThreshold > 100)
             throw new InvalidOperationException("Compression:CacheHitRateThreshold must be between 0 and 100.");
+        if (CostSignificantThreshold < 0)
+            throw new InvalidOperationException("Compression:CostSignificantThreshold must be non-negative.");
     }
 }
 

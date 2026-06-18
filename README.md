@@ -4,47 +4,60 @@
 
 Glyphite is a .NET console-based AI agent that runs commands, works with files, searches for information, manages todos, and interacts with external services — all from the command line.
 
-## ✨ Features
+## Features
 
-- **🗣️ Conversational AI interface** — chat with AI (DeepSeek / OpenAI) directly in the terminal
-- **🤖 Agent-oriented architecture** — named agents instead of GUID sessions. Each agent has its own history, home directory, and config
-- **🔧 Built-in tools:**
+- **Conversational AI interface** — chat with AI (DeepSeek / OpenAI) directly in the terminal
+- **Agent-oriented architecture** — named agents instead of GUID sessions. Each agent has its own history, home directory, and config
+- **Built-in tools:**
   - `execute_bash` — shell commands
   - `read_file` / `write_file` / `patch_file` — file operations with diff highlighting
-  - `fetch_web` — HTTP requests
+  - `fetch_web` — HTTP requests (per-call HttpClient, no singleton mutation)
   - `search_glob` / `search_grep` — file and content search
   - `todo_write` / `todo_update` — task management within the conversation
-  - `memory` — context and memory management (stats, delete, recover)
-- **🧠 Block-based memory** — full conversation history stored in SQLite with smart deduplication and compression
-- **📊 Rich rendering** — syntax highlighting, diffs, color schemes
-- **📝 Incremental saving** — conversation blocks are saved as they're generated
-- **🔌 MCP protocol** — Model Context Protocol support for external tool integration
-- **🔢 Versioning** — auto-increment patch on every build, version shown in greeting and via `-v`
+  - `memory` — context and memory management (stats, delete, recover blocks)
+- **Block-based memory** — full conversation history stored in SQLite with smart deduplication and compression
+- **Rich rendering** — syntax highlighting, diffs, color schemes
+- **Incremental saving** — conversation blocks are saved as they're generated
+- **Live streaming** — text/reasoning chunks rendered in real-time with color transitions and mode switches
+- **Peek tool calls** — LLM can inspect files without polluting visible history; results cleaned at next turn. File writes/patches always execute.
+- **Prompt prefix** — colored segments: DarkGray default, DarkYellow (good cache rate), White (bad rate / significant cost)
+- **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`)
+- **Auto-tool events** — peek cleanup notifications shown as compact auto-tool blocks
+- **Versioning** — auto-increment patch on every debug build, rollover at >99, version shown in greeting and via `-v`
 
-## 🏗️ Project structure
+## Project structure
 
 ```
 Glyphite/
 ├── src/
-│   ├── Glyphite.Host/           # Core: memory, tools, providers, services
-│   │   ├── Data/                    # SQLite storage (blocks, configs, migrations)
-│   │   ├── Memory/                  # Block-based memory and context
-│   │   ├── Models/                  # Data models and configuration
-│   │   ├── Services/                # Services (bash, config, agents, MCP)
-│   │   ├── Tools/                   # Tools (bash, files, search, todo, web, memory)
-│   │   └── Utils/                   # Utilities (OS, paths)
+│   ├── Glyphite.Abstractions/    # Interfaces & models, zero deps (except MEAI)
+│   │   ├── Interfaces/               # IAgentManager, IMemoryStore, ITurnProcessor...
+│   │   └── Models/                   # MemoryBlock, TurnEvent, Configuration, ChatRequest
+│   ├── Glyphite.Host/            # Core: services, tools, data, memory
+│   │   ├── Data/                     # SQLite storage (MemoryStore — blocks, config, sessions)
+│   │   ├── DI/                       # MSDI wiring (HostServiceCollectionExtensions)
+│   │   ├── Memory/                   # BlockMemoryProvider (core, context assembly, metrics)
+│   │   ├── Services/                 # TurnProcessor, FailSafeChatClient, ConfigService,
+│   │   │                             # BashSessionManager, McpService, ContentDedup,
+│   │   ├── Tools/                    # BashTool, FileReadTool, FileWriteTool, FilePatchTool,
+│   │   │                             # SearchTools, WebFetchTool, TodoTool, MemoryTool
+│   │   └── Utils/                    # OSHelper (platform detection)
 │   └── Glyphite.Cli/             # Console client
-│       ├── Services/                # Rendering, suggestions
-│       ├── ChatRepl.cs              # Main REPL loop
-│       ├── Program.cs               # Entry point (+ `-v` / `--version`)
-│       └── system-prompt.md         # Agent system prompt
+│       ├── Services/                 # ConsoleRenderer
+│       ├── ChatRepl.cs               # Main REPL loop
+│       ├── ChatRepl.Commands.cs      # /command handlers
+│       ├── ChatRepl.Input.cs         # Input history + suggestion
+│       ├── ChatRepl.Streaming.cs     # Live chunk rendering
+│       ├── Program.cs                # Entry point (+ `-v` / `--version`)
+│       ├── appsettings.json          # Embedded base config
+│       └── system-prompt.md          # Agent system prompt
 ├── tests/
-│   └── Glyphite.Tests.Unit/      # Unit tests
-├── Glyphite.slnx                   # Solution file
+│   └── Glyphite.Tests.Unit/      # Unit tests (referenced in .slnx, not yet on disk)
+├── Glyphite.slnx                   # Solution file (.slnx format)
 ├── AGENTS.md                       # Agent workflow description
 ├── Directory.Build.targets         # MSBuild target: auto-increment version
 ├── bump_version.py                 # Version management script
-├── version.txt                     # Current version (v0.1.9)
+├── version.txt                     # Current version (v0.3.37)
 ├── publish.sh                      # Single-file publish with auto-backup
 ├── Glyphite.json                   # Local config (in .gitignore)
 ├── .gitignore
@@ -52,7 +65,7 @@ Glyphite/
 └── README.md
 ```
 
-## 🚀 Quick start
+## Quick start
 
 ### Requirements
 
@@ -88,44 +101,45 @@ glyphite
 
 On first launch, Glyphite will ask for an agent name. On subsequent launches, it resumes the last active agent for the current directory.
 
-## 🎮 Commands
+## Commands
 
 | Command | Description |
 |---------|-------------|
 | `/new` | Create a new agent / reset an existing one |
-| `/fork` | Clone an agent with a new name (two-step source selection) |
+| `/clone` | Clone an agent's history to a new name (two-step: pick source, enter name) |
 | `/use` | Switch to another agent (from the list of existing ones) |
-| `/stats` | Current agent statistics: blocks, tokens, types |
+| `/stats` | Current agent statistics: blocks by type, tokens, context usage |
+
 | `/version` | Show Glyphite version |
-| `/models` | List available models |
-| `/reload` | Reload configuration |
+| `/models` | List available models and switch between them |
+| `/reload` | Reload configuration from JSON files |
 | `/exit` | Exit |
 
-## 🛠️ Tools
+## Tools
 
 All tools are available to the AI agent and can be invoked in conversation:
 
 | Tool | Description |
 |------|-------------|
-| `execute_bash` | Execute shell commands |
-| `read_file` | Read file contents |
+| `execute_bash` | Execute shell commands with timeout and output limits |
+| `read_file` | Read file contents (supports compression/dedup for large files) |
 | `write_file` | Create / overwrite a file |
 | `patch_file` | Partially modify a file (with diff highlighting) |
 | `search_glob` | Find files by glob pattern |
 | `search_grep` | Search text inside files |
-| `fetch_web` | HTTP request (GET/POST) |
-| `todo_write` | Create a todo list |
-| `todo_update` | Update tasks in a todo list |
-| `memory` | Memory management: `stats`, `delete`, `recover` |
+| `fetch_web` | HTTP request (GET/POST) with text extraction |
+| `todo_write` | Create a structured todo list |
+| `todo_update` | Update tasks in a todo list (status, priority) |
+| `memory` | Memory management: `stats` (type/token breakdown), `delete` (soft-delete), `recover` (restore) |
 
-## 🧠 Models
+## Models
 
 Supported:
-- **DeepSeek** — v4-flash, v4-pro (via DeepSeek API)
+- **DeepSeek** — v4-flash, v4-pro (via DeepSeek API with cache metrics)
 - **OpenAI** — via Microsoft.Agents.AI.OpenAI
 - Any models compatible with Microsoft.Extensions.AI
 
-## ⚙️ Configuration
+## Configuration
 
 Configuration is loaded in a cascading order:
 1. `appsettings.json` (embedded in the binary)
@@ -141,28 +155,55 @@ Configuration keys:
 | `DeepSeek:ApiKey` | DeepSeek API key | — |
 | `DeepSeek:Model` | Model name | `deepseek-v4-flash` |
 | `DeepSeek:Endpoint` | API URL | `https://api.deepseek.com/v1` |
-| `Agent:MaxToolIterations` | Max tool iterations | `40` |
+| `DeepSeek:ContextWindow` | Max context tokens | `1000000` |
+| `Agent:MaxToolIterations` | Max tool iterations per turn | `100` |
+| `Agent:PeekReasoning` | Mark reasoning blocks as peek | `true` |
+| `Agent:PeekToolReasoning` | Mark reasoning during tool iterations as peek | `false` |
 | `Bash:DefaultTimeoutMs` | Bash command timeout | `120000` |
 | `Bash:ForbiddenCommands` | Forbidden commands | `["sudo"]` |
+| `Bash:MaxOutputBytes` | Max output captured | `1048576` |
 | `Data:Directory` | Database directory | `data` |
 | `Data:DatabaseFileName` | Database file name | `Glyphite.db` |
 | `Compression:AutoCompress` | Auto-compress output | `false` |
+| `Compression:AutoThreshold` | Context % threshold for warnings | `20` |
+| `Compression:CostSignificantThreshold` | +$ turns white when cost ≥ N | `0.01` |
+| `ContentDedup:MinLines` | Min lines to trigger dedup | `3` |
+| `ContentDedup:FrequencyThreshold` | Line frequency threshold | `0.05` |
+| `ContentDedup:MinLineLength` | Min line length for dedup | `32` |
+| `ContentDedup:MaxAliases` | Max dedup aliases per block | `10` |
+| `WebFetch:Timeout` | HTTP request timeout | `30` |
+| `WebFetch:MaxContentLength` | Max response content | `32768` |
+| `WebFetch:DefaultFormat` | Response format | `text` |
+| `Todo:DefaultStatus` | Default todo status | `pending` |
+| `Todo:DefaultPriority` | Default todo priority | `medium` |
+| `ToolStreaming:ToolMaxLength` | Per-tool max display length | `execute_bash: -1, read_file: 0, patch_file: 0, peek_clean: -1, fetch_web: 0` |
+| `Memory:ProtectedBlockTypes` | Block types protected from deletion | `["agent_data", "user_message", "agent_message"]` |
 
-## 🔄 Versioning
+## Peek tool calls
+
+The LLM can pass `"peek": true` to any tool to mark the call as transient:
+- The tool always executes (file writes/patches still apply)
+- The result is visible to the LLM during the current turn
+- The block is cleaned at the start of the next turn
+- File blocks (read/write) and web fetch are also cleaned
+
+Peek tools always execute — write_file always writes the file, patch_file always applies the patch, fetch_web always fetches. Only the displayed/persisted block is transient.
+
+## Versioning
 
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged.
 
 ```bash
-glyphite -v       # → 0.1.9
-/version          # → Glyphite v0.1.9
+glyphite -v       # → 0.3.37
+/version          # → Glyphite v0.3.37
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.1.9 — Glyphite 🏠
+Glyphite CLI v0.3.37 — MainAgent 🏠
 ```
 
-## 📦 Publishing and backups
+## Publishing and backups
 
 Use `./publish.sh` to publish:
 
@@ -170,20 +211,24 @@ Use `./publish.sh` to publish:
 ./publish.sh
 # 1. Archives the previous version → ~/.glyphite/backup/glyphite.v{version}
 # 2. Saves the current binary as .prev
-# 3. Publishes a new single-file binary
+# 3. Bumps patch version
+# 4. Publishes a new single-file binary (linux-x64, self-contained)
+# 5. Copies libe_sqlite3.so for P/Invoke
 ```
 
 Rollback:
 ```bash
-cp ~/.glyphite/backup/glyphite.v0.1.8 ~/.glyphite/glyphite
+cp ~/.glyphite/backup/glyphite.v0.2.74 ~/.glyphite/glyphite
 ```
 
-## 🧪 Testing
+## Testing
+
+Tests directory (`tests/Glyphite.Tests.Unit/`) is referenced in the solution but not yet created. Tests will be written as the project matures.
 
 ```bash
 dotnet test tests/Glyphite.Tests.Unit
 ```
 
-## 📄 License
+## License
 
-MIT © 2026 Gabatawr
+MIT (c) 2026 Gabatawr

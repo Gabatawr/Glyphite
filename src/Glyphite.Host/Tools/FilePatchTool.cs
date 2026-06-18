@@ -72,7 +72,13 @@ public static class FilePatchTool
         }
 
         newContent = RestoreLineEndings(newContent, lineEnding);
-        await File.WriteAllTextAsync(path, newContent);
+        using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read, 4096, FileOptions.None))
+        using (var writer = new StreamWriter(fs, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+        {
+            await writer.WriteAsync(newContent);
+            await writer.FlushAsync();
+            fs.Flush(true);
+        }
 
         var diff = BuildDiff(contentLines, replacedText, matchedText, startLine, matchedLineRange.Length);
 

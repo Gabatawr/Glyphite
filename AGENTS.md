@@ -18,14 +18,39 @@ Settings are applied in this order (each overrides the previous):
 
 ## Session state (Jun 18)
 
+### Recent fixes
+- **BashSession marker isolation** — `echo ""` between command and `EXEC_END_xxx` marker prevents file content (without trailing `\n`) from concatenating with marker → fixes `cat`/`head` timeout hang
+- **`ReadStdoutAsync` byte reader** — replaced `BeginOutputReadLine()` (1024-char `StreamReader` buffer) with 65536-byte chunks + manual line splitting + `Encoding.UTF8.GetDecoder()` for correct multi-byte decode
+- **FileWriteTool/FilePatchTool** — `FileStream` + `UTF8Encoding(encoderShouldEmitUTF8Identifier: false)` (no BOM) + `Flush(true)` (fsync). Fixes WSL `cat`/`head` hang on files without trailing `\n`
+- **`fetch_web` per-call HttpClient** — fresh `HttpClient` per call (no singleton `Timeout`/`UserAgent` mutation); removed `HttpClient` DI singleton
+- **BashTool subshell workdir** — `(cd "workdir" && command)` prevents persistent directory change
+- **ToolMaxLength truncation moved to UI layer** — `FailSafeChatClient` no longer truncates displayed result; file blocks in DB contain full content
+- **`peek_clean` made persistent** — `Data["peek"] = true` removed → blocks survive `RemovePeekBlocksAsync`; preserves DeepSeek cache across turns
+
+### Prompt prefix coloring
+- `_promptSegments` list with per-segment `ConsoleColor`
+- `WriteColoredPrompt()` method renders each segment with its color
+- DarkGray = default/neutral
+- DarkYellow = K when cache rate ≥ `CacheHitRateThreshold`
+- White = % when cache rate < `CacheHitRateThreshold`, +$ when cost ≥ `CostSignificantThreshold`
+
+### Usage tracking
+- DeepSeek cache: `Usage.InputTokenDetails.CachedTokenCount` (hit), `InputTokenCount - CachedTokenCount` (miss), `OutputTokenCount`
+- K = last request (non-tool-call) hit+miss tokens
+- % = total turn aggregate cache rate (all iterations), not last-request-only
+- $ = cumulative cost (all turns)
+- +$ = total turn cost (sum of all iterations)
+- Prices in config as `$/M` tokens, `FormatCost` divides by 1,000,000
+- `CostSignificantThreshold` (`CompressionOptions`, default 0.01) — +$ turns white when cost ≥ threshold
+
 ### Architecture
-- **Abstractions** — interfaces, models, no deps
-- **Host** — service implementations (TurnProcessor, FailSafeChatClient, MemoryStore)
-- **Cli** — UI only (ChatRepl, ConsoleRenderer). No persistence logic.
+- **Abstractions** — interfaces, models, no deps (except `Microsoft.Extensions.AI`)
+- **Host** — service implementations (TurnProcessor, FailSafeChatClient, MemoryStore, BlockMemoryProvider), tools, MCP, DI wiring
+- **Cli** — UI only (ChatRepl + 3 partials, ConsoleRenderer). No persistence logic.
 
 ### Config flow
 `appsettings.json` (embedded) + `Glyphite.json` (cwd) + `Glyphite.{agent}.json` (cwd, per-agent overrides)
-→ `InitializeAsync()` seeds into SQLite DB (config table) → `IConfigService.GetOptionsAsync<T>(section)` reads fresh per-tool-call.
+- `InitializeAsync()` seeds into SQLite DB, `IConfigService.GetOptionsAsync<T>(section)` reads fresh per-tool-call.
 
 ### Peek flow
 - LLM calls tool with `"peek": true` → tool call block created with `Data["peek"] = true`
@@ -33,7 +58,7 @@ Settings are applied in this order (each overrides the previous):
 - Tool result NOT saved to block (`UpdateBlockToolResultAsync` skipped for isPeek)
 - Within-turn iterations (tool→LLM→tool): LLM sees full result via `messageList` in FailSafeChatClient, DB blocks not reloaded
 - **Start of each turn** (before streaming): `RemovePeekBlocksAsync` cleans all peek blocks → yields `AutoToolTurnEvent("peek_clean", ...)` (visible auto-tool with stats, dark gray)
-- **Tools affected by peek:** `read_file`, `write_file`, `patch_file`, all others
+- **Tools affected by peek:** `read_file`, `write_file`, `patch_file`, `fetch_web`, all others
 
 ### Peek behavior per tool
 | Tool | Peek effect | Always executes? |
@@ -48,6 +73,11 @@ Settings are applied in this order (each overrides the previous):
 - `false` — disable dedup (even for .log)
 - `null` (omit) — auto-detect for `.log` files
 - Only activates when reading whole file (no `offset`/`limit`)
+
+### Content dedup (`ContentDedup.cs`)
+- Frequency-based line dedup: aliases (ID→line mappings) replace repeated lines
+- Configurable: `MinLines` (3), `FrequencyThreshold` (0.05), `MinLineLength` (32), `MaxAliases` (10)
+- Auto-dedup for `.log` extensions via `AutoDedupExtensions`
 
 ### `fetch_web.format`
 - `"text"` (default) — strips HTML tags, collapses whitespace
@@ -65,7 +95,7 @@ Settings are applied in this order (each overrides the previous):
 - Text/reasoning chunks arrive from LLM API → `TextChunkEvent`/`ReasoningChunkEvent` yielded immediately
 - `RenderChunk()` writes each chunk via `Console.Write()` in real-time with color transitions
 - Mode switch (reasoning→text or text→reasoning) inserts newline
-- On tool boundary, accumulated text flushed to block for persistence (no re-render)
+- On tool boundary (FCC/FRC), accumulated text flushed to block for persistence (no re-render)
 - Chunk stream after tool/file result gets blank line via `RenderState` transition check
 - Everything persists to DB as full blocks for replay consistency
 
@@ -86,14 +116,36 @@ Settings are applied in this order (each overrides the previous):
 - Yields FRC after tool execution → TurnProcessor renders result (peek: skip DB save)
 - `toolResults` in `messageList` keeps **full** result for LLM's next iteration
 - `display` yielded to caller may be **truncated** (via `ToolMaxLength`)
+- Tracks `ExecutedCallIds` for dedup across iterations
+- Accumulates `TotalCacheHitTokens`, `TotalCacheMissTokens`, `TotalOutputTokens` across all iterations
 
-### Usage tracking
-- DeepSeek cache: `Usage.InputTokenDetails.CachedTokenCount` (hit), `InputTokenCount - CachedTokenCount` (miss), `OutputTokenCount`
-- K = last turn hit+miss (input), % = last turn cache rate, $ = cumulative, +$ = last turn cost
-- Prices in config as `$/M` tokens, `FormatCost` divides by 1,000,000
+### MCP Service (`McpService`)
+- Model Context Protocol: supports `stdio` and HTTP (`streamablehttp`/`sse`) transports
+- Async lazy init via `EnsureInitializedAsync`, thread-safe with `SemaphoreSlim`
+- Lazy tool discovery via `GetToolsAsync()` — calls `client.ListToolsAsync()`
+- `ReconnectAllAsync` / `ReconnectAsync` for server management
+- `McpServerInfo` record: Name, Type, Status (Disabled/Connecting/Connected/Failed), Error, ToolCount
+- Config via `McpServersConfig.Servers` dict in `appsettings.json` (default: empty)
+- Registered via `AddMcp()` extension in DI, tools merged in `ToolRegistry`
+
+### Tool Registry (`ToolRegistry`)
+- Discovers built-in tools from `ToolFactory` (BashTool, FileReadTool, FileWriteTool, FilePatchTool, SearchTools, WebFetchTool, MemoryTool, TodoTool)
+- Adds MCP tools via `McpService.GetToolsAsync()` as `McpTool` wrappers
+- `GetBuiltinTools(sessionId)` returns all registered `AIFunction`s
+
+### `/stats` command features
+- Shows block type distribution (icons: 👤 user, 💬 agent, 🧠 reasoning, 🔧 tool, 🤖 auto_tool, 📄 file, 📋 todo)
+- Total blocks, token count with percentage of context window
+- Limits display (threshold at `AutoThreshold`% of context window)
+- Hides `system_info` and `agent_data` from display
+
+### Memory Tool
+- `memory stats` — shows block type distribution and total tokens (used by LLM)
+- `memory recover [block_numbers]` — restores soft-deleted blocks
+- `memory delete` — via `delete` action on block numbers
 
 ### Version
-`Version.txt`: `0.2.x`, published up to v0.2.74
+`Version.txt`: `0.3.x`, published up to v0.3.37
 
 ### Schema
 No migrations. Single `CREATE TABLE IF NOT EXISTS` in `Initialize()` with all columns:
@@ -102,3 +154,9 @@ No migrations. Single `CREATE TABLE IF NOT EXISTS` in `Initialize()` with all co
 - `sessions`: id, current_model, next_number, created_at, home_path
 - `session_usage`: agent_id, cache_hit, cache_miss, output_tokens, created_at
 - `agent_launches`: agent_id, path, last_active_at
+
+### Known issues
+- Tests dir `tests/Glyphite.Tests.Unit` referenced in `.slnx` but does **not exist** on disk
+- `PeekToolReasoning` (`AgentOptions`) controls whether reasoning blocks are marked peek during tool iterations
+- `/clone` is the actual command name (not `/fork`) — used in first-run selection, main command handler, and help hint
+- `appsettings.Development.json` contains the live DeepSeek API key (gitignored, copied to output)

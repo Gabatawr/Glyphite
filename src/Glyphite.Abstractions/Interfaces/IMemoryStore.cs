@@ -49,7 +49,7 @@ public interface IMemoryStore : IDisposable
     Task<string?> GetSessionIdByWorkingDirectoryAsync(string cwd);
 
     // Usage tracking
-    Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output);
+    Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long lastRequestHit = 0, long lastRequestMiss = 0);
     Task<(long Hit, long Miss, long Output)> GetUsageAsync(string agentId);
-    Task<(long Hit, long Miss, long Output)> GetLastUsageAsync(string agentId);
+    Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> GetLastUsageAsync(string agentId);
 }

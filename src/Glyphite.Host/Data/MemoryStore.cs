@@ -84,9 +84,13 @@ public partial class MemoryStore : IMemoryStore
                 cache_hit INTEGER NOT NULL DEFAULT 0,
                 cache_miss INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
+                last_request_hit INTEGER NOT NULL DEFAULT 0,
+                last_request_miss INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
             """);
+        try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_hit INTEGER NOT NULL DEFAULT 0"); } catch { }
+        try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_miss INTEGER NOT NULL DEFAULT 0"); } catch { }
         _conn.Execute("CREATE INDEX IF NOT EXISTS idx_session_usage_agent ON session_usage(agent_id)");
     }
 
@@ -306,15 +310,15 @@ public partial class MemoryStore : IMemoryStore
 
     // ── Usage tracking ──
 
-    public async Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output)
+    public async Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long lastRequestHit = 0, long lastRequestMiss = 0)
     {
         await _lock.WaitAsync();
         try
         {
             await _conn.ExecuteAsync("""
-                INSERT INTO session_usage (agent_id, cache_hit, cache_miss, output_tokens, created_at)
-                VALUES (@Id, @Hit, @Miss, @Output, datetime('now'))
-                """, new { Id = agentId, Hit = cacheHit, Miss = cacheMiss, Output = output });
+                INSERT INTO session_usage (agent_id, cache_hit, cache_miss, output_tokens, last_request_hit, last_request_miss, created_at)
+                VALUES (@Id, @Hit, @Miss, @Output, @LastHit, @LastMiss, datetime('now'))
+                """, new { Id = agentId, Hit = cacheHit, Miss = cacheMiss, Output = output, LastHit = lastRequestHit, LastMiss = lastRequestMiss });
         }
         finally { _lock.Release(); }
     }
@@ -332,13 +336,13 @@ public partial class MemoryStore : IMemoryStore
         finally { _lock.Release(); }
     }
 
-    public async Task<(long Hit, long Miss, long Output)> GetLastUsageAsync(string agentId)
+    public async Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> GetLastUsageAsync(string agentId)
     {
         await _lock.WaitAsync();
         try
         {
-            var result = await _conn.QueryFirstOrDefaultAsync<(long Hit, long Miss, long Output)>(
-                "SELECT cache_hit, cache_miss, output_tokens FROM session_usage WHERE agent_id = @Id ORDER BY rowid DESC LIMIT 1",
+            var result = await _conn.QueryFirstOrDefaultAsync<(long Hit, long Miss, long Output, long LastHit, long LastMiss)>(
+                "SELECT cache_hit, cache_miss, output_tokens, last_request_hit, last_request_miss FROM session_usage WHERE agent_id = @Id ORDER BY rowid DESC LIMIT 1",
                 new { Id = agentId });
             return result;
         }

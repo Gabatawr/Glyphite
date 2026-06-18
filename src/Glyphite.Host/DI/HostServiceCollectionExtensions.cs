@@ -54,8 +54,7 @@ public static class HostServiceCollectionExtensions
             var agentOpts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
             var deepseek = sp.GetRequiredService<IOptions<DeepSeekOptions>>().Value;
             var compOpts = sp.GetRequiredService<IOptions<CompressionOptions>>().Value;
-            var snapshot = sp.GetRequiredService<ContextSnapshotService>();
-            return new BlockMemoryProvider(store, memOpts, agentOpts, snapshot, deepseek.Model, compOpts);
+            return new BlockMemoryProvider(store, memOpts, agentOpts, deepseek.Model, compOpts);
         });
 
         // ── IChatClient ──
@@ -67,8 +66,6 @@ public static class HostServiceCollectionExtensions
                 new OpenAIClientOptions { Endpoint = new Uri(deepseek.Endpoint) });
             return client.GetChatClient(deepseek.Model).AsIChatClient();
         });
-
-        services.AddSingleton<HttpClient>(_ => new HttpClient());
 
         // ── Services ──
         services.AddSingleton<IBashSessionManager>(sp =>
@@ -92,8 +89,6 @@ public static class HostServiceCollectionExtensions
             var cfg = sp.GetRequiredService<IConfigService>();
             return new AgentManager(store, cfg);
         });
-
-        services.AddSingleton<ContextSnapshotService>();
 
         // ── Tool Registry ──
         services.AddSingleton<IToolRegistry, ToolRegistry>();

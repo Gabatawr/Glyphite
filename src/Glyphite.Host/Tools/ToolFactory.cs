@@ -13,8 +13,7 @@ public static class ToolFactory
         ConfigService cfgService,
         string defaultDir,
         MemoryStore memoryStore,
-        BlockMemoryProvider blockMemory,
-        HttpClient httpClient)
+        BlockMemoryProvider blockMemory)
     {
         return
         [
@@ -25,7 +24,7 @@ public static class ToolFactory
             MemoryTool.AsAIFunction(blockMemory, sessionId),
             TodoTool.AsTodoWriteFunction(memoryStore, sessionId, cfgService),
             TodoTool.AsTodoUpdateFunction(memoryStore, sessionId, cfgService),
-            WebFetchTool.AsFetchFunction(cfgService, httpClient: httpClient),
+            WebFetchTool.AsFetchFunction(cfgService),
             SearchTools.AsGlobFunction(cfgService, defaultDir),
             SearchTools.AsGrepFunction(cfgService, defaultDir),
         ];

@@ -97,9 +97,6 @@ public partial class BlockMemoryProvider
             }
         }
 
-        var text = string.Join("\n", messages.Select(m => m.Text ?? ""));
-        _snapshot.Update(text);
-
         return messages;
     }
 

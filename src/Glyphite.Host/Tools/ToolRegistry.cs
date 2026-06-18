@@ -9,21 +9,18 @@ public class ToolRegistry : IToolRegistry
     private readonly IConfigService _cfgService;
     private readonly IMemoryStore _memoryStore;
     private readonly IBlockMemoryProvider _blockMemory;
-    private readonly HttpClient _httpClient;
     private readonly string _defaultDir;
 
     public ToolRegistry(
         IBashSessionManager bashManager,
         IConfigService cfgService,
         IMemoryStore memoryStore,
-        IBlockMemoryProvider blockMemory,
-        HttpClient httpClient)
+        IBlockMemoryProvider blockMemory)
     {
         _bashManager = bashManager;
         _cfgService = cfgService;
         _memoryStore = memoryStore;
         _blockMemory = blockMemory;
-        _httpClient = httpClient;
         _defaultDir = Directory.GetCurrentDirectory();
     }
 
@@ -38,7 +35,7 @@ public class ToolRegistry : IToolRegistry
             MemoryTool.AsAIFunction(_blockMemory, sessionId),
             TodoTool.AsTodoWriteFunction(_memoryStore, sessionId, _cfgService),
             TodoTool.AsTodoUpdateFunction(_memoryStore, sessionId, _cfgService),
-            WebFetchTool.AsFetchFunction(_cfgService, httpClient: _httpClient),
+            WebFetchTool.AsFetchFunction(_cfgService),
             SearchTools.AsGlobFunction(_cfgService, _defaultDir),
             SearchTools.AsGrepFunction(_cfgService, _defaultDir),
         ];

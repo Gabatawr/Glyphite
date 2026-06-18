@@ -132,7 +132,7 @@ public partial class ChatRepl
                         _lastTurnHit = ue.CacheHitTokens;
                         _lastTurnMiss = ue.CacheMissTokens;
                         _lastTurnOutput = ue.OutputTokenCount;
-                        UpdatePromptInline(ue.CacheHitTokens, ue.CacheMissTokens, ue.OutputTokenCount);
+                        UpdatePromptInline(ue.CacheHitTokens, ue.CacheMissTokens, ue.OutputTokenCount, ue.LastHitTokens, ue.LastMissTokens);
                         break;
 
                     case TurnCompleteEvent:

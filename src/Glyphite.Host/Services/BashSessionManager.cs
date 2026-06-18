@@ -16,6 +16,8 @@ public class BashSession : IDisposable
     private List<string> _pendingOutput = [];
     private readonly object _gate = new();
     private bool _killed;
+    private readonly StringBuilder _lineBuf = new();
+    private CancellationTokenSource? _readerCts;
 
     public DateTime LastUsed { get; private set; } = DateTime.UtcNow;
 
@@ -23,23 +25,61 @@ public class BashSession : IDisposable
     {
         _process = process;
         _stdin = stdin;
-        _process.OutputDataReceived += OnOutput;
-        _process.ErrorDataReceived += OnError;
-        _process.BeginOutputReadLine();
-        _process.BeginErrorReadLine();
+        _readerCts = new CancellationTokenSource();
+        _ = ReadStdoutAsync(_readerCts.Token);
     }
 
-    private void OnError(object? sender, DataReceivedEventArgs e)
+    private async Task ReadStdoutAsync(CancellationToken ct)
     {
-        if (e.Data is null) return;
-        lock (_gate)
+        var buf = new byte[65536];
+        var chars = new char[65536];
+        var decoder = Encoding.UTF8.GetDecoder();
+        var stream = _process.StandardOutput.BaseStream;
+        while (!ct.IsCancellationRequested)
         {
-            if (_pendingMarker is null)
+            var bytesRead = await stream.ReadAsync(buf, ct);
+            if (bytesRead == 0) break;
+
+            var charCount = decoder.GetChars(buf, 0, bytesRead, chars, 0);
+
+            lock (_gate)
             {
-                _pendingOutput.Add("[stderr] " + e.Data);
-                return;
+                for (var i = 0; i < charCount; i++)
+                {
+                    var c = chars[i];
+                    if (c == '\n')
+                    {
+                        var line = _lineBuf.ToString();
+                        _lineBuf.Clear();
+                        DispatchLine(line);
+                    }
+                    else if (c != '\r')
+                    {
+                        _lineBuf.Append(c);
+                    }
+                }
             }
-            _pendingOutput.Add("[stderr] " + e.Data);
+        }
+    }
+
+    private void DispatchLine(string line)
+    {
+        if (_pendingMarker is null)
+        {
+            _pendingOutput.Add(line);
+            return;
+        }
+
+        if (line == _pendingMarker)
+        {
+            var tcs = _pendingTcs;
+            _pendingTcs = null;
+            _pendingMarker = null;
+            tcs?.TrySetResult();
+        }
+        else
+        {
+            _pendingOutput.Add(line);
         }
     }
 
@@ -100,33 +140,6 @@ public class BashSession : IDisposable
         }
     }
 
-    private void OnOutput(object? sender, DataReceivedEventArgs e)
-    {
-        if (e.Data is null) return;
-
-        TaskCompletionSource? tcs = null;
-        lock (_gate)
-        {
-            if (_pendingMarker is null)
-            {
-                _pendingOutput.Add(e.Data);
-                return;
-            }
-
-            if (e.Data == _pendingMarker)
-            {
-                tcs = _pendingTcs;
-                _pendingTcs = null;
-                _pendingMarker = null;
-            }
-            else
-            {
-                _pendingOutput.Add(e.Data);
-            }
-        }
-        tcs?.TrySetResult();
-    }
-
     public async Task<string> ExecuteAsync(string command, string? workdir = null, int? timeoutMs = null, CancellationToken ct = default)
     {
         using var timeoutCts = timeoutMs is > 0
@@ -154,9 +167,10 @@ public class BashSession : IDisposable
 
             var effectiveCommand = string.IsNullOrEmpty(workdir)
                 ? command
-                : $"cd \"{workdir.Replace("\"", "\\\"")}\" && {command}";
+                : $"(cd \"{workdir.Replace("\"", "\\\"")}\" && {command})";
 
             await _stdin.WriteLineAsync($"{effectiveCommand} 2>&1");
+            await _stdin.WriteLineAsync($"echo");
             await _stdin.WriteLineAsync($"echo \"{marker}\"");
             await _stdin.FlushAsync();
 
@@ -185,7 +199,8 @@ public class BashSession : IDisposable
 
     public void Dispose()
     {
-        _process.OutputDataReceived -= OnOutput;
+        _readerCts?.Cancel();
+        _readerCts?.Dispose();
         _lock.Dispose();
         _stdin.Dispose();
         if (!_killed)
