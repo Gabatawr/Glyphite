@@ -91,7 +91,7 @@ public partial class BlockMemoryProvider
                     {
                         var protectedTypes = string.Join(", ", _memOpts.ProtectedBlockTypes);
                         messages.Add(new ChatMessage(ChatRole.System,
-                            $"AUTO-COMPRESSION: Context is at {totalTokens} tokens — PROACTIVELY clean old deletable blocks now to keep context manageable. Delete old tool calls, tool results, and reasoning blocks that are no longer relevant. PROTECTED (do NOT delete): {protectedTypes}."));
+                            $"AUTO-COMPRESSION: Context is at {totalTokens} tokens — clean old blocks now. Use `list` to inspect memory, then `clean` old tool calls, tool results, and reasoning blocks. PROTECTED (keep): {protectedTypes}."));
                     }
                 }
             }
