@@ -16,46 +16,40 @@ public partial class MemoryStore
 
     public async Task<List<MemoryBlock>> LoadBlocksAsync(string agentId)
     {
-        await _lock.WaitAsync();
-        try { return await LoadBlocksCoreAsync(agentId); }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        var entities = await conn.QueryAsync<BlockEntity>(
+            "SELECT * FROM blocks WHERE agent_id = @sid AND is_deleted = 0 ORDER BY number",
+            new { sid = agentId });
+        return entities.Select(MapToBlock).ToList();
     }
 
     public async Task<MemoryBlock?> GetBlockAsync(string agentId, double number, bool includeDeleted = false)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            var sql = includeDeleted
-                ? "SELECT * FROM blocks WHERE agent_id = @sid AND number = @num"
-                : "SELECT * FROM blocks WHERE agent_id = @sid AND number = @num AND is_deleted = 0";
-            var entity = await _conn.QueryFirstOrDefaultAsync<BlockEntity>(sql,
-                new { sid = agentId, num = number });
-            return entity is not null ? MapToBlock(entity) : null;
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        var sql = includeDeleted
+            ? "SELECT * FROM blocks WHERE agent_id = @sid AND number = @num"
+            : "SELECT * FROM blocks WHERE agent_id = @sid AND number = @num AND is_deleted = 0";
+        var entity = await conn.QueryFirstOrDefaultAsync<BlockEntity>(sql,
+            new { sid = agentId, num = number });
+        return entity is not null ? MapToBlock(entity) : null;
     }
 
     public async Task<List<MemoryBlock>> LoadBlocksByTypeAsync(string agentId, BlockType? type, int? limit, bool desc)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            var sql = "SELECT * FROM blocks WHERE agent_id = @sid AND is_deleted = 0";
-            if (type is not null)
-                sql += " AND type = @type";
-            sql += desc ? " ORDER BY number DESC" : " ORDER BY number";
-            if (limit is not null)
-                sql += " LIMIT @limit";
-            return (await _conn.QueryAsync<BlockEntity>(sql, new { sid = agentId, type = type?.ToString(), limit }))
-                         .Select(MapToBlock).ToList();
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        var sql = "SELECT * FROM blocks WHERE agent_id = @sid AND is_deleted = 0";
+        if (type is not null)
+            sql += " AND type = @type";
+        sql += desc ? " ORDER BY number DESC" : " ORDER BY number";
+        if (limit is not null)
+            sql += " LIMIT @limit";
+        return (await conn.QueryAsync<BlockEntity>(sql, new { sid = agentId, type = type?.ToString(), limit }))
+                     .Select(MapToBlock).ToList();
     }
 
     public async Task AppendBlocksAsync(string agentId, List<MemoryBlock> newBlocks, double nextNumber)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             await using var tx = await _conn.BeginTransactionAsync();
@@ -72,12 +66,12 @@ public partial class MemoryStore
                 new { Id = agentId, Next = nextNumber });
             await tx.CommitAsync();
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task<int> RemovePeekBlocksAsync(string agentId, bool includeReasoning = true)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var typeFilter = includeReasoning ? "" : " AND type != 'agent_reasoning'";
@@ -88,12 +82,12 @@ public partial class MemoryStore
                 """;
             return await _conn.ExecuteAsync(sql, new { sid = agentId });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task<int> ClearPeekMarkersAsync(string agentId, bool includeReasoning = true)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var typeFilter = includeReasoning ? "" : " AND type != 'agent_reasoning'";
@@ -106,32 +100,28 @@ public partial class MemoryStore
                 """;
             return await _conn.ExecuteAsync(sql, new { sid = agentId });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task<Dictionary<string, int>> GetPeekBlockStatsAsync(string agentId, bool includeReasoning = true)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            var typeFilter = includeReasoning ? "" : " AND type != 'agent_reasoning'";
-            var sql = $"""
-                SELECT type, COUNT(*) as count
-                FROM blocks
-                WHERE agent_id = @sid AND is_deleted = 0
-                  AND data IS NOT NULL AND json_extract(data, '$.peek') = 1{typeFilter}
-                GROUP BY type
-                ORDER BY count DESC
-                """;
-            var rows = await _conn.QueryAsync<(string type, int count)>(sql, new { sid = agentId });
-            return rows.ToDictionary(r => r.type, r => r.count);
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        var typeFilter = includeReasoning ? "" : " AND type != 'agent_reasoning'";
+        var sql = $"""
+            SELECT type, COUNT(*) as count
+            FROM blocks
+            WHERE agent_id = @sid AND is_deleted = 0
+              AND data IS NOT NULL AND json_extract(data, '$.peek') = 1{typeFilter}
+            GROUP BY type
+            ORDER BY count DESC
+            """;
+        var rows = await conn.QueryAsync<(string type, int count)>(sql, new { sid = agentId });
+        return rows.ToDictionary(r => r.type, r => r.count);
     }
 
     public async Task<int> RemoveBlocksAsync(string agentId, Predicate<MemoryBlock> match)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var blocks = await LoadBlocksCoreAsync(agentId);
@@ -147,12 +137,12 @@ public partial class MemoryStore
             await tx.CommitAsync();
             return removed;
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task UpdateBlockDataAsync(string agentId, double number, Dictionary<string, object>? data)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var json = data is not null ? JsonSerializer.Serialize(data) : null;
@@ -161,12 +151,12 @@ public partial class MemoryStore
                 "UPDATE blocks SET data = @Data, updated_at = @Now WHERE agent_id = @sid AND number = @num",
                 new { sid = agentId, num = number, Data = json, Now = now });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task UpdateBlockAsync(string agentId, double number, string? content = null, Dictionary<string, object>? data = null, string? model = null)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var dataJson = data is not null ? JsonSerializer.Serialize(data) : null;
@@ -180,12 +170,12 @@ public partial class MemoryStore
                 WHERE agent_id = @sid AND number = @num
                 """, new { sid = agentId, num = number, Content = content, Data = dataJson, Model = model, Now = now });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task UpdateBlockToolResultAsync(string agentId, double number, string? toolResult)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var now = DateTime.UtcNow.ToString("O");
@@ -196,12 +186,12 @@ public partial class MemoryStore
                 WHERE agent_id = @sid AND number = @num
                 """, new { sid = agentId, num = number, ToolResult = toolResult, Now = now });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null, bool cascade = true)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var all = await LoadBlocksCoreAsync(agentId);
@@ -257,12 +247,12 @@ public partial class MemoryStore
 
             return (removed, protectedNums);
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task<int> RecoverBlocksAsync(string agentId, double[] numbers, bool cascade = false)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var toRecover = new HashSet<double>(numbers);
@@ -300,12 +290,12 @@ public partial class MemoryStore
             await tx.CommitAsync();
             return removed;
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task ForkSessionAsync(string sourceId, string targetId, string cwd)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             await using var tx = await _conn.BeginTransactionAsync();
@@ -367,12 +357,12 @@ public partial class MemoryStore
 
             await tx.CommitAsync();
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task ClearAgentBlocksAsync(string agentId)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             await using var tx = await _conn.BeginTransactionAsync();
@@ -380,54 +370,42 @@ public partial class MemoryStore
             await _conn.ExecuteAsync("UPDATE sessions SET next_number = 1 WHERE id = @id", new { id = agentId });
             await tx.CommitAsync();
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task<List<string>> ListAgentsAsync()
     {
-        await _lock.WaitAsync();
-        try
-        {
-            return (await _conn.QueryAsync<string>(
-                "SELECT id FROM sessions ORDER BY id")).ToList();
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        return (await conn.QueryAsync<string>(
+            "SELECT id FROM sessions ORDER BY id")).ToList();
     }
 
     public async Task<int> GetBlockCountAsync(string agentId)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            return await _conn.ExecuteScalarAsync<int>(
-                "SELECT COUNT(1) FROM blocks WHERE agent_id = @sid AND is_deleted = 0",
-                new { sid = agentId });
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        return await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(1) FROM blocks WHERE agent_id = @sid AND is_deleted = 0",
+            new { sid = agentId });
     }
 
     public async Task<Dictionary<string, int>> GetBlockTypeStatsAsync(string agentId)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            var rows = await _conn.QueryAsync<(string Type, int Count)>(
-                @"SELECT type, COUNT(*) FROM blocks 
-                  WHERE agent_id = @sid AND is_deleted = 0 
-                  GROUP BY type ORDER BY COUNT(*) DESC",
-                new { sid = agentId });
+        using var conn = CreateReadConnection();
+        var rows = await conn.QueryAsync<(string Type, int Count)>(
+            @"SELECT type, COUNT(*) FROM blocks 
+              WHERE agent_id = @sid AND is_deleted = 0 
+              GROUP BY type ORDER BY COUNT(*) DESC",
+            new { sid = agentId });
 
-            var result = new Dictionary<string, int>();
-            foreach (var r in rows)
-                result[r.Type] = r.Count;
-            return result;
-        }
-        finally { _lock.Release(); }
+        var result = new Dictionary<string, int>();
+        foreach (var r in rows)
+            result[r.Type] = r.Count;
+        return result;
     }
 
     public async Task<int> DeleteBlocksByFilterAsync(string agentId, string[]? types, TimeSpan? recent, HashSet<BlockType>? protectedTypes = null)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var all = await LoadBlocksCoreAsync(agentId);
@@ -466,12 +444,12 @@ public partial class MemoryStore
             await tx.CommitAsync();
             return removed;
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task UpdateBlockContentAsync(string agentId, double number, string content)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var now = DateTime.UtcNow.ToString("O");
@@ -480,6 +458,6 @@ public partial class MemoryStore
                 WHERE agent_id = @sid AND number = @num
                 """, new { sid = agentId, num = number, Content = content, Now = now });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 }

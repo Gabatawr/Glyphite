@@ -9,13 +9,23 @@ namespace Glyphite.Host.Data;
 public partial class MemoryStore : IMemoryStore
 {
     private readonly SqliteConnection _conn;
-    private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly string _connectionString;
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     public MemoryStore(string connectionString)
     {
+        _connectionString = connectionString;
         _conn = new SqliteConnection(connectionString);
         _conn.Open();
         Initialize();
+    }
+
+    /// <summary>Create a short-lived read-only connection (pooled by Microsoft.Data.Sqlite).</summary>
+    private SqliteConnection CreateReadConnection()
+    {
+        var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        return conn;
     }
 
     static MemoryStore()
@@ -35,7 +45,7 @@ public partial class MemoryStore : IMemoryStore
 
     public void Dispose()
     {
-        _lock.Dispose();
+        _writeLock.Dispose();
         _conn?.Close();
         _conn?.Dispose();
     }
@@ -99,7 +109,7 @@ public partial class MemoryStore : IMemoryStore
 
     public async Task EnsureSessionAsync(string id, string? homePath = null)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var now = DateTime.UtcNow.ToString("O");
@@ -108,12 +118,12 @@ public partial class MemoryStore : IMemoryStore
                 VALUES (@Id, 1, @Now, @Path)
                 """, new { Id = id, Now = now, Path = homePath ?? "" });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task RecordLaunchAsync(string agentId, string path)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var now = DateTime.UtcNow.ToString("O");
@@ -123,81 +133,57 @@ public partial class MemoryStore : IMemoryStore
                 ON CONFLICT(agent_id, path) DO UPDATE SET last_active_at = @Now
                 """, new { AgentId = agentId, Path = path, Now = now });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task<List<(string path, string lastActive)>> GetLaunchesAsync(string agentId)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            var rows = await _conn.QueryAsync<(string path, string lastActive)>(
-                "SELECT path, last_active_at FROM agent_launches WHERE agent_id = @aid ORDER BY last_active_at DESC",
-                new { aid = agentId });
-            return rows.ToList();
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        var rows = await conn.QueryAsync<(string path, string lastActive)>(
+            "SELECT path, last_active_at FROM agent_launches WHERE agent_id = @aid ORDER BY last_active_at DESC",
+            new { aid = agentId });
+        return rows.ToList();
     }
 
     public async Task<string?> GetAgentHomePathAsync(string id)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            return await _conn.QueryFirstOrDefaultAsync<string>(
-                "SELECT home_path FROM sessions WHERE id = @id", new { id });
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        return await conn.QueryFirstOrDefaultAsync<string>(
+            "SELECT home_path FROM sessions WHERE id = @id", new { id });
     }
 
     public async Task<string?> GetAgentCreatedAtAsync(string id)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            return await _conn.QueryFirstOrDefaultAsync<string>(
-                "SELECT created_at FROM sessions WHERE id = @id", new { id });
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        return await conn.QueryFirstOrDefaultAsync<string>(
+            "SELECT created_at FROM sessions WHERE id = @id", new { id });
     }
 
     public async Task<string?> GetLastLaunchPathAsync(string agentId)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            return await _conn.QueryFirstOrDefaultAsync<string>(
-                "SELECT path FROM agent_launches WHERE agent_id = @aid ORDER BY last_active_at DESC LIMIT 1",
-                new { aid = agentId });
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        return await conn.QueryFirstOrDefaultAsync<string>(
+            "SELECT path FROM agent_launches WHERE agent_id = @aid ORDER BY last_active_at DESC LIMIT 1",
+            new { aid = agentId });
     }
 
     public async Task<string?> GetAgentModelAsync(string id)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            return await _conn.QueryFirstOrDefaultAsync<string>(
-                "SELECT current_model FROM sessions WHERE id = @id", new { id });
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        return await conn.QueryFirstOrDefaultAsync<string>(
+            "SELECT current_model FROM sessions WHERE id = @id", new { id });
     }
 
     public async Task<bool> AgentExistsAsync(string id)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            return await _conn.ExecuteScalarAsync<int>(
-                "SELECT COUNT(1) FROM sessions WHERE id = @id", new { id }) > 0;
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        return await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(1) FROM sessions WHERE id = @id", new { id }) > 0;
     }
 
     public async Task<bool> SetAgentModelAsync(string id, string model)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             var rows = await _conn.ExecuteAsync(
@@ -205,37 +191,33 @@ public partial class MemoryStore : IMemoryStore
                 new { Id = id, Model = model });
             return rows > 0;
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task<double> GetNextNumberAsync(string id)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            return await _conn.QueryFirstOrDefaultAsync<double>(
-                "SELECT next_number FROM sessions WHERE id = @id", new { id });
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        return await conn.QueryFirstOrDefaultAsync<double>(
+            "SELECT next_number FROM sessions WHERE id = @id", new { id });
     }
 
     public async Task SetNextNumberAsync(string id, double next)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             await _conn.ExecuteAsync(
                 "UPDATE sessions SET next_number = @Next WHERE id = @Id",
                 new { Id = id, Next = next });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     // ── Delete ──
 
     public async Task DeleteSessionAsync(string agentId)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             await using var tx = await _conn.BeginTransactionAsync();
@@ -245,16 +227,16 @@ public partial class MemoryStore : IMemoryStore
             await _conn.ExecuteAsync("DELETE FROM sessions WHERE id = @sid", new { sid = agentId });
             await tx.CommitAsync();
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     // ── Diagnostics ──
 
     public async Task<int> DirectExecuteAsync(string sql, object? param = null)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try { return await _conn.ExecuteAsync(sql, param); }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     // ── Mapping ──
@@ -299,21 +281,17 @@ public partial class MemoryStore : IMemoryStore
 
     public async Task<string?> GetLastActiveAgentAsync(string cwd)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            return await _conn.QueryFirstOrDefaultAsync<string>(
-                "SELECT agent_id FROM agent_launches WHERE path = @cwd ORDER BY last_active_at DESC LIMIT 1",
-                new { cwd });
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        return await conn.QueryFirstOrDefaultAsync<string>(
+            "SELECT agent_id FROM agent_launches WHERE path = @cwd ORDER BY last_active_at DESC LIMIT 1",
+            new { cwd });
     }
 
     // ── Usage tracking ──
 
     public async Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long lastRequestHit = 0, long lastRequestMiss = 0)
     {
-        await _lock.WaitAsync();
+        await _writeLock.WaitAsync();
         try
         {
             await _conn.ExecuteAsync("""
@@ -321,33 +299,25 @@ public partial class MemoryStore : IMemoryStore
                 VALUES (@Id, @Hit, @Miss, @Output, @LastHit, @LastMiss, datetime('now'))
                 """, new { Id = agentId, Hit = cacheHit, Miss = cacheMiss, Output = output, LastHit = lastRequestHit, LastMiss = lastRequestMiss });
         }
-        finally { _lock.Release(); }
+        finally { _writeLock.Release(); }
     }
 
     public async Task<(long Hit, long Miss, long Output)> GetUsageAsync(string agentId)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            var result = await _conn.QueryFirstOrDefaultAsync<(long Hit, long Miss, long Output)>(
-                "SELECT COALESCE(SUM(cache_hit), 0), COALESCE(SUM(cache_miss), 0), COALESCE(SUM(output_tokens), 0) FROM session_usage WHERE agent_id = @Id",
-                new { Id = agentId });
-            return result;
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        var result = await conn.QueryFirstOrDefaultAsync<(long Hit, long Miss, long Output)>(
+            "SELECT COALESCE(SUM(cache_hit), 0), COALESCE(SUM(cache_miss), 0), COALESCE(SUM(output_tokens), 0) FROM session_usage WHERE agent_id = @Id",
+            new { Id = agentId });
+        return result;
     }
 
     public async Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> GetLastUsageAsync(string agentId)
     {
-        await _lock.WaitAsync();
-        try
-        {
-            var result = await _conn.QueryFirstOrDefaultAsync<(long Hit, long Miss, long Output, long LastHit, long LastMiss)>(
-                "SELECT cache_hit, cache_miss, output_tokens, last_request_hit, last_request_miss FROM session_usage WHERE agent_id = @Id ORDER BY rowid DESC LIMIT 1",
-                new { Id = agentId });
-            return result;
-        }
-        finally { _lock.Release(); }
+        using var conn = CreateReadConnection();
+        var result = await conn.QueryFirstOrDefaultAsync<(long Hit, long Miss, long Output, long LastHit, long LastMiss)>(
+            "SELECT cache_hit, cache_miss, output_tokens, last_request_hit, last_request_miss FROM session_usage WHERE agent_id = @Id ORDER BY rowid DESC LIMIT 1",
+            new { Id = agentId });
+        return result;
     }
 
 

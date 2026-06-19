@@ -154,6 +154,7 @@ public partial class ChatRepl
                 await _store.DeleteSessionAsync(name);
                 _agentId = await _agentManager.CreateAgentAsync(name, _deepseek.Model, cwd);
                 _agentOpts.AgentName = name;
+                SwitchScope();
                 await LoadAgentConfigAsync(_agentId, cwd);
                 await ResetSessionStateAsync();
                 Console.ForegroundColor = ConsoleColor.Green;
@@ -171,6 +172,7 @@ public partial class ChatRepl
 
         _agentId = await _agentManager.CreateAgentAsync(name, _deepseek.Model, cwd);
         _agentOpts.AgentName = name;
+        SwitchScope();
         await LoadAgentConfigAsync(_agentId, cwd);
         await ResetSessionStateAsync();
         Console.ForegroundColor = ConsoleColor.Green;
@@ -261,6 +263,7 @@ public partial class ChatRepl
         await _store.ForkSessionAsync(sourceName, cloneName, cwd);
         _agentId = cloneName;
         _agentOpts.AgentName = cloneName;
+        SwitchScope();
         await LoadAgentConfigAsync(_agentId, cwd);
         await ResetSessionStateAsync();
 
@@ -335,6 +338,7 @@ public partial class ChatRepl
         _agentId = targetName;
         _agentOpts.AgentName = targetName;
         await _store.RecordLaunchAsync(targetName, cwd);
+        SwitchScope();
         await LoadAgentConfigAsync(targetName, cwd);
         await ResetSessionStateAsync();
 

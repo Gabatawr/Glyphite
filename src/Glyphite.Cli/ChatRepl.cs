@@ -1,6 +1,7 @@
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Cli.Services;
+using Glyphite.Host.DI;
 using Glyphite.Host.Services;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -13,15 +14,17 @@ public partial class ChatRepl
 {
     private readonly IConfiguration _config;
     private readonly IMemoryStore _store;
-    private readonly IBlockMemoryProvider _blockMemory;
-    private readonly ITurnProcessor _turnProcessor;
+    private ITurnProcessor _turnProcessor = null!;
+    private IBlockMemoryProvider _blockMemory = null!;
     private readonly IConfigService _cfgService;
     private readonly IAgentManager _agentManager;
+    private readonly IAgentScopeFactory _scopeFactory;
     private readonly ConsoleRenderer _renderer;
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
     private readonly ToolStreamingOptions _streamOpts;
     private readonly CompressionOptions _compressionOpts;
+    private AgentScope? _currentScope;
     private string _agentId = string.Empty;
     private long _lastTurnHit;
     private long _lastTurnMiss;
@@ -32,10 +35,9 @@ public partial class ChatRepl
     public ChatRepl(
         IConfiguration config,
         IMemoryStore store,
-        IBlockMemoryProvider blockMemory,
-        ITurnProcessor turnProcessor,
         IConfigService cfgService,
         IAgentManager agentManager,
+        IAgentScopeFactory scopeFactory,
         ConsoleRenderer renderer,
         IOptions<DeepSeekOptions> deepseek,
         IOptions<AgentOptions> agentOpts,
@@ -44,15 +46,26 @@ public partial class ChatRepl
     {
         _config = config;
         _store = store;
-        _blockMemory = blockMemory;
-        _turnProcessor = turnProcessor;
         _cfgService = cfgService;
         _agentManager = agentManager;
+        _scopeFactory = scopeFactory;
         _renderer = renderer;
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
         _streamOpts = streamOpts.Value;
         _compressionOpts = compressionOpts.Value;
+        // Scoped services — resolved lazily from AgentScope
+        _turnProcessor = null!;
+        _blockMemory = null!;
+    }
+
+    /// <summary>Switch to a new agent scope. Call when creating/switching/cloning agents.</summary>
+    private void SwitchScope()
+    {
+        _currentScope?.Dispose();
+        _currentScope = _scopeFactory.CreateScope();
+        _turnProcessor = _currentScope.TurnProcessor;
+        _blockMemory = _currentScope.BlockMemoryProvider;
     }
 
     public async Task RunAsync(CancellationToken ct)

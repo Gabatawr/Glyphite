@@ -39,21 +39,13 @@ public class TurnProcessor : ITurnProcessor
         _streamOpts = streamOpts.Value;
     }
 
-    private double _nextNum;
-    private string _sessionId = string.Empty;
-    private string _modelStr = string.Empty;
-    private readonly StringBuilder _reasoningAccum = new();
-    private readonly StringBuilder _textAccum = new();
-    private readonly List<(string name, string args, bool isPeek, double blockNumber)> _pendingToolCalls = [];
-
     public async IAsyncEnumerable<TurnEvent> ProcessAsync(
         string sessionId,
         string input,
         ChatOptions chatOptions,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        _sessionId = sessionId;
-        _modelStr = chatOptions.ModelId ?? _deepseek.Model;
+        var modelStr = chatOptions.ModelId ?? _deepseek.Model;
 
         chatOptions.Tools = _toolRegistry.GetBuiltinTools(sessionId).ToList();
 
@@ -62,10 +54,10 @@ public class TurnProcessor : ITurnProcessor
         var peekCleaned = await _store.RemovePeekBlocksAsync(sessionId);
 
         var contextMessages = await _blockMemory.BuildContextAsync(
-            sessionId, _modelStr, _deepseek.ContextWindow);
+            sessionId, modelStr, _deepseek.ContextWindow);
 
-        _nextNum = await _store.GetNextNumberAsync(sessionId);
-        if (_nextNum <= 0) _nextNum = 1;
+        var nextNum = await _store.GetNextNumberAsync(sessionId);
+        if (nextNum <= 0) nextNum = 1;
 
         // Auto-tool: peek cleanup — visible to user AND model
         if (peekCleaned > 0)
@@ -74,9 +66,9 @@ public class TurnProcessor : ITurnProcessor
             var cleanArgs = $"{{\"count\":{peekCleaned}}}";
             yield return new AutoToolTurnEvent("peek_clean", cleanArgs, false, peekMsg);
 
-            var autoBlock = MemoryBlock.AutoTool("peek_clean", cleanArgs, peekMsg, _modelStr);
-            autoBlock.Number = _nextNum++;
-            await _store.AppendBlocksAsync(_sessionId, [autoBlock], _nextNum);
+            var autoBlock = MemoryBlock.AutoTool("peek_clean", cleanArgs, peekMsg, modelStr);
+            autoBlock.Number = nextNum++;
+            await _store.AppendBlocksAsync(sessionId, [autoBlock], nextNum);
 
             contextMessages.Add(new ChatMessage(ChatRole.System, autoBlock.ToContextString()));
         }
@@ -91,14 +83,178 @@ public class TurnProcessor : ITurnProcessor
         _blockMemory.CurrentExecutedIds.Value = failSafeClient.ExecutedCallIds;
 
         var userBlock = MemoryBlock.UserMessage(input);
-        userBlock.Number = _nextNum++;
-        await _store.AppendBlocksAsync(sessionId, [userBlock], _nextNum);
+        userBlock.Number = nextNum++;
+        await _store.AppendBlocksAsync(sessionId, [userBlock], nextNum);
+
+        // ── Per-turn state (local variables, not instance fields) ──
+        var reasoningAccum = new StringBuilder();
+        var textAccum = new StringBuilder();
+        var pendingToolCalls = new List<(string name, string args, bool isPeek, double blockNumber)>();
+
+        async Task<List<TurnEvent>> ProcessUpdate(ChatResponseUpdate update)
+        {
+            var events = new List<TurnEvent>();
+
+            var text = string.Concat(update.Contents.OfType<TextContent>().Select(t => t.Text));
+            var reasoning = string.Concat(update.Contents.OfType<TextReasoningContent>().Select(r => r.Text));
+            var fcc = update.Contents.OfType<FunctionCallContent>().FirstOrDefault();
+            var frc = update.Contents.OfType<FunctionResultContent>().FirstOrDefault();
+
+            if (!string.IsNullOrEmpty(reasoning))
+            {
+                reasoningAccum.Append(reasoning);
+                events.Add(new ReasoningChunkEvent(reasoning));
+            }
+
+            if (!string.IsNullOrEmpty(text))
+            {
+                textAccum.Append(text);
+                events.Add(new TextChunkEvent(text));
+            }
+
+            if (fcc is not null)
+            {
+                events.AddRange(await FlushReasoning(_agentOpts.PeekToolReasoning));
+                events.AddRange(await FlushText());
+
+                var args = JsonSerializer.Serialize(fcc.Arguments ?? new Dictionary<string, object?>(),
+                    new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+
+                var isPeek = fcc.Arguments?.TryGetValue("peek", out var peekVal) == true &&
+                    (peekVal is bool pb ? pb : (peekVal is JsonElement je && je.ValueKind == JsonValueKind.True));
+
+                var callBlock = MemoryBlock.ToolCall(fcc.Name, args, model: modelStr);
+                if (isPeek)
+                    callBlock.Data = new() { ["peek"] = true };
+                callBlock.Number = nextNum++;
+                await _store.AppendBlocksAsync(sessionId, [callBlock], nextNum);
+
+                pendingToolCalls.Add((fcc.Name, args, isPeek, callBlock.Number));
+
+                events.Add(new ToolCallTurnEvent(fcc.Name, args, isPeek));
+            }
+
+            if (frc is not null)
+            {
+                events.AddRange(await FlushReasoning(_agentOpts.PeekToolReasoning));
+                events.AddRange(await FlushText());
+
+                var output = frc.Result?.ToString() ?? "";
+                if (pendingToolCalls.Count > 0)
+                {
+                    var (name, args, isPeek, callBlockNumber) = pendingToolCalls[0];
+                    pendingToolCalls.RemoveAt(0);
+
+                    if (name is "read_file" or "write_file")
+                    {
+                        string? fPath = null;
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(args);
+                            if (doc.RootElement.TryGetProperty("path", out var p))
+                                fPath = p.GetString();
+                        }
+                        catch { }
+
+                        if (fPath is not null)
+                        {
+                            string fileContent;
+                            if (name == "write_file")
+                            {
+                                try { fileContent = await File.ReadAllTextAsync(fPath); }
+                                catch { fileContent = output; }
+                            }
+                            else
+                            {
+                                fileContent = output.TrimEnd('\n', '\r');
+                            }
+
+                            if (!isPeek && !string.IsNullOrEmpty(fileContent))
+                                await _store.UpdateBlockToolResultAsync(sessionId, callBlockNumber, fileContent);
+
+                            var cleanedArgs = CleanToolArgs(args, "content");
+                            if (cleanedArgs is not null)
+                                await _store.UpdateBlockAsync(sessionId, callBlockNumber, content: cleanedArgs);
+
+                            events.Add(new ToolResultTurnEvent(name, fileContent));
+                        }
+                        else
+                        {
+                            events.Add(new ToolResultTurnEvent(name, output));
+                        }
+                    }
+                    else if (name == "patch_file")
+                    {
+                        if (!isPeek && !string.IsNullOrEmpty(output))
+                            await _store.UpdateBlockToolResultAsync(sessionId, callBlockNumber, output);
+
+                        var cleanedArgs = CleanToolArgs(args, "newString", "oldString");
+                        if (cleanedArgs is not null)
+                            await _store.UpdateBlockAsync(sessionId, callBlockNumber, content: cleanedArgs);
+
+                        events.Add(new ToolResultTurnEvent(name, output));
+                    }
+                    else
+                    {
+                        if (!isPeek && !string.IsNullOrEmpty(output))
+                            await _store.UpdateBlockToolResultAsync(sessionId, callBlockNumber, output);
+
+                        events.Add(new ToolResultTurnEvent(name, output));
+                    }
+
+                    // Inter-iteration: clear peek markers (not reasoning)
+                    if (pendingToolCalls.Count == 0)
+                        await _store.ClearPeekMarkersAsync(sessionId, false);
+                }
+                else
+                {
+                    var block = MemoryBlock.ToolCall("unknown", output, model: modelStr);
+                    block.Number = nextNum++;
+                    block.ToolResult = output;
+                    await _store.AppendBlocksAsync(sessionId, [block], nextNum);
+                }
+            }
+
+            return events;
+        }
+
+        async Task<List<TurnEvent>> FlushReasoning(bool isPeek)
+        {
+            if (reasoningAccum.Length == 0) return [];
+            var fullReasoning = reasoningAccum.ToString();
+            reasoningAccum.Clear();
+            var block = MemoryBlock.AgentReasoning(fullReasoning, model: modelStr);
+            block.Number = nextNum++;
+            if (isPeek)
+                block.Data = new() { ["peek"] = true };
+            await _store.AppendBlocksAsync(sessionId, [block], nextNum);
+            return [];
+        }
+
+        async Task<List<TurnEvent>> FlushText()
+        {
+            if (textAccum.Length == 0) return [];
+            var fullText = textAccum.ToString();
+            textAccum.Clear();
+            var block = MemoryBlock.AgentMessage(fullText, model: modelStr);
+            block.Number = nextNum++;
+            await _store.AppendBlocksAsync(sessionId, [block], nextNum);
+            return [];
+        }
+
+        async Task<List<TurnEvent>> FlushAll()
+        {
+            var events = new List<TurnEvent>();
+            events.AddRange(await FlushReasoning(_agentOpts.PeekReasoning));
+            events.AddRange(await FlushText());
+            return events;
+        }
 
         await foreach (var update in failSafeClient
             .GetStreamingResponseAsync(initialMessages, chatOptions)
             .WithCancellation(ct))
         {
-            var events = await ProcessUpdateAsync(update);
+            var events = await ProcessUpdate(update);
             foreach (var e in events)
                 yield return e;
         }
@@ -107,137 +263,9 @@ public class TurnProcessor : ITurnProcessor
         await _store.RecordUsageAsync(sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
         yield return new UsageTurnEvent(failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
 
-        var flushEvents = await FlushAllAsync();
+        var flushEvents = await FlushAll();
         foreach (var e in flushEvents)
             yield return e;
-
-    }
-
-    private async Task<List<TurnEvent>> ProcessUpdateAsync(ChatResponseUpdate update)
-    {
-        var events = new List<TurnEvent>();
-
-        var text = string.Concat(update.Contents.OfType<TextContent>().Select(t => t.Text));
-        var reasoning = string.Concat(update.Contents.OfType<TextReasoningContent>().Select(r => r.Text));
-        var fcc = update.Contents.OfType<FunctionCallContent>().FirstOrDefault();
-        var frc = update.Contents.OfType<FunctionResultContent>().FirstOrDefault();
-
-        if (!string.IsNullOrEmpty(reasoning))
-        {
-            _reasoningAccum.Append(reasoning);
-            events.Add(new ReasoningChunkEvent(reasoning));
-        }
-
-        if (!string.IsNullOrEmpty(text))
-        {
-            _textAccum.Append(text);
-            events.Add(new TextChunkEvent(text));
-        }
-
-        if (fcc is not null)
-        {
-            events.AddRange(await FlushReasoningAsync(_agentOpts.PeekToolReasoning));
-            events.AddRange(await FlushTextAsync());
-
-            var args = JsonSerializer.Serialize(fcc.Arguments ?? new Dictionary<string, object?>(),
-                new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
-
-            var isPeek = fcc.Arguments?.TryGetValue("peek", out var peekVal) == true &&
-                (peekVal is bool pb ? pb : (peekVal is JsonElement je && je.ValueKind == JsonValueKind.True));
-
-            var callBlock = MemoryBlock.ToolCall(fcc.Name, args, model: _modelStr);
-            if (isPeek)
-                callBlock.Data = new() { ["peek"] = true };
-            callBlock.Number = _nextNum++;
-            await _store.AppendBlocksAsync(_sessionId, [callBlock], _nextNum);
-
-            _pendingToolCalls.Add((fcc.Name, args, isPeek, callBlock.Number));
-
-            events.Add(new ToolCallTurnEvent(fcc.Name, args, isPeek));
-        }
-
-        if (frc is not null)
-        {
-            events.AddRange(await FlushReasoningAsync(_agentOpts.PeekToolReasoning));
-            events.AddRange(await FlushTextAsync());
-
-            var output = frc.Result?.ToString() ?? "";
-            if (_pendingToolCalls.Count > 0)
-            {
-                var (name, args, isPeek, callBlockNumber) = _pendingToolCalls[0];
-                _pendingToolCalls.RemoveAt(0);
-
-                if (name is "read_file" or "write_file")
-                {
-                    string? fPath = null;
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(args);
-                        if (doc.RootElement.TryGetProperty("path", out var p))
-                            fPath = p.GetString();
-                    }
-                    catch { }
-
-                    if (fPath is not null)
-                    {
-                        string fileContent;
-                        if (name == "write_file")
-                        {
-                            try { fileContent = await File.ReadAllTextAsync(fPath); }
-                            catch { fileContent = output; }
-                        }
-                        else
-                        {
-                            fileContent = output.TrimEnd('\n', '\r');
-                        }
-
-                        if (!isPeek && !string.IsNullOrEmpty(fileContent))
-                            await _store.UpdateBlockToolResultAsync(_sessionId, callBlockNumber, fileContent);
-
-                        var cleanedArgs = CleanToolArgs(args, "content");
-                        if (cleanedArgs is not null)
-                            await _store.UpdateBlockAsync(_sessionId, callBlockNumber, content: cleanedArgs);
-
-                        events.Add(new ToolResultTurnEvent(name, fileContent));
-                    }
-                    else
-                    {
-                        events.Add(new ToolResultTurnEvent(name, output));
-                    }
-                }
-                else if (name == "patch_file")
-                {
-                    if (!isPeek && !string.IsNullOrEmpty(output))
-                        await _store.UpdateBlockToolResultAsync(_sessionId, callBlockNumber, output);
-
-                    var cleanedArgs = CleanToolArgs(args, "newString", "oldString");
-                    if (cleanedArgs is not null)
-                        await _store.UpdateBlockAsync(_sessionId, callBlockNumber, content: cleanedArgs);
-
-                    events.Add(new ToolResultTurnEvent(name, output));
-                }
-                else
-                {
-                    if (!isPeek && !string.IsNullOrEmpty(output))
-                        await _store.UpdateBlockToolResultAsync(_sessionId, callBlockNumber, output);
-
-                    events.Add(new ToolResultTurnEvent(name, output));
-                }
-
-                // Inter-iteration: clear peek markers (not reasoning) — block stays, result+peek flag removed
-                if (_pendingToolCalls.Count == 0)
-                    await _store.ClearPeekMarkersAsync(_sessionId, false);
-            }
-            else
-            {
-                var block = MemoryBlock.ToolCall("unknown", output, model: _modelStr);
-                block.Number = _nextNum++;
-                block.ToolResult = output;
-                await _store.AppendBlocksAsync(_sessionId, [block], _nextNum);
-            }
-        }
-
-        return events;
     }
 
     private static string BuildPeekCleanMessage(int total, Dictionary<string, int> stats)
@@ -255,38 +283,6 @@ public class TurnProcessor : ITurnProcessor
             lines.Add($"  {icon} {kv.Key,-20}: {kv.Value,4}");
         }
         return string.Join('\n', lines);
-    }
-
-    private async Task<List<TurnEvent>> FlushReasoningAsync(bool isPeek)
-    {
-        if (_reasoningAccum.Length == 0) return [];
-        var fullReasoning = _reasoningAccum.ToString();
-        _reasoningAccum.Clear();
-        var block = MemoryBlock.AgentReasoning(fullReasoning, model: _modelStr);
-        block.Number = _nextNum++;
-        if (isPeek)
-            block.Data = new() { ["peek"] = true };
-        await _store.AppendBlocksAsync(_sessionId, [block], _nextNum);
-        return []; // content already streamed via ReasoningChunkEvent
-    }
-
-    private async Task<List<TurnEvent>> FlushTextAsync()
-    {
-        if (_textAccum.Length == 0) return [];
-        var fullText = _textAccum.ToString();
-        _textAccum.Clear();
-        var block = MemoryBlock.AgentMessage(fullText, model: _modelStr);
-        block.Number = _nextNum++;
-        await _store.AppendBlocksAsync(_sessionId, [block], _nextNum);
-        return []; // content already streamed via TextChunkEvent
-    }
-
-    private async Task<List<TurnEvent>> FlushAllAsync()
-    {
-        var events = new List<TurnEvent>();
-        events.AddRange(await FlushReasoningAsync(_agentOpts.PeekReasoning));
-        events.AddRange(await FlushTextAsync());
-        return events;
     }
 
     private static string? CleanToolArgs(string argsJson, params string[] keys)

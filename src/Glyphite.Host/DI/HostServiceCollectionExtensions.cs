@@ -46,17 +46,6 @@ public static class HostServiceCollectionExtensions
         services.AddSingleton<IMemoryStore>(sp =>
             MemoryStore.CreateForApp(dataDir, dataOpts.DatabaseFileName));
 
-        // ── Memory provider ──
-        services.AddSingleton<IBlockMemoryProvider>(sp =>
-        {
-            var store = sp.GetRequiredService<IMemoryStore>();
-            var memOpts = sp.GetRequiredService<IOptions<MemoryOptions>>().Value;
-            var agentOpts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-            var deepseek = sp.GetRequiredService<IOptions<DeepSeekOptions>>().Value;
-            var compOpts = sp.GetRequiredService<IOptions<CompressionOptions>>().Value;
-            return new BlockMemoryProvider(store, memOpts, agentOpts, deepseek.Model, compOpts);
-        });
-
         // ── IChatClient ──
         services.AddSingleton<IChatClient>(sp =>
         {
@@ -90,11 +79,21 @@ public static class HostServiceCollectionExtensions
             return new AgentManager(store, cfg);
         });
 
-        // ── Tool Registry ──
-        services.AddSingleton<IToolRegistry, ToolRegistry>();
+        // ── Agent Scope (per-agent DI scope) ──
+        services.AddSingleton<IAgentScopeFactory, AgentScopeFactory>();
 
-        // ── Turn Processor ──
-        services.AddSingleton<ITurnProcessor, TurnProcessor>();
+        // ── Scoped per-agent services (new scope per /new, /use, /clone, sub-agent) ──
+        services.AddScoped<ITurnProcessor, TurnProcessor>();
+        services.AddScoped<IBlockMemoryProvider>(sp =>
+        {
+            var store = sp.GetRequiredService<IMemoryStore>();
+            var memOpts = sp.GetRequiredService<IOptions<MemoryOptions>>().Value;
+            var agentOpts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
+            var deepseek = sp.GetRequiredService<IOptions<DeepSeekOptions>>().Value;
+            var compOpts = sp.GetRequiredService<IOptions<CompressionOptions>>().Value;
+            return new BlockMemoryProvider(store, memOpts, agentOpts, deepseek.Model, compOpts);
+        });
+        services.AddScoped<IToolRegistry, ToolRegistry>();
 
         return services;
     }

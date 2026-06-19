@@ -33,6 +33,7 @@ public partial class ChatRepl
 
             _agentId = await _agentManager.CreateAgentAsync(firstName, _deepseek.Model, cwd);
             _agentOpts.AgentName = firstName;
+            SwitchScope();
             await ResetSessionStateAsync();
             await LoadAgentConfigAsync(_agentId, cwd);
             Console.ForegroundColor = ConsoleColor.Green;
@@ -52,6 +53,7 @@ public partial class ChatRepl
             // Resume directly
             _agentId = lastActive;
             _agentOpts.AgentName = lastActive;
+            SwitchScope();
             await ResetSessionStateAsync();
             await LoadAgentConfigAsync(_agentId, cwd);
             if (await _blockMemory.GetAgentModelAsync(_agentId) is null)
@@ -126,6 +128,7 @@ public partial class ChatRepl
         }
         _agentId = await _agentManager.CreateAgentAsync(newName, _deepseek.Model, cwd);
         _agentOpts.AgentName = newName;
+        SwitchScope();
         await ResetSessionStateAsync();
         await LoadAgentConfigAsync(_agentId, cwd);
         Console.ForegroundColor = ConsoleColor.Green;
@@ -154,6 +157,7 @@ public partial class ChatRepl
         else
             _agentId = agents[0];
         _agentOpts.AgentName = _agentId;
+        SwitchScope();
         await ResetSessionStateAsync();
         await LoadAgentConfigAsync(_agentId, Directory.GetCurrentDirectory());
         if (await _blockMemory.GetAgentModelAsync(_agentId) is null)
@@ -203,6 +207,7 @@ public partial class ChatRepl
         await _store.ForkSessionAsync(sourceName, cloneName, cwd);
         _agentId = cloneName;
         _agentOpts.AgentName = cloneName;
+        SwitchScope();
         await ResetSessionStateAsync();
         await LoadAgentConfigAsync(_agentId, cwd);
         Console.ForegroundColor = ConsoleColor.Green;
