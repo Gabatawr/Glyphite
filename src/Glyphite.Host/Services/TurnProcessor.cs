@@ -251,10 +251,11 @@ public class TurnProcessor : ITurnProcessor
                         catch { }
                     }
                     // Peek tools: replace ChatMessage with cleaned block render (ToContextString)
+                    // Only tool blocks — reasoning peek blocks persist for the current turn
                     else if (isPeek)
                     {
                         var updatedBlock = await _store.GetBlockAsync(sessionId, callBlockNumber);
-                        if (updatedBlock is not null)
+                        if (updatedBlock?.Type == BlockType.tool)
                         {
                             var newText = updatedBlock.ToContextString();
                             var pat = $"[Block: {callBlockNumber:F1},";
