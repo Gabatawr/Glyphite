@@ -36,8 +36,8 @@ public static class SubAgentTool
         await foreach (var turnEvent in scope.TurnProcessor.ProcessAsync(
             agentId, task, chatOptions, CancellationToken.None))
         {
-            if (turnEvent is TextTurnEvent te)
-                sb.Append(te.Text);
+            if (turnEvent is TextChunkEvent tc)
+                sb.Append(tc.Chunk);
         }
 
         // ── Delta after task completes ──
