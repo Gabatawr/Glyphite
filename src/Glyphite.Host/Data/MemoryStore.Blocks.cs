@@ -373,6 +373,18 @@ public partial class MemoryStore
         finally { _writeLock.Release(); }
     }
 
+    public async Task DeleteBlocksSinceAsync(string agentId, double fromNumber)
+    {
+        await _writeLock.WaitAsync();
+        try
+        {
+            await _conn.ExecuteAsync(
+                "DELETE FROM blocks WHERE agent_id = @sid AND number >= @num",
+                new { sid = agentId, num = fromNumber });
+        }
+        finally { _writeLock.Release(); }
+    }
+
     public async Task<List<string>> ListAgentsAsync()
     {
         using var conn = CreateReadConnection();

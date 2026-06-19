@@ -35,6 +35,7 @@ public interface IMemoryStore : IDisposable
     Task<int> DeleteBlocksByFilterAsync(string agentId, string[]? types, TimeSpan? recent, HashSet<BlockType>? protectedTypes = null);
     Task ForkSessionAsync(string sourceId, string targetId, string cwd);
     Task ClearAgentBlocksAsync(string agentId);
+    Task DeleteBlocksSinceAsync(string agentId, double fromNumber);
     Task<List<string>> ListAgentsAsync();
     Task<int> GetBlockCountAsync(string agentId);
     Task<Dictionary<string, int>> GetBlockTypeStatsAsync(string agentId);

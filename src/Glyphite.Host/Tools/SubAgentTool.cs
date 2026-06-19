@@ -12,10 +12,10 @@ namespace Glyphite.Host.Tools;
 
 public static class SubAgentTool
 {
-    /// <summary>Shared runner: saves usage checkpoint, executes task, records delta cost into main
-    /// session's usage, returns subagent's text response (without cost appended — cost goes to main
-    /// chat's session_usage table for automatic +$ calculation).</summary>
-    private static async Task<string> RunAgentTask(
+    /// <summary>Shared runner: saves usage + block checkpoints, executes task, records delta cost into main
+    /// session's usage, returns subagent's text response and block checkpoint (for caller to clean blocks
+    /// that were created during this task).</summary>
+    private static async Task<(string Result, double BlockCheckpoint)> RunAgentTask(
         AgentScope scope, IMemoryStore store, string agentId, string task,
         string mainSessionId)
     {
@@ -28,7 +28,8 @@ public static class SubAgentTool
         };
         chatOptions.Tools = scope.ToolRegistry.GetBuiltinTools(agentId).ToList();
 
-        // ── Checkpoint: save usage before task ──
+        // ── Checkpoint: save block number + usage before task ──
+        var blockCk = await store.GetNextNumberAsync(agentId);
         var (ckHit, ckMiss, ckOutput) = await store.GetUsageAsync(agentId);
 
         var sb = new StringBuilder();
@@ -51,13 +52,7 @@ public static class SubAgentTool
             await store.RecordUsageAsync(mainSessionId, dHit, dMiss, dOutput,
                 model: resolvedModel);
 
-        return sb.ToString().Trim();
-    }
-
-    /// <summary>Clear subagent's usage delta after recording into main session. Blocks/memory are preserved.</summary>
-    private static async Task ClearSubAgentUsage(IMemoryStore store, string agentId)
-    {
-        await store.ClearUsageAsync(agentId);
+        return (sb.ToString().Trim(), blockCk);
     }
 
     /// <summary>Ensure a scope is registered for the given agent, creating one if needed.</summary>
@@ -186,7 +181,7 @@ public static class SubAgentTool
             {
                 var result = await subAgentManager.RunAsync(name, async s =>
                 {
-                    var output = await RunAgentTask(s, store, name, task, currentSessionId);
+                    var (output, _) = await RunAgentTask(s, store, name, task, currentSessionId);
                     // Delete agent entirely after one-shot task
                     subAgentManager.Remove(name);
                     await store.DeleteSessionAsync(name);
@@ -229,8 +224,10 @@ public static class SubAgentTool
             {
                 subAgentManager.EnqueueParallel(name, task, async s =>
                 {
-                    var output = await RunAgentTask(s, store, name, task, currentSessionId);
-                    await ClearSubAgentUsage(store, name);
+                    var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId);
+                    // Clear usage + blocks created during this task (delta already in main)
+                    await store.ClearUsageAsync(name);
+                    await store.DeleteBlocksSinceAsync(name, blockCk);
                     return output;
                 });
                 return $"[queued parallel] Agent '{name}' will execute in parallel batch.";
@@ -251,9 +248,10 @@ public static class SubAgentTool
             {
                 var result = await subAgentManager.RunAsync(name, async s =>
                 {
-                    var output = await RunAgentTask(s, store, name, task, currentSessionId);
-                    // Clear usage delta — already recorded in main session
-                    await ClearSubAgentUsage(store, name);
+                    var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId);
+                    // Clear usage + blocks created during this task (delta already in main)
+                    await store.ClearUsageAsync(name);
+                    await store.DeleteBlocksSinceAsync(name, blockCk);
                     return output;
                 });
 
@@ -271,7 +269,7 @@ public static class SubAgentTool
             }
         },
         name: "subagent_use",
-        description: "Execute a task on an existing subagent. Usage delta recorded in main session. Subagent blocks/memory are preserved — agents remember context across calls. Sequential mode also flushes any queued parallel tasks first."
+        description: "Execute a task on an existing subagent. Usage delta recorded in main session. Blocks and usage created during this task are cleaned — agent stays fresh for next invocation. Sequential mode also flushes any queued parallel tasks first."
         );
     }
 
