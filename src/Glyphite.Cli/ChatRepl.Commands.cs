@@ -83,12 +83,16 @@ public partial class ChatRepl
                     var cumRate = (int)(cumHit * 100.0 / (cumHit + cumMiss + cumOutput));
                     Console.WriteLine($"  Cache:     {ConsoleRenderer.FormatTokenCount(cumHit)} hit / {ConsoleRenderer.FormatTokenCount(cumMiss)} miss ({cumRate}%)");
 
-                    var (mPrice, hPrice, oPrice) = GetPricing(statsModel ?? _deepseek.Model);
-                    if (mPrice.HasValue)
+                    // Cost: sum per-model rows with per-model pricing
+                    var usageByModel = await _store.GetUsageByModelAsync(_agentId!);
+                    var totalCost = 0.0;
+                    foreach (var (modelName, hit, miss, output) in usageByModel)
                     {
-                        var totalCost = (cumMiss * mPrice.Value + cumHit * (hPrice ?? 0) + cumOutput * (oPrice ?? mPrice.Value)) / 1_000_000.0;
-                        Console.WriteLine($"  Cost:      ${totalCost:F2}");
+                        var (mPrice, hPrice, oPrice) = GetPricing(modelName);
+                        if (mPrice.HasValue)
+                            totalCost += miss * mPrice.Value + (hPrice ?? 0) * hit + (oPrice ?? mPrice.Value) * output;
                     }
+                    Console.WriteLine($"  Cost:      ${totalCost / 1_000_000.0:F2}");
                 }
 
                 Console.ResetColor();

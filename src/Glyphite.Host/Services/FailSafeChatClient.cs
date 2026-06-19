@@ -14,6 +14,9 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     public IReadOnlyList<ChatMessage>? LastMessages { get; private set; }
     public Action<long, long, long>? OnUsage { get; set; }
 
+    /// <summary>Called after each batch of tool executions completes. Returns text to append to tool results (or null).</summary>
+    public Func<Task<string?>>? OnBatchComplete { get; set; }
+
     public long TotalCacheHitTokens { get; private set; }
     public long TotalCacheMissTokens { get; private set; }
     public long TotalOutputTokens { get; private set; }
@@ -268,6 +271,18 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             }
 
             messageList.AddRange(toolResults);
+
+            // Flush queued parallel subagent tasks; append results to tool messages for LLM
+            if (OnBatchComplete is not null)
+            {
+                var flushText = await OnBatchComplete();
+                if (!string.IsNullOrEmpty(flushText))
+                {
+                    var flushId = Guid.NewGuid().ToString("N");
+                    messageList.Add(new ChatMessage(ChatRole.Tool,
+                        [new FunctionResultContent(flushId, flushText), new TextContent(flushText)]));
+                }
+            }
         }
 
         throw new InvalidOperationException($"Tool execution exceeded {_maxIterations} iterations.");

@@ -14,19 +14,8 @@ public partial class ChatRepl
     private string _promptPrefix = "> ";
     private readonly List<(string Text, ConsoleColor Color)> _promptSegments = [];
 
-    private static string FormatCost(double? missPrice, double? hitPrice, double? outputPrice, long miss, long hit, long output)
-    {
-        if (missPrice is null) return "";
-        var cost = miss * missPrice.Value + (hitPrice ?? 0) * hit + (outputPrice ?? missPrice.Value) * output;
-        cost /= 1_000_000;
-        return cost >= 0.01 ? $"${cost:F2}" : $"${cost:F6}";
-    }
-
     private async Task UpdatePromptPrefixAsync()
     {
-        var model = await _blockMemory.GetAgentModelAsync(_agentId) ?? _deepseek.Model;
-        var (cumHit, cumMiss, cumOutput) = await _store.GetUsageAsync(_agentId);
-
         _promptSegments.Clear();
         var def = ConsoleColor.DarkGray;
         var yellow = ConsoleColor.DarkYellow;
@@ -39,19 +28,23 @@ public partial class ChatRepl
             _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", useYellow ? yellow : white));
         }
 
-        var (mPrice, hPrice, oPrice) = GetPricing(model);
-        var cumCost = FormatCost(mPrice, hPrice, oPrice, cumMiss, cumHit, cumOutput);
+        // Cumulative cost (per-model pricing)
+        var currentCost = await GetCurrentCumulativeCostAsync();
+        var cumCost = currentCost >= 0.01 ? $"${currentCost:F2}" : currentCost > 0 ? $"${currentCost:F6}" : "";
         if (!string.IsNullOrEmpty(cumCost))
             _promptSegments.Add((cumCost, def));
 
-        if (mPrice.HasValue && hPrice.HasValue && oPrice.HasValue)
+        // +$ = delta of cumulative cost (naturally includes subagent usage)
+        if (_prevCumulativeCost >= 0)
         {
-            var cost = _lastTurnMiss * mPrice.Value + _lastTurnHit * hPrice.Value + _lastTurnOutput * oPrice.Value;
-            cost /= 1_000_000;
-            var costStr = FormatCost(mPrice, hPrice, oPrice, _lastTurnMiss, _lastTurnHit, _lastTurnOutput);
-            if (!string.IsNullOrEmpty(costStr))
-                _promptSegments.Add(($"+{costStr}", cost >= _compressionOpts.CostSignificantThreshold ? white : def));
+            var delta = currentCost - _prevCumulativeCost;
+            if (delta > 0)
+            {
+                var costStr = delta >= 0.01 ? $"${delta:F2}" : $"${delta:F6}";
+                _promptSegments.Add(($"+{costStr}", delta >= _compressionOpts.CostSignificantThreshold ? white : def));
+            }
         }
+        _prevCumulativeCost = currentCost;
 
         var totalRate = _lastTurnHit + _lastTurnMiss;
         if (totalRate > 0)
@@ -83,6 +76,21 @@ public partial class ChatRepl
                 return (entry.Miss, entry.Hit, entry.Output);
         return (null, null, null);
     }
+
+    /// <summary>Calculate total cumulative cost ($) from all usage rows, using per-model pricing.</summary>
+    private async Task<double> GetCurrentCumulativeCostAsync()
+    {
+        var usageByModel = await _store.GetUsageByModelAsync(_agentId);
+        var total = 0.0;
+        foreach (var (modelName, hit, miss, output) in usageByModel)
+        {
+            var (mP, hP, oP) = GetPricing(modelName);
+            if (mP.HasValue)
+                total += miss * mP.Value + (hP ?? 0) * hit + (oP ?? mP.Value) * output;
+        }
+        return total / 1_000_000.0;
+    }
+
     private static bool IsCommand(List<char> buffer) => buffer.Count > 0 && buffer[0] == '/';
 
     private async Task<string?> ReadLineWithHistoryAsync()

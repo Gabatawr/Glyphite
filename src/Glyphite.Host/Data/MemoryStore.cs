@@ -94,6 +94,7 @@ public partial class MemoryStore : IMemoryStore
                 cache_hit INTEGER NOT NULL DEFAULT 0,
                 cache_miss INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
+                model TEXT,
                 last_request_hit INTEGER NOT NULL DEFAULT 0,
                 last_request_miss INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
@@ -101,6 +102,7 @@ public partial class MemoryStore : IMemoryStore
             """);
         try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_hit INTEGER NOT NULL DEFAULT 0"); } catch { }
         try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_miss INTEGER NOT NULL DEFAULT 0"); } catch { }
+        try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN model TEXT"); } catch { }
         _conn.Execute("CREATE INDEX IF NOT EXISTS idx_session_usage_agent ON session_usage(agent_id)");
         _conn.Execute("CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_deleted)");
     }
@@ -289,15 +291,15 @@ public partial class MemoryStore : IMemoryStore
 
     // ── Usage tracking ──
 
-    public async Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long lastRequestHit = 0, long lastRequestMiss = 0)
+    public async Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long lastRequestHit = 0, long lastRequestMiss = 0, string? model = null)
     {
         await _writeLock.WaitAsync();
         try
         {
             await _conn.ExecuteAsync("""
-                INSERT INTO session_usage (agent_id, cache_hit, cache_miss, output_tokens, last_request_hit, last_request_miss, created_at)
-                VALUES (@Id, @Hit, @Miss, @Output, @LastHit, @LastMiss, datetime('now'))
-                """, new { Id = agentId, Hit = cacheHit, Miss = cacheMiss, Output = output, LastHit = lastRequestHit, LastMiss = lastRequestMiss });
+                INSERT INTO session_usage (agent_id, cache_hit, cache_miss, output_tokens, model, last_request_hit, last_request_miss, created_at)
+                VALUES (@Id, @Hit, @Miss, @Output, @Model, @LastHit, @LastMiss, datetime('now'))
+                """, new { Id = agentId, Hit = cacheHit, Miss = cacheMiss, Output = output, Model = model, LastHit = lastRequestHit, LastMiss = lastRequestMiss });
         }
         finally { _writeLock.Release(); }
     }
@@ -309,6 +311,15 @@ public partial class MemoryStore : IMemoryStore
             "SELECT COALESCE(SUM(cache_hit), 0), COALESCE(SUM(cache_miss), 0), COALESCE(SUM(output_tokens), 0) FROM session_usage WHERE agent_id = @Id",
             new { Id = agentId });
         return result;
+    }
+
+    public async Task<List<(string Model, long Hit, long Miss, long Output)>> GetUsageByModelAsync(string agentId)
+    {
+        using var conn = CreateReadConnection();
+        var rows = await conn.QueryAsync<(string? Model, long Hit, long Miss, long Output)>(
+            "SELECT COALESCE(model, ''), COALESCE(SUM(cache_hit), 0), COALESCE(SUM(cache_miss), 0), COALESCE(SUM(output_tokens), 0) FROM session_usage WHERE agent_id = @Id GROUP BY model",
+            new { Id = agentId });
+        return rows.Select(r => (r.Model ?? "", r.Hit, r.Miss, r.Output)).ToList();
     }
 
     public async Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> GetLastUsageAsync(string agentId)

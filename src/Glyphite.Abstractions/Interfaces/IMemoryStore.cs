@@ -46,7 +46,8 @@ public interface IMemoryStore : IDisposable
     Task<string?> GetSessionIdByWorkingDirectoryAsync(string cwd);
 
     // Usage tracking
-    Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long lastRequestHit = 0, long lastRequestMiss = 0);
+    Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long lastRequestHit = 0, long lastRequestMiss = 0, string? model = null);
     Task<(long Hit, long Miss, long Output)> GetUsageAsync(string agentId);
+    Task<List<(string Model, long Hit, long Miss, long Output)>> GetUsageByModelAsync(string agentId);
     Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> GetLastUsageAsync(string agentId);
 }

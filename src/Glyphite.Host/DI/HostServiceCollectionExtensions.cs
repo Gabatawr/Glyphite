@@ -79,6 +79,8 @@ public static class HostServiceCollectionExtensions
             return new AgentManager(store, cfg);
         });
 
+        services.AddSingleton<SubAgentManager>();
+
         // ── Agent Scope (per-agent DI scope) ──
         services.AddSingleton<IAgentScopeFactory, AgentScopeFactory>();
 

@@ -31,6 +31,7 @@ public partial class ChatRepl
     private long _lastTurnOutput;
     private long _lastTurnLastHit;
     private long _lastTurnLastMiss;
+    private double _prevCumulativeCost = -1;
 
     public ChatRepl(
         IConfiguration config,

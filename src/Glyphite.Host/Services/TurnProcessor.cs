@@ -16,6 +16,7 @@ public class TurnProcessor : ITurnProcessor
     private readonly IChatClient _chatClient;
     private readonly IToolRegistry _toolRegistry;
     private readonly IConfigService _cfgService;
+    private readonly SubAgentManager _subAgentManager;
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
     private readonly ToolStreamingOptions _streamOpts;
@@ -25,6 +26,7 @@ public class TurnProcessor : ITurnProcessor
         IChatClient chatClient,
         IToolRegistry toolRegistry,
         IConfigService cfgService,
+        SubAgentManager subAgentManager,
         IOptions<DeepSeekOptions> deepseek,
         IOptions<AgentOptions> agentOpts,
         IOptions<ToolStreamingOptions> streamOpts)
@@ -34,6 +36,7 @@ public class TurnProcessor : ITurnProcessor
         _chatClient = chatClient;
         _toolRegistry = toolRegistry;
         _cfgService = cfgService;
+        _subAgentManager = subAgentManager;
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
         _streamOpts = streamOpts.Value;
@@ -77,8 +80,27 @@ public class TurnProcessor : ITurnProcessor
         initialMessages.AddRange(contextMessages);
         initialMessages.Add(new ChatMessage(ChatRole.User, input));
 
+        // Wrap with session-aware client so DeepSeek gets `user` = sessionId for cache isolation
+        var sessionClient = new SessionChatClient(_chatClient, sessionId);
         var failSafeClient = new FailSafeChatClient(
-            _chatClient, _agentOpts.MaxToolIterations, _streamOpts);
+            sessionClient, _agentOpts.MaxToolIterations, _streamOpts);
+
+        // Flush queued parallel subagent tasks after each tool batch
+        failSafeClient.OnBatchComplete = async () =>
+        {
+            var flushResults = await _subAgentManager.FlushParallelAsync();
+            if (flushResults.Count == 0) return null;
+
+            var lines = new List<string> { $"[subagent_flush] {flushResults.Count} parallel task(s) completed:" };
+            foreach (var (agentId, result, error) in flushResults)
+            {
+                if (error is not null)
+                    lines.Add($"  [{agentId}] Error: {error}");
+                else
+                    lines.Add($"  [{agentId}]\n    {(result ?? "(no output)").Replace("\n", "\n    ")}");
+            }
+            return string.Join("\n", lines);
+        };
 
         _blockMemory.CurrentExecutedIds.Value = failSafeClient.ExecutedCallIds;
 
@@ -260,8 +282,21 @@ public class TurnProcessor : ITurnProcessor
         }
 
         // Persist usage from all iterations
-        await _store.RecordUsageAsync(sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
+        await _store.RecordUsageAsync(sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens, model: modelStr);
         yield return new UsageTurnEvent(failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
+
+        // Final flush: any remaining parallel tasks that were never flushed by a sequential call
+        if (_subAgentManager.HasPendingParallel)
+        {
+            var finalResults = await _subAgentManager.FlushParallelAsync();
+            foreach (var (agentId, result, error) in finalResults)
+            {
+                var msg = error is not null
+                    ? $"[AutoTool: subagent_flush] [{agentId}] Error: {error}"
+                    : $"[AutoTool: subagent_flush] [{agentId}]\n{result}";
+                yield return new TextTurnEvent(msg);
+            }
+        }
 
         var flushEvents = await FlushAll();
         foreach (var e in flushEvents)
