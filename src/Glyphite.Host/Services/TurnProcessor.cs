@@ -50,7 +50,8 @@ public class TurnProcessor : ITurnProcessor
     {
         var modelStr = chatOptions.ModelId ?? _deepseek.Model;
 
-        chatOptions.Tools = _toolRegistry.GetBuiltinTools(sessionId).ToList();
+        var includeMemory = chatOptions.AdditionalProperties?.ContainsKey("saveMemory") == true;
+        chatOptions.Tools = _toolRegistry.GetBuiltinTools(sessionId, includeMemory).ToList();
 
         // Get peek block stats before cleaning (for informative message)
         var peekStats = await _store.GetPeekBlockStatsAsync(sessionId);

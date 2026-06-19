@@ -43,12 +43,11 @@ public class ToolRegistry : IToolRegistry
         _defaultDir = Directory.GetCurrentDirectory();
     }
 
-    public IReadOnlyList<AITool> GetBuiltinTools(string sessionId)
+    public IReadOnlyList<AITool> GetBuiltinTools(string sessionId, bool includeMemory = false)
     {
         // Don't give subagent tools to subagents themselves — prevents recursive creation chaos
         var isSubAgent = _subAgentManager.Exists(sessionId);
 
-        // Subagents don't get subagent tools (prevents recursion) nor memory tool (could corrupt blocks)
         var tools = new List<AITool>
         {
             BashTool.AsAIFunction(_bashManager, sessionId, _cfgService),
@@ -62,9 +61,13 @@ public class ToolRegistry : IToolRegistry
             SearchTools.AsGrepFunction(_cfgService, _defaultDir, sessionId),
         };
 
+        // Memory tool: available for main agent, or for subagents with saveMemory=true
+        if (!isSubAgent || includeMemory)
+            tools.Add(MemoryTool.AsAIFunction(_blockMemory, sessionId, _cfgService));
+
+        // Subagent tools: only for main agent (prevents recursion)
         if (!isSubAgent)
         {
-            tools.Add(MemoryTool.AsAIFunction(_blockMemory, sessionId, _cfgService));
             tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _cfgService, _deepseekOpts, _agentOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _scopeFactory, _memoryStore, _deepseekOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _memoryStore, sessionId));

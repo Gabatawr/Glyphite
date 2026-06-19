@@ -17,7 +17,7 @@ public static class SubAgentTool
     /// that were created during this task).</summary>
     private static async Task<(string Result, double BlockCheckpoint)> RunAgentTask(
         AgentScope scope, IMemoryStore store, string agentId, string task,
-        string mainSessionId)
+        string mainSessionId, bool saveMemory = false)
     {
         var resolvedModel = await store.GetAgentModelAsync(agentId) ?? "deepseek-v4-flash";
         var chatOptions = new ChatOptions
@@ -26,6 +26,11 @@ public static class SubAgentTool
             Temperature = 0.7f,
             MaxOutputTokens = 8192,
         };
+        if (saveMemory)
+        {
+            chatOptions.AdditionalProperties ??= [];
+            chatOptions.AdditionalProperties["saveMemory"] = "true";
+        }
         chatOptions.Tools = scope.ToolRegistry.GetBuiltinTools(agentId).ToList();
 
         // ── Checkpoint: save block number + usage before task ──
@@ -210,7 +215,8 @@ public static class SubAgentTool
             [Description("Name of an existing subagent to execute the task on.")] string name,
             [Description("Task/instruction for the subagent.")] string task,
             [Description("Working directory (ignored if agent already exists, present for API consistency).")] string? cwd = null,
-            [Description("Execution mode: 'sequential' (default, wait for result) or 'parallel' (queues for batch execution via Task.WhenAll).")] string? mode = null) =>
+            [Description("Execution mode: 'sequential' (default, wait for result) or 'parallel' (queues for batch execution via Task.WhenAll).")] string? mode = null,
+            [Description("Preserve memory after use (default: false — blocks and usage are cleaned). When true, memory tool is available and context accumulates across calls.")] bool saveMemory = false) =>
         {
             if (!await store.AgentExistsAsync(name))
                 return $"Error: Agent '{name}' not found. Create it with subagent_run first.";
@@ -224,10 +230,12 @@ public static class SubAgentTool
             {
                 subAgentManager.EnqueueParallel(name, task, async s =>
                 {
-                    var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId);
-                    // Clear usage + blocks created during this task (delta already in main)
-                    await store.ClearUsageAsync(name);
-                    await store.DeleteBlocksSinceAsync(name, blockCk);
+                    var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId, saveMemory);
+                    if (!saveMemory)
+                    {
+                        await store.ClearUsageAsync(name);
+                        await store.DeleteBlocksSinceAsync(name, blockCk);
+                    }
                     return output;
                 });
                 return $"[queued parallel] Agent '{name}' will execute in parallel batch.";
@@ -248,10 +256,12 @@ public static class SubAgentTool
             {
                 var result = await subAgentManager.RunAsync(name, async s =>
                 {
-                    var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId);
-                    // Clear usage + blocks created during this task (delta already in main)
-                    await store.ClearUsageAsync(name);
-                    await store.DeleteBlocksSinceAsync(name, blockCk);
+                    var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId, saveMemory);
+                    if (!saveMemory)
+                    {
+                        await store.ClearUsageAsync(name);
+                        await store.DeleteBlocksSinceAsync(name, blockCk);
+                    }
                     return output;
                 });
 
@@ -269,7 +279,7 @@ public static class SubAgentTool
             }
         },
         name: "subagent_use",
-        description: "Execute a task on an existing subagent. Usage delta recorded in main session. Blocks and usage created during this task are cleaned — agent stays fresh for next invocation. Sequential mode also flushes any queued parallel tasks first."
+        description: "Execute a task on an existing subagent. Usage delta recorded in main session. When saveMemory=false (default), blocks/usage are cleaned. When saveMemory=true, memory tool is available and context accumulates across calls."
         );
     }
 
