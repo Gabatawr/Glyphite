@@ -54,6 +54,13 @@ public static class SubAgentTool
         return sb.ToString().Trim();
     }
 
+    /// <summary>Clear subagent's memory (blocks, usage, next_number) after use, keeping the session alive.</summary>
+    private static async Task ClearSubAgentMemory(IMemoryStore store, string agentId)
+    {
+        await store.ClearAgentBlocksAsync(agentId); // deletes blocks + resets next_number to 1
+        await store.ClearUsageAsync(agentId);
+    }
+
     /// <summary>Ensure a scope is registered for the given agent, creating one if needed.</summary>
     private static async Task<string?> EnsureScope(
         SubAgentManager subAgentManager, IAgentScopeFactory scopeFactory,
@@ -139,7 +146,7 @@ public static class SubAgentTool
 
     // ── Tool functions ──
 
-    public static AIFunction AsSubAgentNewFunction(
+    public static AIFunction AsSubAgentRunFunction(
         SubAgentManager subAgentManager,
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
@@ -178,73 +185,23 @@ public static class SubAgentTool
 
             try
             {
-                var runTask = subAgentManager.RunAsync(name, s =>
-                    RunAgentTask(s, store, name, task, currentSessionId));
-                var result = await runTask;
-                return $"Subagent '{name}' created at {homePath}.\n\n{result}";
+                var result = await subAgentManager.RunAsync(name, async s =>
+                {
+                    var output = await RunAgentTask(s, store, name, task, currentSessionId);
+                    // Delete agent entirely after one-shot task
+                    subAgentManager.Remove(name);
+                    await store.DeleteSessionAsync(name);
+                    return output;
+                });
+                return $"{result}";
             }
             catch (Exception ex)
             {
-                return $"Subagent '{name}' created, but initial task failed: {ex.Message}";
+                return $"Error: {ex.Message}";
             }
         },
-        name: "subagent_new",
-        description: "Create a new subagent and immediately run the given task on it. The subagent's usage cost is recorded into the main chat's session for +$ calculation."
-        );
-    }
-
-    public static AIFunction AsSubAgentCloneFunction(
-        SubAgentManager subAgentManager,
-        IAgentManager agentManager,
-        IAgentScopeFactory scopeFactory,
-        IMemoryStore store,
-        IConfigService cfgService,
-        string currentSessionId)
-    {
-        return AIFunctionFactory.Create(async (
-            [Description("Unique name for the cloned subagent.")] string name,
-            [Description("Initial task/instruction for the cloned subagent.")] string task,
-            [Description("Source agent to clone from (defaults to current agent).")] string? parent = null,
-            [Description("Working directory (defaults to parent's cwd).")] string? cwd = null,
-            [Description("Execution mode: 'sequential' (default, wait) or 'parallel' (hint for orchestrator).")] string? mode = null) =>
-        {
-            if (!AgentManager.IsValidAgentName(name))
-                return $"Error: Invalid agent name '{name}'.";
-
-            if (await store.AgentExistsAsync(name))
-                return $"Error: Agent '{name}' already exists.";
-
-            var sourceId = parent ?? currentSessionId;
-            if (!await store.AgentExistsAsync(sourceId))
-                return $"Error: Source agent '{sourceId}' not found.";
-
-            var parentCwd = await store.GetAgentHomePathAsync(sourceId) ?? Directory.GetCurrentDirectory();
-            var homePath = cwd ?? parentCwd;
-
-            await store.ForkSessionAsync(sourceId, name, homePath);
-            await LoadSubAgentConfigAsync(name, homePath, parentCwd, cfgService, store);
-
-            var scope = scopeFactory.CreateScope();
-            if (!subAgentManager.TryRegister(name, scope))
-            {
-                scope.Dispose();
-                return $"Error: Failed to register cloned subagent '{name}'.";
-            }
-
-            try
-            {
-                var runTask = subAgentManager.RunAsync(name, s =>
-                    RunAgentTask(s, store, name, task, currentSessionId));
-                var result = await runTask;
-                return $"Cloned '{sourceId}' → '{name}' at {homePath}.\n\n{result}";
-            }
-            catch (Exception ex)
-            {
-                return $"Cloned '{sourceId}' → '{name}', but initial task failed: {ex.Message}";
-            }
-        },
-        name: "subagent_clone",
-        description: "Clone an existing agent into a new subagent and immediately run the given task. Usage cost is recorded into the main chat's session."
+        name: "subagent_run",
+        description: "Create a temporary subagent, run the given task, record usage delta into main session, then delete the subagent. One-shot ephemeral agent execution."
         );
     }
 
@@ -262,7 +219,7 @@ public static class SubAgentTool
             [Description("Execution mode: 'sequential' (default, wait for result) or 'parallel' (queues for batch execution via Task.WhenAll).")] string? mode = null) =>
         {
             if (!await store.AgentExistsAsync(name))
-                return $"Error: Agent '{name}' not found. Create it with subagent_new first.";
+                return $"Error: Agent '{name}' not found. Create it with subagent_run first.";
 
             var scopeErr = await EnsureScope(subAgentManager, scopeFactory, store, name);
             if (scopeErr is not null) return scopeErr;
@@ -271,8 +228,13 @@ public static class SubAgentTool
 
             if (isParallel)
             {
-                subAgentManager.EnqueueParallel(name, task, s =>
-                    RunAgentTask(s, store, name, task, currentSessionId));
+                subAgentManager.EnqueueParallel(name, task, async s =>
+                {
+                    var output = await RunAgentTask(s, store, name, task, currentSessionId);
+                    await ClearSubAgentMemory(store, name);
+                    subAgentManager.Remove(name);
+                    return output;
+                });
                 return $"[queued parallel] Agent '{name}' will execute in parallel batch.";
             }
 
@@ -289,9 +251,14 @@ public static class SubAgentTool
 
             try
             {
-                var runTask = subAgentManager.RunAsync(name, s =>
-                    RunAgentTask(s, store, name, task, currentSessionId));
-                var result = await runTask;
+                var result = await subAgentManager.RunAsync(name, async s =>
+                {
+                    var output = await RunAgentTask(s, store, name, task, currentSessionId);
+                    // Clear memory after each use — next invocation starts fresh
+                    await ClearSubAgentMemory(store, name);
+                    subAgentManager.Remove(name);
+                    return output;
+                });
 
                 if (parts.Count > 0)
                     parts.Add($"[{name}]\n{result}");
@@ -307,7 +274,7 @@ public static class SubAgentTool
             }
         },
         name: "subagent_use",
-        description: "Execute a task on an existing subagent. The subagent's usage cost is recorded into the main chat's session for +$ calculation. Sequential mode also flushes any queued parallel tasks first."
+        description: "Execute a task on an existing subagent. Usage delta recorded in main session. Subagent memory (blocks, usage) is cleared after each use — next invocation starts fresh. Sequential mode also flushes any queued parallel tasks first."
         );
     }
 

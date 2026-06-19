@@ -50,4 +50,5 @@ public interface IMemoryStore : IDisposable
     Task<(long Hit, long Miss, long Output)> GetUsageAsync(string agentId);
     Task<List<(string Model, long Hit, long Miss, long Output)>> GetUsageByModelAsync(string agentId);
     Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> GetLastUsageAsync(string agentId);
+    Task ClearUsageAsync(string agentId);
 }

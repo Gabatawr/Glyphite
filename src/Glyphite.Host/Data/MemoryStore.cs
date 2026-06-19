@@ -223,6 +223,7 @@ public partial class MemoryStore : IMemoryStore
         try
         {
             await using var tx = await _conn.BeginTransactionAsync();
+            await _conn.ExecuteAsync("DELETE FROM session_usage WHERE agent_id = @sid", new { sid = agentId });
             await _conn.ExecuteAsync("DELETE FROM blocks WHERE agent_id = @sid", new { sid = agentId });
             await _conn.ExecuteAsync("DELETE FROM config WHERE scope = 'session' AND agent_id = @sid", new { sid = agentId });
             await _conn.ExecuteAsync("DELETE FROM agent_launches WHERE agent_id = @sid", new { sid = agentId });
@@ -329,6 +330,16 @@ public partial class MemoryStore : IMemoryStore
             "SELECT cache_hit, cache_miss, output_tokens, last_request_hit, last_request_miss FROM session_usage WHERE agent_id = @Id ORDER BY rowid DESC LIMIT 1",
             new { Id = agentId });
         return result;
+    }
+
+    public async Task ClearUsageAsync(string agentId)
+    {
+        await _writeLock.WaitAsync();
+        try
+        {
+            await _conn.ExecuteAsync("DELETE FROM session_usage WHERE agent_id = @sid", new { sid = agentId });
+        }
+        finally { _writeLock.Release(); }
     }
 
 
