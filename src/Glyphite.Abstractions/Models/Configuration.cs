@@ -104,6 +104,7 @@ public class MemoryOptions
 {
     public const string Section = "Memory";
     public string[] ProtectedBlockTypes { get; set; } = [];
+    public bool ReloadAgentFile { get; set; } = false;
     public void Validate()
     {
         if (ProtectedBlockTypes.Length == 0)

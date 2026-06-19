@@ -8,13 +8,12 @@ namespace Glyphite.Host.Tools;
 
 public static class FilePatchTool
 {
-    [Description("Replace text in a file using multi-strategy fuzzy matching. Supports 4 matching strategies (tried in order): exact match, trimmed match (both sides), whitespace-normalized (collapse repeating spaces/tabs), and indentation-flexible (strip leading whitespace). Returns a unified diff of changes. Use for targeted edits; for large rewrites use `write_file`. For single-line changes this is preferred over `write_file`. Tip: when using Search/Replace blocks from a diff, copy the EXACT text from the file to avoid fuzzy fallback.")]
     public static async Task<string> PatchFile(
-        [Description("Path to the file (absolute or relative to working directory)")] string path,
-        [Description("Text to find. Try to match exact content from the file (including indentation). Fuzzy fallbacks handle minor whitespace differences.")] string oldString,
-        [Description("Replacement text")] string newString,
-        [Description("Replace ALL occurrences of oldString (default: false, replaces only first match). Use with caution.")] bool replaceAll = false,
-        [Description("Auto-clean result after tool loop.")] bool? peek = null,
+        string path,
+        string oldString,
+        string newString,
+        bool replaceAll = false,
+        bool? peek = null,
         string? defaultDirectory = null)
     {
         if (string.IsNullOrEmpty(oldString))
@@ -269,8 +268,18 @@ public static class FilePatchTool
     private static string FormatBytes(long bytes)
         => bytes >= 1024 ? $"{bytes / 1024.0:F1} KB" : $"{bytes} B";
 
-    public static AIFunction AsAIFunction(string? defaultDirectory = null) => AIFunctionFactory.Create(
-        async (string path, string oldString, string newString, bool replaceAll = false, bool? peek = null) =>
-            await PatchFile(path, oldString, newString, replaceAll, peek, defaultDirectory),
-        "patch_file");
+    private sealed class PatchInvoker(string? defaultDirectory)
+    {
+        [Description("Replace text in a file using multi-strategy fuzzy matching. Supports 4 matching strategies (tried in order): exact match, trimmed match, whitespace-normalized, and indentation-flexible. Returns a unified diff of changes. Use for targeted edits; for large rewrites use `write_file`. Tip: when using Search/Replace blocks from a diff, copy the EXACT text from the file to avoid fuzzy fallback.")]
+        public Task<string> Execute(
+            [Description("Path to the file (absolute or relative to working directory)")] string path,
+            [Description("Text to find. Try to match exact content from the file (including indentation). Fuzzy fallbacks handle minor whitespace differences.")] string oldString,
+            [Description("Replacement text")] string newString,
+            [Description("Replace ALL occurrences (default: false, replaces only first match). Use with caution.")] bool replaceAll = false,
+            [Description("Auto-clean result after tool loop.")] bool? peek = null)
+            => PatchFile(path, oldString, newString, replaceAll, peek, defaultDirectory);
+    }
+
+    public static AIFunction AsAIFunction(string? defaultDirectory = null)
+        => AIFunctionFactory.Create(new PatchInvoker(defaultDirectory).Execute, "patch_file");
 }

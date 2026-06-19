@@ -8,23 +8,30 @@ namespace Glyphite.Host.Tools;
 
 public static partial class WebFetchTool
 {
-    public static AIFunction AsFetchFunction(IConfigService? cfg, string? sessionId = null)
+    private sealed class FetchInvoker(IConfigService cfg, string? sessionId)
     {
-        return AIFunctionFactory.Create(
-            async (string url, string? format, bool? peek = null, CancellationToken ct = default) =>
-            {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<WebFetchOptions>("WebFetch", sessionId) : new();
+        [Description("Fetch the content of a web page by URL. Returns content as plain text (default) or markdown. Handles redirects automatically. Use for reading documentation, API specs, or any online resource needed for the task.")]
+        public async Task<string> Execute(
+            [Description("URL to fetch (must start with http:// or https://)")] string url,
+            [Description("Output format: 'text' (default, strips HTML) or 'markdown'")] string? format = null,
+            [Description("Auto-clean result after tool loop.")] bool? peek = null,
+            CancellationToken ct = default)
+        {
+            var opts = await cfg.GetOptionsAsync<WebFetchOptions>("WebFetch", sessionId);
             using var http = new HttpClient();
             http.Timeout = TimeSpan.FromSeconds(opts.TimeoutSeconds);
             http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", opts.UserAgent);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeoutCts.CancelAfter(TimeSpan.FromSeconds(opts.TimeoutSeconds));
-                return await FetchUrl(url, format ?? opts.DefaultFormat, http, opts.MaxContentLength, peek, timeoutCts.Token);
-            },
-            "fetch_web");
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(opts.TimeoutSeconds));
+            return await FetchUrl(url, format ?? opts.DefaultFormat, http, opts.MaxContentLength, peek, timeoutCts.Token);
+        }
     }
 
-    [Description("Fetch the content of a web page by URL. Returns content as plain text (default) or markdown. Handles redirects automatically. Use for reading documentation, API specs, or any online resource needed for the task. Max content length is configurable (default 32KB). If a page redirects to a different host, a new request follows automatically.")]
+    public static AIFunction AsFetchFunction(IConfigService? cfg, string? sessionId = null)
+        => AIFunctionFactory.Create(
+            new FetchInvoker(cfg!, sessionId).Execute,
+            "fetch_web");
+
     internal static async Task<string> FetchUrl(
         string url,
         string format,

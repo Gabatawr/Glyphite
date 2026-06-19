@@ -8,12 +8,11 @@ namespace Glyphite.Host.Tools;
 
 public static class FileWriteTool
 {
-    [Description("Write content to a file, overwriting if it exists. Creates parent directories if they don't exist. For targeted edits, prefer `patch_file`. For new files or complete rewrites, use this.")]
     public static async Task<string> WriteFile(
-        [Description("Path to the file (absolute or relative to working directory). Parent directories auto-created.")] string path,
-        [Description("Complete file content to write. For targeted changes use `patch_file` instead.")] string content,
-        [Description("Result detail level: 'metadata' (default, returns path+size) or 'content' (returns full file content).")] string? resultType = null,
-        [Description("Auto-clean result after tool loop. File is still written.")] bool? peek = null,
+        string path,
+        string content,
+        string? resultType = null,
+        bool? peek = null,
         IMemoryStore? store = null,
         string? sessionId = null,
         string? defaultDirectory = null)
@@ -39,9 +38,19 @@ public static class FileWriteTool
             : $"Written {path} ({new FileInfo(path).Length} bytes)";
     }
 
+    private sealed class WriteInvoker(IMemoryStore store, string sessionId, string? defaultDirectory)
+    {
+        [Description("Write content to a file, overwriting if it exists. Creates parent directories if they don't exist. For targeted edits, prefer `patch_file`. For new files or complete rewrites, use this.")]
+        public async Task<string> Execute(
+            [Description("Path to the file (absolute or relative to working directory). Parent directories auto-created.")] string path,
+            [Description("Complete file content to write. For targeted changes use `patch_file` instead.")] string content,
+            [Description("Result detail level: 'metadata' (default, returns path+size) or 'content' (returns full file content).")] string? resultType = null,
+            [Description("Auto-clean result after tool loop. File is still written.")] bool? peek = null)
+            => await WriteFile(path, content, resultType, peek, store, sessionId, defaultDirectory);
+    }
+
     public static AIFunction AsAIFunction(IMemoryStore store, string sessionId, string? defaultDirectory = null)
         => AIFunctionFactory.Create(
-            async (string path, string content, string? resultType = null, bool? peek = null) =>
-                await WriteFile(path, content, resultType, peek, store, sessionId, defaultDirectory),
+            new WriteInvoker(store, sessionId, defaultDirectory).Execute,
             "write_file");
 }

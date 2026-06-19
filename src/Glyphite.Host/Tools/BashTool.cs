@@ -9,16 +9,15 @@ namespace Glyphite.Host.Tools;
 
 public static class BashTool
 {
-    [Description("Execute a bash command in a persistent shell session. Working directory and environment persist between commands. Output is auto-deduplicated (repeated lines compressed). Use `workdir` to run in a specific directory (preferred over cd in the command). Use `timeoutMs` for long-running commands. Prefer non-interactive commands: use flags to disable pagers (--no-pager), auto-confirm prompts (-y), provide input via flags rather than stdin. For commands that may fail, consider redirecting stderr to stdout (2>&1) so you can see errors.")]
     public static async Task<string> ExecuteBash(
-        [Description("The bash command to execute. Use non-interactive flags where possible (--no-pager, -y, etc.)")] string command,
-        [Description("Working directory (optional, defaults to session's current directory). Preferred over `cd` in the command.")] string? workdir,
-        [Description("Timeout in milliseconds (optional, defaults to 120000). Use for long-running builds/tests.")] int? timeoutMs,
+        string command,
+        string? workdir,
+        int? timeoutMs,
         IBashSessionManager manager,
         string sessionId,
         ContentDedupOptions dedupOpts,
         BashOptions bashOpts,
-        [Description("Auto-clean result after tool loop. Bash output cannot be recovered.")] bool? peek = null,
+        bool? peek = null,
         CancellationToken ct = default)
     {
         var trimmed = command.Trim();
@@ -75,13 +74,24 @@ public static class BashTool
         return note + truncated;
     }
 
+    private sealed class BashInvoker(IBashSessionManager manager, string sessionId, IConfigService cfg)
+    {
+        [Description("Execute a bash command in a persistent shell session. Working directory and environment persist between commands. Output is auto-deduplicated (repeated lines compressed). Use `workdir` to run in a specific directory (preferred over cd). Use `timeoutMs` for long-running commands. Prefer non-interactive commands: use flags to disable pagers, auto-confirm prompts, provide input via flags rather than stdin.")]
+        public async Task<string> Execute(
+            [Description("The bash command to execute. Use non-interactive flags where possible (--no-pager, -y, etc.).")] string command,
+            [Description("Working directory (optional, defaults to session's current directory). Preferred over `cd` in the command.")] string? workdir = null,
+            [Description("Timeout in milliseconds (optional, defaults to 120000). Use for long-running builds/tests.")] int? timeoutMs = null,
+        bool? peek = null,
+            CancellationToken ct = default)
+        {
+            var bashOpts = await cfg.GetOptionsAsync<BashOptions>("Bash", sessionId);
+            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);
+            return await ExecuteBash(command, workdir, timeoutMs, manager, sessionId, dedupOpts, bashOpts, peek, ct);
+        }
+    }
+
     public static AIFunction AsAIFunction(IBashSessionManager manager, string sessionId, IConfigService? cfg)
         => AIFunctionFactory.Create(
-            async (string command, string? workdir = null, int? timeoutMs = null, bool? peek = null, CancellationToken ct = default) =>
-            {
-                var bashOpts = cfg is not null ? await cfg.GetOptionsAsync<BashOptions>("Bash", sessionId) : new();
-                var dedupOpts = cfg is not null ? await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId) : new();
-                return await ExecuteBash(command, workdir, timeoutMs, manager, sessionId, dedupOpts, bashOpts, peek, ct);
-            },
+            new BashInvoker(manager, sessionId, cfg!).Execute,
             "execute_bash");
 }

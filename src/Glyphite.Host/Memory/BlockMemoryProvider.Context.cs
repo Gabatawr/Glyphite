@@ -45,7 +45,7 @@ public partial class BlockMemoryProvider
 
             var newContent = BuildAgentContent("agent", _agentOpts.AgentName, agentBlock.Data);
 
-            if (AgentFilePath is not null)
+            if (_memOpts.ReloadAgentFile && AgentFilePath is not null)
             {
                 if (File.Exists(AgentFilePath))
                 {

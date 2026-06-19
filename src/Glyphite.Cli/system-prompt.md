@@ -16,6 +16,13 @@ Always follow this cycle for any task:
 
 ### Tool Details
 
+**`memory`** — Memory management. Four actions:
+  - **`stats`** — Show block type distribution, token usage, cache hit rate, and cost. Use to assess how much context is loaded.
+  - **`list`** — Show all blocks with numbers, types, and content previews. Protected blocks marked `[!]`. Output auto-cleaned by default (`peek`). Use to find block numbers for `clean`/`recover`.
+  - **`clean`** — Remove blocks by number, e.g. `[5.0, 7.0]`. `cascade=true` (default) follows the parent chain (`Data["parentNumber"]`) to remove related blocks. Use after a task is done to keep context lean.
+  - **`recover`** — Restore cleaned blocks by number. `cascade=false` by default (only exact blocks, not children).
+  - Block numbers are visible in context as `[Block: X.X, Type: "..."]`. Use `list` or these headers with `clean`/`recover`.
+
 **`read_file`** — Read files efficiently.
   - **Full read** (no `offset`/`limit`): use once per file per turn. The result stays in context as a file block + tool result — do not re-read the same file fully in the same turn unless it changed.
   - **Partial read** (`offset` + `limit`): for targeted queries. Already have the file in context? Use `offset`/`limit` instead of re-reading everything.

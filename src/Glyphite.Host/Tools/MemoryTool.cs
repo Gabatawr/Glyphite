@@ -8,11 +8,10 @@ namespace Glyphite.Host.Tools;
 
 public static class MemoryTool
 {
-    [Description("Memory management tool. Actions: 'stats' — show block type distribution, token usage, cache stats, and cost; 'delete' — soft-delete blocks by number (cascade=true follows parent chain); 'recover' — restore soft-deleted blocks by number. Cascade defaults: true for delete, false for recover.")]
     public static async Task<string> Execute(
-        [Description("Action to perform: 'stats' (show memory statistics), 'delete' (soft-delete blocks by number), 'recover' (restore soft-deleted blocks by number)")] string action,
-        [Description("Block numbers for delete/recover actions, e.g. [5.0, 7.0, 9.0]. Not needed for 'stats' action.")] double[]? blocks,
-        [Description("Cascade along parent chain: true=follow Data['parentNumber'], false=exact blocks only. Default: true for delete, false for recover.")] bool? cascade,
+        string action,
+        double[]? blocks,
+        bool? cascade,
         IBlockMemoryProvider provider,
         string sessionId,
         IConfigService? cfg = null)
@@ -20,6 +19,7 @@ public static class MemoryTool
         switch (action.ToLowerInvariant())
         {
             case "delete":
+            case "clean":
                 if (blocks is null || blocks.Length == 0)
                     return "No block numbers provided for deletion.";
                 return await provider.DeleteBlocksAsync(sessionId, blocks, cascade ?? true);
@@ -29,6 +29,33 @@ public static class MemoryTool
                     return "No block numbers provided for recovery.";
                 var recovered = await provider.RecoverBlocksAsync(sessionId, blocks, cascade ?? false);
                 return $"Recovered {recovered} block{(recovered == 1 ? "" : "s")}.";
+
+            case "list":
+            {
+                var allBlocks = await provider.GetBlocksAsync(sessionId);
+                var protectedSet = cfg is not null
+                    ? (await cfg.GetOptionsAsync<MemoryOptions>("Memory", sessionId)).ProtectedBlockTypes
+                    : [];
+                var protectedTypes = new HashSet<string>(protectedSet, StringComparer.OrdinalIgnoreCase);
+                var blockLines = new List<string> { "── Memory Blocks ────────────────────────" };
+                foreach (var block in allBlocks.OrderBy(b => b.Number))
+                {
+                    var isProtected = protectedTypes.Contains(block.Type.ToString());
+                    var typeDisplay = block.Type.ToString();
+                    if (block.ToolName is not null)
+                        typeDisplay += $"/{block.ToolName}";
+                    var prefix = isProtected ? "[!]" : "   ";
+                    var preview = (block.Content ?? "").Replace('\n', ' ').Replace('\r', ' ');
+                    if (preview.Length > 64)
+                        preview = preview[..64] + "...";
+                    else if (preview.Length == 0)
+                        preview = "(empty)";
+                    blockLines.Add($"  {prefix} {block.Number,5:F1} {typeDisplay,-22} {preview}");
+                }
+                blockLines.Add("  ───────────────────────────────────────");
+                blockLines.Add($"  Total: {allBlocks.Count}");
+                return string.Join("\n", blockLines);
+            }
 
             case "stats":
                 var (totalBlocks, _, typeStats) = await provider.ComputeStatsAsync(sessionId);
@@ -80,12 +107,23 @@ public static class MemoryTool
                 return string.Join("\n", lines);
 
             default:
-                return $"Unknown action '{action}'. Use 'stats', 'delete', or 'recover'.";
+                return $"Unknown action '{action}'. Use 'stats', 'list', 'clean', or 'recover'.";
         }
+    }
+
+    private sealed class Invoker(IBlockMemoryProvider provider, string sessionId, IConfigService? cfg)
+    {
+        [Description("Memory management tool. Actions: 'stats' — show block type distribution, token usage, cache stats, and cost; 'list' — show all blocks with numbers, types, and content previews (protected blocks marked [!]); 'clean' — soft-delete blocks by number (remove clutter from context); 'recover' — restore soft-deleted blocks by number.")]
+        public Task<string> Execute(
+            [Description("Action: 'stats' (show memory stats), 'list' (list all blocks with numbers and previews), 'clean' (remove blocks to free context), 'recover' (restore cleaned blocks)")] string action,
+            [Description("Block numbers for clean/recover, e.g. [5.0, 7.0, 9.0]. Not needed for 'stats' or 'list'.")] double[]? blocks = null,
+            [Description("Cascade along parent chain: true=follow Data['parentNumber']. Default: true for clean, false for recover.")] bool? cascade = null,
+            [Description("Auto-clean result after tool loop (default true — memory output is large). Set false to keep result in context.")] bool? peek = true)
+            => MemoryTool.Execute(action, blocks, cascade, provider, sessionId, cfg);
     }
 
     public static AIFunction AsAIFunction(IBlockMemoryProvider provider, string sessionId, IConfigService? cfg = null)
         => AIFunctionFactory.Create(
-            (string action, double[]? blocks = null, bool? cascade = null) => Execute(action, blocks, cascade, provider, sessionId, cfg),
+            new Invoker(provider, sessionId, cfg).Execute,
             "memory");
 }

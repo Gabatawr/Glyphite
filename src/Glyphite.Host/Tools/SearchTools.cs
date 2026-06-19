@@ -10,13 +10,12 @@ namespace Glyphite.Host.Tools;
 
 public static class SearchTools
 {
-    [Description("Fast file pattern matching using glob patterns. Returns absolute paths sorted by last modified time (most recent first). Supports ** (recursive), * (single segment), and ? (single char). Examples: \"**/*.cs\", \"src/**/*.ts\", \"*.json\". Use this to find files by name/extension patterns. Faster than `bash find` for this purpose.")]
     public static async Task<string> Glob(
-        [Description("Glob pattern, e.g. \"**/*.cs\", \"src/**/*.ts\", \"*.json\". Use ** for recursive search.")] string pattern,
-        [Description("The directory to search in. Defaults to current directory.")] string? path = null,
+        string pattern,
+        string? path = null,
         SearchOptions? opts = null,
         string? defaultDirectory = null,
-        [Description("Auto-clean result after tool loop.")] bool? peek = null)
+        bool? peek = null)
     {
         var searchDir = path ?? defaultDirectory ?? Directory.GetCurrentDirectory();
         searchDir = OSHelper.NormalizePath(searchDir);
@@ -49,14 +48,13 @@ public static class SearchTools
         return sb.ToString().TrimEnd();
     }
 
-    [Description("Search file contents using a regex pattern. Returns file paths with line numbers and matching lines, sorted by file modification time (most recent first). Supports full .NET regex syntax. Use `include` to filter by file pattern (e.g. \"*.cs\", \"*.{ts,tsx}\"). Ideal for finding code references, imports, function definitions, error messages, or any text in files. Automatically skips binary files and respects excluded directories config.")]
     public static async Task<string> Grep(
-        [Description("Regex pattern to search for. Supports .NET regex syntax (case-insensitive by default).")] string pattern,
-        [Description("The directory to search in. Defaults to current directory.")] string? path = null,
-        [Description("File pattern to filter results, e.g. \"*.cs\", \"*.{ts,tsx}\", \"*.py\". Defaults to all text files.")] string? include = null,
+        string pattern,
+        string? path = null,
+        string? include = null,
         SearchOptions? opts = null,
         string? defaultDirectory = null,
-        [Description("Auto-clean result after tool loop.")] bool? peek = null)
+        bool? peek = null)
     {
         if (string.IsNullOrEmpty(pattern))
             return "Error: Pattern is required";
@@ -236,21 +234,37 @@ public static class SearchTools
         return new Regex($"^{escaped}$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     }
 
+    private sealed class SearchInvoker(IConfigService cfg, string? defaultDirectory, string? sessionId)
+    {
+        [Description("Fast file pattern matching using glob patterns. Returns absolute paths sorted by last modified time (most recent first). Supports ** (recursive), * (single segment), and ? (single char). Faster than `bash find` for this purpose.")]
+        public async Task<string> Glob(
+            [Description("Glob pattern, e.g. \"**/*.cs\", \"src/**/*.ts\", \"*.json\"")] string pattern,
+            [Description("The directory to search in. Defaults to current directory.")] string? path = null,
+            [Description("Auto-clean result after tool loop.")] bool? peek = null)
+        {
+            var opts = await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId);
+            return await SearchTools.Glob(pattern, path, opts, defaultDirectory, peek);
+        }
+
+        [Description("Search file contents using a regex pattern. Returns file paths with line numbers and matching lines, sorted by file modification time (most recent first). Supports full .NET regex syntax. Use `include` to filter by file pattern (e.g. \"*.cs\", \"*.{ts,tsx}\"). Ideal for finding code references, imports, function definitions, error messages.")]
+        public async Task<string> Grep(
+            [Description("Regex pattern to search for. Supports .NET regex syntax (case-insensitive by default).")] string pattern,
+            [Description("The directory to search in. Defaults to current directory.")] string? path = null,
+            [Description("File pattern to filter results, e.g. \"*.cs\", \"*.{ts,tsx}\", \"*.py\"")] string? include = null,
+            [Description("Auto-clean result after tool loop.")] bool? peek = null)
+        {
+            var opts = await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId);
+            return await SearchTools.Grep(pattern, path, include, opts, defaultDirectory, peek);
+        }
+    }
+
     public static AIFunction AsGlobFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null)
         => AIFunctionFactory.Create(
-            async (string pattern, string? path = null, bool? peek = null) =>
-            {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId) : new();
-                return await Glob(pattern, path, opts, defaultDirectory, peek);
-            },
+            new SearchInvoker(cfg!, defaultDirectory, sessionId).Glob,
             "search_glob");
 
     public static AIFunction AsGrepFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null)
         => AIFunctionFactory.Create(
-            async (string pattern, string? path = null, string? include = null, bool? peek = null) =>
-            {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId) : new();
-                return await Grep(pattern, path, include, opts, defaultDirectory, peek);
-            },
+            new SearchInvoker(cfg!, defaultDirectory, sessionId).Grep,
             "search_grep");
 }

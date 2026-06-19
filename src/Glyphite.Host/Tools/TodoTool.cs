@@ -26,10 +26,9 @@ public static class TodoTool
 {
     private static readonly string[] DefaultValidStatuses = ["pending", "in_progress", "done", "cancelled", "blocked"];
 
-    [Description("Create a todo list block to plan and track task progress. Use this FREQUENTLY for complex/multi-step tasks to break them down and show progress. Statuses: pending (not started), in_progress (actively working), done (completed), cancelled (abandoned), blocked (waiting on something). Priority: low, medium, high. Returns the block number for later updates via todo_update.")]
     public static async Task<string> TodoWrite(
-        [Description("Title/description of the todo list, e.g. 'Implement user authentication'")] string title,
-        [Description("Optional array of items: [{text: 'Task description', status: 'pending', priority: 'medium'}]. Status and priority are optional (defaults: pending, medium).")] TodoItem[]? items,
+        string title,
+        TodoItem[]? items,
         IMemoryStore store,
         string sessionId,
         TodoOptions opts)
@@ -55,10 +54,9 @@ public static class TodoTool
         return FormattableString.Invariant($"Created todo list '{title}' as block {nextNumber:F1} with {items.Length} items\n") + FormatItems(dictItems);
     }
 
-    [Description("Modify a todo list block. Action types: set_status (change item status by index), update (change text/status/priority by index), add (insert new item at end or at index), remove (delete item by index). Mark items as in_progress when starting work, done when complete. Update the plan as you go, not just at the end. Also creates a todo_update snapshot block to track progress history.")]
     public static async Task<string> TodoUpdate(
-        [Description("Block number of the todo list to modify. Can be the original todo block or a todo_update snapshot — follows the forward chain to the latest snapshot.")] double block,
-        [Description("Array of action objects: {type: 'set_status'|'update'|'add'|'remove', index?: number, text?: string, status?: string, priority?: string}")] TodoAction[] actions,
+        double block,
+        TodoAction[] actions,
         IMemoryStore store,
         string sessionId,
         TodoOptions opts)
@@ -274,21 +272,34 @@ public static class TodoTool
         return sb.ToString().TrimEnd('\n', '\r');
     }
 
+    private sealed class TodoInvoker(IMemoryStore store, string sessionId, IConfigService cfg)
+    {
+        [Description("Create a todo list block to plan and track task progress. Use this FREQUENTLY for complex/multi-step tasks to break them down and show progress. Statuses: pending, in_progress, done, cancelled, blocked. Priority: low, medium, high.")]
+        public async Task<string> Write(
+            [Description("Title/description of the todo list")] string title,
+            [Description("Optional array of items: [{text: '...', status: 'pending', priority: 'medium'}]. Status and priority default to pending, medium.")] TodoItem[]? items)
+        {
+            var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
+            return await TodoWrite(title, items, store, sessionId, opts);
+        }
+
+        [Description("Modify a todo list block. Action types: set_status (change item status by index), update (change text/status/priority by index), add (insert new item), remove (delete item by index). Creates a snapshot block to track progress history.")]
+        public async Task<string> Update(
+            [Description("Block number of the todo list to modify")] double block,
+            [Description("Array of action objects: {type: 'set_status'|'update'|'add'|'remove', index?: number, text?: string, status?: string, priority?: string}")] TodoAction[] actions)
+        {
+            var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
+            return await TodoUpdate(block, actions, store, sessionId, opts);
+        }
+    }
+
     public static AIFunction AsTodoWriteFunction(IMemoryStore store, string sessionId, IConfigService? cfg)
         => AIFunctionFactory.Create(
-            async (string title, TodoItem[]? items) =>
-            {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId) : new();
-                return await TodoWrite(title, items, store, sessionId, opts);
-            },
+            new TodoInvoker(store, sessionId, cfg!).Write,
             "todo_write");
 
     public static AIFunction AsTodoUpdateFunction(IMemoryStore store, string sessionId, IConfigService? cfg)
         => AIFunctionFactory.Create(
-            async (double block, TodoAction[] actions) =>
-            {
-                var opts = cfg is not null ? await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId) : new();
-                return await TodoUpdate(block, actions, store, sessionId, opts);
-            },
+            new TodoInvoker(store, sessionId, cfg!).Update,
             "todo_update");
 }
