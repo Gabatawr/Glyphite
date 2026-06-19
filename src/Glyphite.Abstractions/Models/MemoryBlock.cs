@@ -16,7 +16,6 @@ public enum BlockType
     tool,
     todo,
     todo_update,
-    file,
     auto_tool
 }
 
@@ -96,9 +95,6 @@ public class MemoryBlock
     public static MemoryBlock SystemMetrics(string content, Dictionary<string, object>? metrics = null)
         => Create(BlockType.system_metrics, content, data: metrics);
 
-    public static MemoryBlock FileBlock(string content, string filePath)
-        => Create(BlockType.file, content, data: new() { ["path"] = filePath });
-
     public static MemoryBlock SystemError(string content)
         => Create(BlockType.system_error, content);
 
@@ -108,9 +104,6 @@ public class MemoryBlock
 
         if (ToolName is not null)
             extra += $", Tool: \"{ToolName}\"";
-
-        if (Type == BlockType.file && Data?.TryGetValue("path", out var fp) == true)
-            extra += $", Path: \"{fp}\"";
 
         if ((Type == BlockType.todo || Type == BlockType.todo_update) && Data?.TryGetValue("items", out var itemsObj) == true)
         {

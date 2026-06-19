@@ -110,18 +110,6 @@ public partial class ChatRepl
                         }
                         break;
 
-                    case FileBlockTurnEvent fb:
-                        _liveChunkType = "";
-                        var maxLen2 = _streamOpts.ToolMaxLength.GetValueOrDefault("read_file", -1);
-                        if (maxLen2 == 0) break;
-                        var fContent = fb.Content.TrimEnd('\n', '\r');
-                        if (maxLen2 > 0 && fContent.Length > maxLen2)
-                            fContent = fContent[..maxLen2];
-                        Console.ForegroundColor = _renderer.ToolResultColor;
-                        Console.WriteLine(fContent);
-                        Console.ResetColor();
-                        break;
-
                     case TurnErrorEvent err:
                         Console.ForegroundColor = ConsoleColor.Red;
                         Console.WriteLine($"\n[!] {err.Message}");

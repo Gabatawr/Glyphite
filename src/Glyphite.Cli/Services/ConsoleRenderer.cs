@@ -125,32 +125,6 @@ public class ConsoleRenderer
                     }
                 }
                 break;
-            case BlockType.file:
-                // File blocks are only displayed when preceded by a write_file/read_file tool call
-                if (s.lastToolName is not "write_file" and not "read_file")
-                    return; // orphaned file block — not displayed
-                if (s.wasReasoning || s.wasTool || s.wasText || !s.lineStart)
-                {
-                    if (!s.lineStart) Console.WriteLine();
-                    Console.WriteLine();
-                }
-                // Apply ToolMaxLength from the preceding tool
-                var fLen = -1;
-                _streamOpts.ToolMaxLength.TryGetValue(s.lastToolName, out fLen);
-                if (fLen == 0)
-                    return; // hidden
-                Console.ForegroundColor = ToolResultColor;
-                var fContent = block.Content.TrimEnd('\n', '\r');
-                if (fLen > 0 && fContent.Length > fLen)
-                    fContent = fContent[..fLen];
-                Console.WriteLine(fContent);
-                Console.ResetColor();
-                s.lastToolName = null;
-                s.wasTool = false;
-                s.wasReasoning = false;
-                s.wasText = false;
-                s.lineStart = true;
-                break;
             case BlockType.system_info:
                 if (s.wasReasoning || s.wasTool || s.wasText || !s.lineStart)
                 {

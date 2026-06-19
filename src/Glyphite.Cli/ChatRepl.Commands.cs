@@ -56,7 +56,6 @@ public partial class ChatRepl
                         "agent_reasoning" => "🧠 agent_reasoning",
                         "tool" => "🔧 tool",
                         "auto_tool" => "🤖 auto_tool",
-                        "file" => "📄 file",
                         "todo" or "todo_update" => "📋 todo",
                         _ => kv.Key
                     };

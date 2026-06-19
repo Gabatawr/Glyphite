@@ -38,10 +38,6 @@ public interface IMemoryStore : IDisposable
     Task<List<string>> ListAgentsAsync();
     Task<int> GetBlockCountAsync(string agentId);
     Task<Dictionary<string, int>> GetBlockTypeStatsAsync(string agentId);
-    Task<MemoryBlock?> FindFileBlockByPathAsync(string agentId, string filePath);
-    Task DeleteFileBlocksByPathAsync(string agentId, string filePath);
-    Task DeleteFileBlocksCascadeParentToolByPathAsync(string agentId, string filePath);
-
     // Config
     Task<string?> GetConfigAsync(string key, string scope = "global", string? agentId = null);
     Task UpsertConfigAsync(string key, string value, string scope = "global", string? agentId = null);

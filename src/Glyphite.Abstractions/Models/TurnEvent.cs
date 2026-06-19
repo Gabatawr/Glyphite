@@ -16,8 +16,6 @@ public sealed record ToolResultTurnEvent(string Name, string Result) : TurnEvent
 
 public sealed record AutoToolTurnEvent(string Name, string Args, bool IsPeek, string Result) : TurnEvent;
 
-public sealed record FileBlockTurnEvent(string Content, string Path) : TurnEvent;
-
 public sealed record UsageTurnEvent(long CacheHitTokens, long CacheMissTokens, long OutputTokenCount, long LastHitTokens = 0, long LastMissTokens = 0) : TurnEvent;
 
 public sealed record TurnCompleteEvent : TurnEvent;

@@ -8,10 +8,11 @@ namespace Glyphite.Host.Tools;
 
 public static class FileWriteTool
 {
-    [Description("Write content to a file, overwriting if it exists. Creates parent directories if they don't exist. The file content is stored in a `file` block for future reference. For targeted edits, prefer `patch_file`. For new files or complete rewrites, use this.")]
+    [Description("Write content to a file, overwriting if it exists. Creates parent directories if they don't exist. For targeted edits, prefer `patch_file`. For new files or complete rewrites, use this.")]
     public static async Task<string> WriteFile(
         [Description("Path to the file (absolute or relative to working directory). Parent directories auto-created.")] string path,
         [Description("Complete file content to write. For targeted changes use `patch_file` instead.")] string content,
+        [Description("Result detail level: 'metadata' (default, returns path+size) or 'content' (returns full file content).")] string? resultType = null,
         [Description("Auto-clean result after tool loop. File is still written.")] bool? peek = null,
         IMemoryStore? store = null,
         string? sessionId = null,
@@ -33,12 +34,14 @@ public static class FileWriteTool
             fs.Flush(true);
         }
 
-        return "";
+        return (resultType ?? "metadata") == "content"
+            ? await File.ReadAllTextAsync(path)
+            : $"Written {path} ({new FileInfo(path).Length} bytes)";
     }
 
     public static AIFunction AsAIFunction(IMemoryStore store, string sessionId, string? defaultDirectory = null)
         => AIFunctionFactory.Create(
-            async (string path, string content, bool? peek = null) =>
-                await WriteFile(path, content, peek, store, sessionId, defaultDirectory),
+            async (string path, string content, string? resultType = null, bool? peek = null) =>
+                await WriteFile(path, content, resultType, peek, store, sessionId, defaultDirectory),
             "write_file");
 }

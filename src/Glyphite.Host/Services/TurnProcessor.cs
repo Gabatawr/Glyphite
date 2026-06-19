@@ -191,22 +191,14 @@ public class TurnProcessor : ITurnProcessor
                             fileContent = output.TrimEnd('\n', '\r');
                         }
 
-                        var fileBlock = MemoryBlock.FileBlock(fileContent, fPath);
-                        fileBlock.ParentNumber = callBlockNumber;
-                        fileBlock.Data ??= [];
-                        fileBlock.Data["parentNumber"] = callBlockNumber;
-                        fileBlock.Number = _nextNum++;
-                        if (isPeek)
-                            fileBlock.Data["peek"] = true;
-                        await _store.AppendBlocksAsync(_sessionId, [fileBlock], _nextNum);
+                        if (!isPeek && !string.IsNullOrEmpty(fileContent))
+                            await _store.UpdateBlockToolResultAsync(_sessionId, callBlockNumber, fileContent);
 
                         var cleanedArgs = CleanToolArgs(args, "content");
-                        if (!isPeek)
-                            await _store.UpdateBlockToolResultAsync(_sessionId, callBlockNumber, "");
                         if (cleanedArgs is not null)
                             await _store.UpdateBlockAsync(_sessionId, callBlockNumber, content: cleanedArgs);
 
-                        events.Add(new FileBlockTurnEvent(fileContent, fPath));
+                        events.Add(new ToolResultTurnEvent(name, fileContent));
                     }
                     else
                     {
@@ -254,7 +246,7 @@ public class TurnProcessor : ITurnProcessor
         {
             ["user_message"] = "👤", ["agent_message"] = "💬", ["agent_reasoning"] = "🧠",
             ["tool"] = "🔧", ["todo"] = "📋", ["todo_update"] = "🔄",
-            ["file"] = "📄", ["auto_tool"] = "🤖"
+            ["auto_tool"] = "🤖"
         };
         var lines = new List<string> { $"── Cleaned {total} peek blocks ─────────────────" };
         foreach (var kv in stats.OrderByDescending(kv => kv.Value))
