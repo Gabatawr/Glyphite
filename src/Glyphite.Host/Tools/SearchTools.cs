@@ -30,7 +30,7 @@ public static class SearchTools
         var matches = await Task.Run(() =>
             EnumerateFiles(searchDir, excluded, opts.MaxEnumerationFiles)
                 .Select(f => new { Info = new FileInfo(f), Relative = Path.GetRelativePath(searchDir, f).Replace('\\', '/') })
-                .Where(f => regex.IsMatch(f.Relative) || regex.IsMatch(Path.GetFileName(f.Relative)))
+                .Where(f => regex.IsMatch(f.Relative))
                 .OrderByDescending(f => f.Info.LastWriteTimeUtc)
                 .Take(opts.MaxResultCount + 1)
                 .ToList());
@@ -123,6 +123,9 @@ public static class SearchTools
             }
             catch { /* skip unreadable files */ }
         }
+
+        // Sort by modification time (most recent first), matching the documented behaviour
+        results = results.OrderByDescending(r => r.Mtime).ToList();
 
         if (results.Count == 0)
             return "No matches found";
@@ -220,8 +223,15 @@ public static class SearchTools
         var escaped = Regex.Escape(pattern)
             .Replace("\\*\\*", "__DBLSTAR__")
             .Replace("\\*", "[^/\\\\]*")
-            .Replace("\\?", "[^/\\\\]")
-            .Replace("__DBLSTAR__", ".*");
+            .Replace("\\?", "[^/\\\\]");
+
+        // ** matches everything including empty (zero path segments).
+        // Replace **/ → (.*/)? so files in root aren't missed (e.g. "**/*.cs" matches "foo.cs").
+        // Replace /** → (/.*)? so trailing ** works (e.g. "src/**" matches "src/foo.cs").
+        // Standalone ** → .* matches everything.
+        escaped = escaped.Replace("__DBLSTAR__/", "(.*/)?")
+                         .Replace("/__DBLSTAR__", "(/.*)?")
+                         .Replace("__DBLSTAR__", ".*");
 
         return new Regex($"^{escaped}$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     }
