@@ -207,13 +207,17 @@ public static class SubAgentTool
 
     public static AIFunction AsSubAgentUseFunction(
         SubAgentManager subAgentManager,
+        IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
         IMemoryStore store,
+        IConfigService cfgService,
         IOptions<DeepSeekOptions> deepseekOpts,
         string currentSessionId)
     {
+        var deepseek = deepseekOpts.Value;
+
         return AIFunctionFactory.Create(async (
-            [Description("Name of an existing subagent to execute the task on.")] string name,
+            [Description("Name of the subagent to execute the task on. If saveMemory=true and agent doesn't exist, it will be auto-created.")] string name,
             [Description("Task/instruction for the subagent.")] string task,
             [Description("Working directory (ignored if agent already exists, present for API consistency).")] string? cwd = null,
             [Description("Execution mode: 'sequential' (default, wait for result) or 'parallel' (queues for batch execution via Task.WhenAll).")] string? mode = null,
@@ -221,7 +225,24 @@ public static class SubAgentTool
             [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
             if (!await store.AgentExistsAsync(name))
-                return $"Error: Agent '{name}' not found. Create it with subagent_run first.";
+            {
+                if (saveMemory)
+                {
+                    // Auto-create the agent for persistent use
+                    if (!AgentManager.IsValidAgentName(name))
+                        return $"Error: Invalid agent name '{name}'.";
+
+                    var parentCwd = await store.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
+                    var homePath = cwd ?? parentCwd;
+
+                    await agentManager.CreateAgentAsync(name, deepseek.Model, homePath);
+                    await LoadSubAgentConfigAsync(name, homePath, parentCwd, cfgService, store);
+                }
+                else
+                {
+                    return $"Error: Agent '{name}' not found. Use saveMemory=true to auto-create, or create with subagent_run first.";
+                }
+            }
 
             var scopeErr = await EnsureScope(subAgentManager, scopeFactory, store, name);
             if (scopeErr is not null) return scopeErr;
@@ -281,7 +302,7 @@ public static class SubAgentTool
             }
         },
         name: "subagent_use",
-        description: "Execute a task on an existing subagent. Usage delta recorded in main session. When saveMemory=false (default), blocks/usage are cleaned. When saveMemory=true, memory tool is available and context accumulates across calls."
+        description: "Execute a task on a subagent (auto-creates if saveMemory=true and not found). Usage delta recorded in main session. When saveMemory=false (default), blocks/usage are cleaned. When saveMemory=true, memory tool is available and context accumulates across calls."
         );
     }
 
