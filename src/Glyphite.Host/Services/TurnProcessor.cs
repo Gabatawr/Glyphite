@@ -251,7 +251,7 @@ public class TurnProcessor : ITurnProcessor
                         catch { }
                     }
                     // Peek tools: replace ChatMessage with cleaned block render (ToContextString)
-                    else if (isPeek && name is "read_file" or "write_file" or "patch_file")
+                    else if (isPeek)
                     {
                         var updatedBlock = await _store.GetBlockAsync(sessionId, callBlockNumber);
                         if (updatedBlock is not null)
