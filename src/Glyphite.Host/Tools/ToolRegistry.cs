@@ -48,13 +48,13 @@ public class ToolRegistry : IToolRegistry
         // Don't give subagent tools to subagents themselves — prevents recursive creation chaos
         var isSubAgent = _subAgentManager.Exists(sessionId);
 
+        // Subagents don't get subagent tools (prevents recursion) nor memory tool (could corrupt blocks)
         var tools = new List<AITool>
         {
             BashTool.AsAIFunction(_bashManager, sessionId, _cfgService),
             FileReadTool.AsAIFunction(_cfgService, _defaultDir, sessionId),
             FileWriteTool.AsAIFunction(_memoryStore, sessionId, _defaultDir),
             FilePatchTool.AsAIFunction(_defaultDir),
-            MemoryTool.AsAIFunction(_blockMemory, sessionId, _cfgService),
             TodoTool.AsTodoWriteFunction(_memoryStore, sessionId, _cfgService),
             TodoTool.AsTodoUpdateFunction(_memoryStore, sessionId, _cfgService),
             WebFetchTool.AsFetchFunction(_cfgService, sessionId),
@@ -64,6 +64,7 @@ public class ToolRegistry : IToolRegistry
 
         if (!isSubAgent)
         {
+            tools.Add(MemoryTool.AsAIFunction(_blockMemory, sessionId, _cfgService));
             tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _cfgService, _deepseekOpts, _agentOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _scopeFactory, _memoryStore, _deepseekOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _memoryStore, sessionId));
