@@ -54,10 +54,9 @@ public static class SubAgentTool
         return sb.ToString().Trim();
     }
 
-    /// <summary>Clear subagent's memory (blocks, usage, next_number) after use, keeping the session alive.</summary>
-    private static async Task ClearSubAgentMemory(IMemoryStore store, string agentId)
+    /// <summary>Clear subagent's usage delta after recording into main session. Blocks/memory are preserved.</summary>
+    private static async Task ClearSubAgentUsage(IMemoryStore store, string agentId)
     {
-        await store.ClearAgentBlocksAsync(agentId); // deletes blocks + resets next_number to 1
         await store.ClearUsageAsync(agentId);
     }
 
@@ -231,8 +230,7 @@ public static class SubAgentTool
                 subAgentManager.EnqueueParallel(name, task, async s =>
                 {
                     var output = await RunAgentTask(s, store, name, task, currentSessionId);
-                    await ClearSubAgentMemory(store, name);
-                    subAgentManager.Remove(name);
+                    await ClearSubAgentUsage(store, name);
                     return output;
                 });
                 return $"[queued parallel] Agent '{name}' will execute in parallel batch.";
@@ -254,9 +252,8 @@ public static class SubAgentTool
                 var result = await subAgentManager.RunAsync(name, async s =>
                 {
                     var output = await RunAgentTask(s, store, name, task, currentSessionId);
-                    // Clear memory after each use — next invocation starts fresh
-                    await ClearSubAgentMemory(store, name);
-                    subAgentManager.Remove(name);
+                    // Clear usage delta — already recorded in main session
+                    await ClearSubAgentUsage(store, name);
                     return output;
                 });
 
@@ -274,23 +271,25 @@ public static class SubAgentTool
             }
         },
         name: "subagent_use",
-        description: "Execute a task on an existing subagent. Usage delta recorded in main session. Subagent memory (blocks, usage) is cleared after each use — next invocation starts fresh. Sequential mode also flushes any queued parallel tasks first."
+        description: "Execute a task on an existing subagent. Usage delta recorded in main session. Subagent blocks/memory are preserved — agents remember context across calls. Sequential mode also flushes any queued parallel tasks first."
         );
     }
 
     public static AIFunction AsSubAgentListFunction(
         SubAgentManager subAgentManager,
-        IMemoryStore store)
+        IMemoryStore store,
+        string currentSessionId)
     {
         return AIFunctionFactory.Create(async () =>
         {
             var allAgents = await store.ListAgentsAsync();
-            if (allAgents.Count == 0)
+            var filtered = allAgents.Where(a => !string.Equals(a, currentSessionId)).ToList();
+            if (filtered.Count == 0)
                 return "No agents found.";
 
-            var lines = new List<string> { $"Found {allAgents.Count} agent(s):", "" };
+            var lines = new List<string> { $"Found {filtered.Count} agent(s):", "" };
 
-            foreach (var agentId in allAgents.Order())
+            foreach (var agentId in filtered.Order())
             {
                 var homePath = await store.GetAgentHomePathAsync(agentId) ?? "?";
                 var model = await store.GetAgentModelAsync(agentId) ?? "?";
@@ -313,7 +312,7 @@ public static class SubAgentTool
             return string.Join("\n", lines).TrimEnd();
         },
         name: "subagent_list",
-        description: "List all agents (main + subagents) with home directory, model, block count, and last turn cache stats (hit/miss tokens)."
+        description: "List all available agents (excluding current session) with home directory, model, block count, and last turn cache stats (hit/miss tokens)."
         );
     }
 }

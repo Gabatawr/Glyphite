@@ -66,7 +66,7 @@ public class ToolRegistry : IToolRegistry
         {
             tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _cfgService, _deepseekOpts, _agentOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _scopeFactory, _memoryStore, _deepseekOpts, sessionId));
-            tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _memoryStore));
+            tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _memoryStore, sessionId));
         }
 
         return tools;
