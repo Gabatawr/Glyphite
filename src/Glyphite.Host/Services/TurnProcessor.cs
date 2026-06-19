@@ -225,6 +225,50 @@ public class TurnProcessor : ITurnProcessor
                         events.Add(new ToolResultTurnEvent(name, output));
                     }
 
+                    // ── After tool execution: update in-turn context ──
+                    // Memory clean: remove matching ChatMessages from context (by block numbers in args)
+                    if (name == "memory" && output.StartsWith("Deleted "))
+                    {
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(args);
+                            if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var num in blk.EnumerateArray().Select(e => e.GetDouble()))
+                                {
+                                    var pat = $"[Block: {num:F1},";
+                                    for (var i = contextMessages.Count - 1; i >= 0; i--)
+                                    {
+                                        if (contextMessages[i].Text?.StartsWith(pat) == true)
+                                        {
+                                            contextMessages.RemoveAt(i);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                    // Peek tools: replace ChatMessage with cleaned block render (ToContextString)
+                    else if (isPeek && name is "read_file" or "write_file" or "patch_file")
+                    {
+                        var updatedBlock = await _store.GetBlockAsync(sessionId, callBlockNumber);
+                        if (updatedBlock is not null)
+                        {
+                            var newText = updatedBlock.ToContextString();
+                            var pat = $"[Block: {callBlockNumber:F1},";
+                            for (var i = 0; i < contextMessages.Count; i++)
+                            {
+                                if (contextMessages[i].Text?.StartsWith(pat) == true)
+                                {
+                                    contextMessages[i] = new ChatMessage(ChatRole.System, newText);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     // Inter-iteration: clear peek markers (not reasoning)
                     if (pendingToolCalls.Count == 0)
                         await _store.ClearPeekMarkersAsync(sessionId, false);
