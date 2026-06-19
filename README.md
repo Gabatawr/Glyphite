@@ -97,6 +97,36 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `todo_write` | Create a structured todo list |
 | `todo_update` | Update tasks in a todo list (status, priority) — creates a snapshot chain |
 | `memory` | Memory management: `stats` (type breakdown), `clean` (soft-delete with optional `cascade`; also removes from messageList), `recover` (restore with optional `cascade`), `list` (view blocks) |
+| `subagent_run` | Create a temporary subagent, run a task, record usage delta, then delete it. One-shot ephemeral execution |
+| `subagent_use` | Execute a task on an existing (or auto-created) subagent. With `saveMemory=true`, context accumulates across calls and `memory` tool is available |
+| `subagent_list` | List all existing agents (excluding current session) with home, model, block count, cache stats |
+
+## Subagent architecture
+
+Subagents enable the main agent to delegate tasks to specialized worker agents:
+
+- **`subagent_run`** — creates a **temporary** agent, runs the task, then deletes it entirely. Blocks and usage never persist.
+- **`subagent_use`** — runs a task on an **existing** agent (or **auto-creates** one if `saveMemory=true` and the agent doesn't exist).
+
+### saveMemory modes
+
+| Mode | Agent exists | Behavior |
+|------|-------------|----------|
+| `saveMemory=false` (default) | Yes | Executes, then **cleans** blocks and usage. Ephemeral — next call starts fresh |
+| `saveMemory=true` | Yes | Executes, **preserves** blocks and usage. Context accumulates across calls, `memory` tool is available |
+| `saveMemory=true` | **No** | **Auto-creates** the agent, executes, preserves context |
+| `saveMemory=false` | **No** | Returns error — use `saveMemory=true` to auto-create, or `subagent_run` for ephemeral task |
+
+When `saveMemory=true`, the subagent has access to the `memory` tool (`stats`/`clean`/`recover`/`list`), allowing it to manage its own context — clean old blocks, inspect memory, etc. Subagents **do not** have access to `subagent_*` tools (prevents recursive agent creation).
+
+### Config loading
+
+When a subagent is created (via `subagent_run` or `subagent_use saveMemory=true`), its configuration is loaded from:
+1. `Glyphite.json` in the parent agent's working directory
+2. `Glyphite.{agentName}.json` in the parent agent's working directory
+3. `Glyphite.{agentName}.json` in the subagent's own home directory (if different)
+
+Config is loaded by the `SubAgentConfigLoader` service, extracted into a dedicated DI-registered service for testability.
 
 ## Peek tool calls
 
@@ -140,13 +170,13 @@ Supported:
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
 
 ```bash
-glyphite -v       # → 0.4.48
-/version          # → Glyphite v0.4.48
+glyphite -v       # → 0.4.61
+/version          # → Glyphite v0.4.61
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.4.48 — MainAgent 🏠
+Glyphite CLI v0.4.61 — MainAgent 🏠
 ```
 
 ## Publishing and backups

@@ -18,9 +18,31 @@ Settings are applied in this order (each overrides the previous):
 2. **`Glyphite.json`** in current working directory — overrides base defaults. Use this for your own preferences (e.g. `"patch_file": -1` to always show diffs).
 3. **`Glyphite.{agentName}.json`** in current working directory — agent-specific overrides (highest priority).
 
-## Session state (Jun 19)
+## Session state (Jun 20)
 
-### Latest changes — Peek & MessageList cleanup (v0.4.40–0.4.48)
+### Latest changes — Subagent auto-create & config extraction (v0.4.58–0.4.61)
+
+**Problem:** `subagent_use saveMemory=true` couldn't be used on non-existing agents — there was no tool to create a persistent subagent. `subagent_run` always deleted the agent after execution. Also, config loading logic was mixed into the static `SubAgentTool` class, making it untestable and hard to reuse.
+
+**Changes in `SubAgentTool.cs`:**
+
+1. **Auto-create on `subagent_use saveMemory=true`** (lines 227–245):
+   - If agent exists → proceeds as before
+   - If agent doesn't exist AND `saveMemory=true` → validates name, calls `CreateAgentAsync`, loads config, then executes
+   - If agent doesn't exist AND `saveMemory=false` → returns error with hint to use `saveMemory=true` or `subagent_run`
+   - `IAgentManager` and `ISubAgentConfigLoader` injected via DI
+
+2. **Config loading extracted** (lines 80–144 removed):
+   - `LoadSubAgentConfigAsync`, `ReadAndFlattenConfigFileAsync`, `FlattenJsonElement` moved to `SubAgentConfigLoader` service
+   - New interface: `ISubAgentConfigLoader` in `Glyphite.Abstractions`
+   - New implementation: `SubAgentConfigLoader` in `Glyphite.Host.Services`
+   - Registered as singleton in DI (`HostServiceCollectionExtensions.cs`)
+   - `SubAgentTool.cs` slimmed from 350 to 284 lines (-66 lines)
+
+**Dead code removed:**
+- `ToolFactory.cs` (32 lines) — unreferenced legacy factory, deleted
+
+### Previous — Peek & MessageList cleanup (v0.4.40–0.4.48)
 
 **Problem:** `TurnProcessor.ProcessUpdate` was cleaning `contextMessages` (dead code — never read after line 81). The actual LLM-visible data was in `FailSafeChatClient.messageList`, which was **never cleaned**. Peek results accumulated and were visible to LLM on every iteration.
 
@@ -49,7 +71,8 @@ Two independent cleanup mechanisms, both running **after LLM consumes the result
 
 ### Architecture
 - **Abstractions** — interfaces, models, no deps (except `Microsoft.Extensions.AI`)
-- **Host** — service implementations (TurnProcessor, FailSafeChatClient, MemoryStore, BlockMemoryProvider), tools, MCP, DI wiring
+  - Includes `ISubAgentConfigLoader`, `IAgentManager`, `IMemoryStore`, etc.
+- **Host** — service implementations (TurnProcessor, FailSafeChatClient, MemoryStore, BlockMemoryProvider, SubAgentConfigLoader, SubAgentManager), tools (SubAgentTool, ToolRegistry, etc.), MCP, DI wiring
 - **Cli** — UI only (ChatRepl + 3 partials, ConsoleRenderer). No persistence logic.
 
 ### Peek flow
@@ -74,4 +97,4 @@ CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_delet
 See `MemoryStore.cs` `Initialize()` for full DDL.
 
 ### Version
-`Version.txt`: `0.4.48`, published up to v0.4.48
+`Version.txt`: `0.4.61`, published up to v0.4.61
