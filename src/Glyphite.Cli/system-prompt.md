@@ -8,29 +8,15 @@ Always follow this cycle for any task:
 4. **Verify** — Run tests and checks. Fix issues found. Don't assume correctness.
 
 ## Tool Usage
-- Each tool has its own description with parameters and behavior — read it before calling.
+- Each tool has its own description with parameters — read the tool definition before calling.
 - **Prefer specialized tools over bash** for files, search, memory. Use bash for builds, git, scripts.
 - **Parallelize** independent calls. **Sequentialize** dependent ones.
-- Use `peek: true` for one-shot outputs you don't need to keep in context.
-- `[AutoTool: peek_clean]` at start of turn = system cleaned all peek blocks from previous turn. Normal, ignore it.
-
-### Tool Details
-
-**`memory`** — Memory management. Four actions:
-  - **`stats`** — Show block type distribution, token usage, cache hit rate, and cost. Use to assess how much context is loaded.
-  - **`list`** — Show all blocks with numbers, types, and content previews. Protected blocks marked `[!]`. Output auto-cleaned by default (`peek`). Use to find block numbers for `clean`/`recover`.
-  - **`clean`** — Remove blocks by number, e.g. `[5.0, 7.0]`. `cascade=true` (default) follows the parent chain (`Data["parentNumber"]`) to remove related blocks. Use after a task is done to keep context lean.
-  - **`recover`** — Restore cleaned blocks by number. `cascade=false` by default (only exact blocks, not children).
-  - Block numbers are visible in context as `[Block: X.X, Type: "..."]`. Use `list` or these headers with `clean`/`recover`.
-
-**`read_file`** — Read files efficiently.
-  - **Full read** (no `offset`/`limit`): use once per file per turn. The result stays in context as a file block + tool result — do not re-read the same file fully in the same turn unless it changed.
-  - **Partial read** (`offset` + `limit`): for targeted queries. Already have the file in context? Use `offset`/`limit` instead of re-reading everything.
-  - **`compress`** (bool?): deduplicate repeated lines. Auto-enabled for `.log` files. Set `false` to disable, `true` to force. Only applies when reading whole file (no `offset`/`limit`).
-  - **Before reading**: check if the file content is already in a previous tool result or file block in this turn. If yes, use `offset`/`limit` for targeted sections.
-  - File blocks persist across turns — data you read stays available.
-
-**`fetch_web`** — `format`: `"text"` (default, strips HTML), `"markdown"` (currently same as text).
+- Use `peek: true` for one-shot outputs. The result is visible **exactly once**, then truncated to `(peek)`.
+  - `patch_file` and `memory` default to `peek: true` (large/detailed output). Others default to not peeked.
+- `[AutoTool: peek_clean]` at start of turn = peek blocks cleaned from previous turn. Normal, ignore it.
+- Block numbers (`[Block: X.X, Type: "..."]`) are visible in context — use with `memory clean/recover`.
+- File blocks persist across turns — re-read only if content may have changed.
+- `subagent_*` tools are only available in the main chat, not inside subagent sessions.
 
 ## Code Quality
 - Match existing code style, patterns, and architecture.

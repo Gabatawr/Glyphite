@@ -143,8 +143,11 @@ public class TurnProcessor : ITurnProcessor
                 var args = JsonSerializer.Serialize(fcc.Arguments ?? new Dictionary<string, object?>(),
                     new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
-                var isPeek = fcc.Arguments?.TryGetValue("peek", out var peekVal) == true &&
-                    (peekVal is bool pb ? pb : (peekVal is JsonElement je && je.ValueKind == JsonValueKind.True));
+                var isPeek = false;
+                if (fcc.Arguments?.TryGetValue("peek", out var peekVal) == true)
+                    isPeek = peekVal is bool pb ? pb : (peekVal is JsonElement je && je.ValueKind == JsonValueKind.True);
+                else if (fcc.Name == "patch_file")
+                    isPeek = true; // patch_file defaults to peek=true
 
                 var callBlock = MemoryBlock.ToolCall(fcc.Name, args, model: modelStr);
                 if (isPeek)

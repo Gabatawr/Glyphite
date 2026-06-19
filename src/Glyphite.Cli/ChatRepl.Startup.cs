@@ -239,7 +239,7 @@ public partial class ChatRepl
             _inputHistory.Add(b.Content);
 
         // Seed built-in commands so Up at "/" always shows something
-        foreach (var cmd in new[] { "/exit", "/new", "/clone", "/use", "/stats", "/models", "/reload" })
+        foreach (var cmd in new[] { "/exit", "/new", "/clone", "/use", "/delete", "/stats", "/models", "/reload" })
         {
             if (!_inputHistory.Contains(cmd))
                 _inputHistory.Add(cmd);

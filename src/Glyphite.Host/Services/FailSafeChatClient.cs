@@ -11,6 +11,13 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     private readonly ToolStreamingOptions _streamOpts;
 
     public HashSet<string> ExecutedCallIds { get; } = [];
+
+    /// <summary>Tracks CallIds of peek=true tool calls for cleanup after LLM consumes them.</summary>
+    private readonly HashSet<string> _pendingPeekCallIds = [];
+
+    /// <summary>Tracks block numbers deleted by memory clean for removal from messageList after LLM consumes them.</summary>
+    private readonly List<double> _pendingMemoryCleanBlocks = [];
+
     public IReadOnlyList<ChatMessage>? LastMessages { get; private set; }
     public Action<long, long, long>? OnUsage { get; set; }
 
@@ -123,6 +130,42 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     yield return update;
             }
 
+            // Peek cleanup: truncate tool results that LLM just consumed (seen exactly once)
+            // Must keep FunctionResultContent (same CallId) or API rejects unmatched tool_calls
+            if (_pendingPeekCallIds.Count > 0)
+            {
+                foreach (var m in messageList)
+                {
+                    if (m.Role != ChatRole.Tool) continue;
+                    var shouldTruncate = m.Contents.OfType<FunctionResultContent>().Any(frc =>
+                        _pendingPeekCallIds.Contains(frc.CallId));
+                    if (!shouldTruncate) continue;
+                    foreach (var frc in m.Contents.OfType<FunctionResultContent>())
+                        frc.Result = "(peek)";
+                    foreach (var tc in m.Contents.OfType<TextContent>())
+                        tc.Text = "(peek)";
+                }
+                _pendingPeekCallIds.Clear();
+            }
+
+            // Memory clean: remove deleted blocks from messageList after LLM consumed the result
+            if (_pendingMemoryCleanBlocks.Count > 0)
+            {
+                foreach (var num in _pendingMemoryCleanBlocks)
+                {
+                    var pat = $"[Block: {num:F1},";
+                    for (var i = messageList.Count - 1; i >= 0; i--)
+                    {
+                        if (messageList[i].Text?.StartsWith(pat) == true)
+                        {
+                            messageList.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+                _pendingMemoryCleanBlocks.Clear();
+            }
+
             if (!hasToolCall)
             {
                 var chatResponse = allUpdates.ToChatResponse();
@@ -213,6 +256,14 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                 var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
                 var toolName = fcc.Name ?? "";
 
+                // Track peek tools — their results are cleaned after LLM sees them once
+                bool? peekExplicit = null;
+                if (fcc.Arguments?.TryGetValue("peek", out var pv) == true)
+                    peekExplicit = pv is bool pb ? pb : (pv is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.True);
+                var isPeek = peekExplicit ?? (toolName == "patch_file"); // patch_file defaults to peek=true
+                if (isPeek)
+                    _pendingPeekCallIds.Add(callId);
+
                 // Yield tool call before execution — user sees "[Tool: name | args]" immediately
                 yield return new ChatResponseUpdate
                 {
@@ -268,6 +319,24 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                 }
 
                 ExecutedCallIds.Add(callId);
+
+                // Track memory clean — deleted blocks are removed from messageList after LLM sees the result
+                if (errorText is null && toolName == "memory" && resultText?.StartsWith("Deleted ") == true)
+                {
+                    try
+                    {
+                        var argsJson = fcc.Arguments is not null
+                            ? System.Text.Json.JsonSerializer.Serialize(fcc.Arguments)
+                            : "{}";
+                        using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
+                        if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            foreach (var num in blk.EnumerateArray().Select(e => e.GetDouble()))
+                                _pendingMemoryCleanBlocks.Add(num);
+                        }
+                    }
+                    catch { }
+                }
             }
 
             messageList.AddRange(toolResults);

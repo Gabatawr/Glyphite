@@ -22,7 +22,8 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
 - **Rich rendering** — syntax highlighting, diffs, color schemes
 - **Incremental saving** — conversation blocks are saved as they're generated
 - **Live streaming** — text/reasoning chunks rendered in real-time with color transitions and mode switches
-- **Peek tool calls** — LLM can inspect files without polluting visible history; results cleaned at next turn. File writes/patches always execute.
+- **Peek tool calls** — LLM can mark tool calls as `peek=true` to see the result once before it's truncated to `(peek)`. File writes/patches always execute regardless of peek.
+- **Memory clean from messageList** — `memory clean` removes blocks from both SQLite and the in-memory message list, preventing stale data from reaching the LLM.
 - **Prompt prefix** — colored segments: DarkGray default, DarkYellow (good cache rate), White (bad rate / significant cost)
 - **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`)
 - **Auto-tool events** — peek cleanup notifications shown as compact auto-tool blocks
@@ -73,6 +74,7 @@ Configuration is loaded in cascading order: `appsettings.json` (embedded) → `G
 | `/new` | Create a new agent / reset an existing one |
 | `/clone` | Clone an agent's history to a new name (two-step: pick source, enter name) |
 | `/use` | Switch to another agent (from the list of existing ones) |
+| `/delete` | Delete an agent permanently (select from list, excludes current session) |
 | `/stats` | Current agent statistics: blocks by type, input/output tokens, cache rate, cost |
 | `/version` | Show Glyphite version |
 | `/models` | List available models and switch between them |
@@ -94,17 +96,37 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `fetch_web` | HTTP request (GET/POST) with text extraction |
 | `todo_write` | Create a structured todo list |
 | `todo_update` | Update tasks in a todo list (status, priority) — creates a snapshot chain |
-| `memory` | Memory management: `stats` (type breakdown), `delete` (soft-delete with optional `cascade`), `recover` (restore with optional `cascade`) |
+| `memory` | Memory management: `stats` (type breakdown), `clean` (soft-delete with optional `cascade`; also removes from messageList), `recover` (restore with optional `cascade`), `list` (view blocks) |
 
 ## Peek tool calls
 
-The LLM can pass `"peek": true` to any tool to mark the call as transient:
-- The tool always executes (file writes/patches still apply)
-- The result is visible to the LLM during the current turn
-- The block is cleaned at the start of the next turn
-- File blocks (read/write) and web fetch are also cleaned
+The LLM can pass `"peek": true` to any tool to mark the result as transient:
 
-Peek tools always execute — write_file always writes the file, patch_file always applies the patch, fetch_web always fetches. Only the displayed/persisted block is transient.
+- The tool **always executes** (file writes/patches still apply)
+- The LLM sees the full result **exactly once** — on the next iteration after the tool completes
+- After the LLM generates a response, the result is **truncated to `(peek)`** in the message list
+- In the database, the block's `tool_result` is never saved (skipped by `TurnProcessor`)
+- Reasoning blocks with `peek=true` are cleaned at the start of the next turn via `RemovePeekBlocksAsync`
+
+**How it works:** `FailSafeChatClient` tracks `_pendingPeekCallIds` during tool execution. After the LLM consumes the results (reads them and generates a response), it replaces the real data with `(peek)` in `messageList`. The LLM sees the data once, then sees only `(peek)` on subsequent iterations.
+
+> Peek is for inspection — use it to read files, check command output, or fetch web pages without cluttering the conversation history.
+
+## Memory clean
+
+The `memory` tool with `clean` action removes blocks from the conversation history:
+
+```
+memory clean blocks=[5, 7, 9]
+memory clean blocks=[11] cascade=false
+```
+
+- **Removes from SQLite** — blocks are soft-deleted (`is_deleted = 1`) and won't appear in future context loads
+- **Removes from messageList** — the corresponding `[Block: N, ...]` messages are removed from the in-memory list **after the LLM sees the deletion result once**
+- **Cascade** (default `true`) — follows `Data["parentNumber"]` chains to remove parent/child blocks recursively
+- **Protected types** — `agent_data`, `user_message`, `agent_message` cannot be deleted
+
+Use `memory recover blocks=[5, 7]` to restore soft-deleted blocks.
 
 ## Models
 
@@ -118,13 +140,13 @@ Supported:
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
 
 ```bash
-glyphite -v       # → 0.3.70
-/version          # → Glyphite v0.3.70
+glyphite -v       # → 0.4.48
+/version          # → Glyphite v0.4.48
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.3.70 — MainAgent 🏠
+Glyphite CLI v0.4.48 — MainAgent 🏠
 ```
 
 ## Publishing and backups

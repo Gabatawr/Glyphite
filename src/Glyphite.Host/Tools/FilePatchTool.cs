@@ -276,7 +276,7 @@ public static class FilePatchTool
             [Description("Text to find. Try to match exact content from the file (including indentation). Fuzzy fallbacks handle minor whitespace differences.")] string oldString,
             [Description("Replacement text")] string newString,
             [Description("Replace ALL occurrences (default: false, replaces only first match). Use with caution.")] bool replaceAll = false,
-            [Description("Auto-clean result after tool loop.")] bool? peek = null)
+            [Description("Auto-clean result after tool loop (default: true — patch output is detailed diff). Set false to keep result in visible history.")] bool? peek = true)
             => PatchFile(path, oldString, newString, replaceAll, peek, defaultDirectory);
     }
 

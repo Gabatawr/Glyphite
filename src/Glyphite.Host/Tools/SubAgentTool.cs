@@ -161,7 +161,8 @@ public static class SubAgentTool
             [Description("Unique name for the subagent. Must not exist. Alphanumeric, dash, underscore (max 100 chars).")] string name,
             [Description("Initial task/instruction for the subagent.")] string task,
             [Description("Working directory (defaults to main agent's cwd).")] string? cwd = null,
-            [Description("Execution mode: 'sequential' (default, wait) or 'parallel' (hint for orchestrator).")] string? mode = null) =>
+            [Description("Execution mode: 'sequential' (default, wait) or 'parallel' (hint for orchestrator).")] string? mode = null,
+            [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
             if (!AgentManager.IsValidAgentName(name))
                 return $"Error: Invalid agent name '{name}'.";
@@ -216,7 +217,8 @@ public static class SubAgentTool
             [Description("Task/instruction for the subagent.")] string task,
             [Description("Working directory (ignored if agent already exists, present for API consistency).")] string? cwd = null,
             [Description("Execution mode: 'sequential' (default, wait for result) or 'parallel' (queues for batch execution via Task.WhenAll).")] string? mode = null,
-            [Description("Preserve memory after use (default: false — blocks and usage are cleaned). When true, memory tool is available and context accumulates across calls.")] bool saveMemory = false) =>
+            [Description("Preserve memory after use (default: false — blocks and usage are cleaned). When true, memory tool is available and context accumulates across calls.")] bool saveMemory = false,
+            [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
             if (!await store.AgentExistsAsync(name))
                 return $"Error: Agent '{name}' not found. Create it with subagent_run first.";
@@ -288,7 +290,8 @@ public static class SubAgentTool
         IMemoryStore store,
         string currentSessionId)
     {
-        return AIFunctionFactory.Create(async () =>
+        return AIFunctionFactory.Create(async (
+            [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
             var allAgents = await store.ListAgentsAsync();
             var filtered = allAgents.Where(a => !string.Equals(a, currentSessionId)).ToList();

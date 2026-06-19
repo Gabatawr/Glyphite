@@ -81,7 +81,7 @@ public static class BashTool
             [Description("The bash command to execute. Use non-interactive flags where possible (--no-pager, -y, etc.).")] string command,
             [Description("Working directory (optional, defaults to session's current directory). Preferred over `cd` in the command.")] string? workdir = null,
             [Description("Timeout in milliseconds (optional, defaults to 120000). Use for long-running builds/tests.")] int? timeoutMs = null,
-        bool? peek = null,
+            [Description("Auto-clean result after tool loop.")] bool? peek = null,
             CancellationToken ct = default)
         {
             var bashOpts = await cfg.GetOptionsAsync<BashOptions>("Bash", sessionId);

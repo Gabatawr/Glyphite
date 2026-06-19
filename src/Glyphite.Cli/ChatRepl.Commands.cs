@@ -19,6 +19,7 @@ public partial class ChatRepl
             case "/new":    return await HandleNewCommandAsync();
             case "/clone":  return await HandleCloneCommandAsync();
             case "/use":    return await HandleUseCommandAsync();
+            case "/delete": return await HandleDeleteCommandAsync();
 
             case "/reload":
                 Console.Clear();
@@ -348,6 +349,81 @@ public partial class ChatRepl
 
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Switched to agent '{targetName}'.\n");
+        Console.ResetColor();
+        return true;
+    }
+
+    private async Task<bool> HandleDeleteCommandAsync()
+    {
+        var sessions = await _store.ListAgentsAsync();
+        var others = sessions.Where(s => !string.Equals(s, _agentId, StringComparison.Ordinal)).ToList();
+
+        if (others.Count == 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("No other agents to delete.\n");
+            Console.ResetColor();
+            return true;
+        }
+
+        Console.ForegroundColor = ConsoleColor.DarkYellow;
+        Console.WriteLine("Select agent to delete:\n");
+        Console.ResetColor();
+
+        for (int i = 0; i < others.Count; i++)
+        {
+            var blockCount = await _store.GetBlockCountAsync(others[i]);
+            var createdAt = await _store.GetAgentCreatedAtAsync(others[i]) ?? "";
+            var createdDate = createdAt.Length >= 10 ? createdAt[..10] : "";
+            Console.ForegroundColor = ConsoleColor.Gray;
+            Console.WriteLine($"  [{i + 1}] {others[i]} ({blockCount} blocks, {createdDate})");
+        }
+
+        Console.ResetColor();
+        Console.Write($"\nSelect agent [1-{others.Count}, default=cancel]: ");
+        var pick = Console.ReadLine()?.Trim();
+
+        if (string.IsNullOrEmpty(pick))
+        {
+            Console.ForegroundColor = ConsoleColor.Gray;
+            Console.WriteLine("Cancelled.\n");
+            Console.ResetColor();
+            return true;
+        }
+
+        string targetName;
+        if (int.TryParse(pick, out var idx) && idx >= 1 && idx <= others.Count)
+        {
+            targetName = others[idx - 1];
+        }
+        else if (others.Contains(pick))
+        {
+            targetName = pick;
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Agent '{pick}' not found.\n");
+            Console.ResetColor();
+            return true;
+        }
+
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Write($"Delete agent '{targetName}'? This cannot be undone. (y/N): ");
+        Console.ResetColor();
+        var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
+        if (confirm is not "y" and not "yes")
+        {
+            Console.ForegroundColor = ConsoleColor.Gray;
+            Console.WriteLine("Cancelled.\n");
+            Console.ResetColor();
+            return true;
+        }
+
+        await _store.DeleteSessionAsync(targetName);
+
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"Agent '{targetName}' deleted.\n");
         Console.ResetColor();
         return true;
     }
