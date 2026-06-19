@@ -77,72 +77,6 @@ public static class SubAgentTool
         return null; // ok
     }
 
-    // ── Config loading for subagents ──
-
-    private static async Task LoadSubAgentConfigAsync(
-        string agentId, string agentCwd, string parentCwd,
-        IConfigService cfgService, IMemoryStore store)
-    {
-        var merged = new Dictionary<string, string>();
-
-        await ReadAndFlattenConfigFileAsync(Path.Combine(parentCwd, "Glyphite.json"), merged);
-        await ReadAndFlattenConfigFileAsync(Path.Combine(parentCwd, $"Glyphite.{agentId}.json"), merged);
-
-        if (!string.Equals(agentCwd, parentCwd, StringComparison.OrdinalIgnoreCase))
-            await ReadAndFlattenConfigFileAsync(Path.Combine(agentCwd, $"Glyphite.{agentId}.json"), merged);
-
-        if (merged.Count == 0) return;
-
-        var homePath = await store.GetAgentHomePathAsync(agentId);
-        if (string.Equals(homePath, agentCwd, StringComparison.OrdinalIgnoreCase))
-            await cfgService.UpdateConfigAsync(merged, scope: "session", sessionId: agentId);
-        else
-            cfgService.SetSessionOverlay(agentId, merged);
-    }
-
-    private static async Task ReadAndFlattenConfigFileAsync(string filePath, Dictionary<string, string> target)
-    {
-        if (!File.Exists(filePath)) return;
-        var json = await File.ReadAllTextAsync(filePath);
-        using var doc = JsonDocument.Parse(json);
-        if (doc.RootElement.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var prop in doc.RootElement.EnumerateObject())
-            {
-                if (string.Equals(prop.Name, "Glyphite", StringComparison.OrdinalIgnoreCase))
-                    FlattenJsonElement("Glyphite", prop.Value, target);
-            }
-        }
-    }
-
-    private static void FlattenJsonElement(string prefix, JsonElement el, Dictionary<string, string> result)
-    {
-        switch (el.ValueKind)
-        {
-            case JsonValueKind.Object:
-                foreach (var prop in el.EnumerateObject())
-                    FlattenJsonElement($"{prefix}:{prop.Name}", prop.Value, result);
-                break;
-            case JsonValueKind.Array:
-                var i = 0;
-                foreach (var item in el.EnumerateArray())
-                    FlattenJsonElement($"{prefix}:{i++}", item, result);
-                break;
-            case JsonValueKind.String:
-                result[prefix] = el.GetString() ?? "";
-                break;
-            case JsonValueKind.Number:
-                result[prefix] = el.GetRawText();
-                break;
-            case JsonValueKind.True:
-                result[prefix] = "True";
-                break;
-            case JsonValueKind.False:
-                result[prefix] = "False";
-                break;
-        }
-    }
-
     // ── Tool functions ──
 
     public static AIFunction AsSubAgentRunFunction(
@@ -150,7 +84,7 @@ public static class SubAgentTool
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
         IMemoryStore store,
-        IConfigService cfgService,
+        ISubAgentConfigLoader configLoader,
         IOptions<DeepSeekOptions> deepseekOpts,
         IOptions<AgentOptions> agentOpts,
         string currentSessionId)
@@ -174,7 +108,7 @@ public static class SubAgentTool
             var homePath = cwd ?? parentCwd;
 
             await agentManager.CreateAgentAsync(name, deepseek.Model, homePath);
-            await LoadSubAgentConfigAsync(name, homePath, parentCwd, cfgService, store);
+            await configLoader.LoadConfigAsync(name, homePath, parentCwd);
 
             var scope = scopeFactory.CreateScope();
             if (!subAgentManager.TryRegister(name, scope))
@@ -210,7 +144,7 @@ public static class SubAgentTool
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
         IMemoryStore store,
-        IConfigService cfgService,
+        ISubAgentConfigLoader configLoader,
         IOptions<DeepSeekOptions> deepseekOpts,
         string currentSessionId)
     {
@@ -236,7 +170,7 @@ public static class SubAgentTool
                     var homePath = cwd ?? parentCwd;
 
                     await agentManager.CreateAgentAsync(name, deepseek.Model, homePath);
-                    await LoadSubAgentConfigAsync(name, homePath, parentCwd, cfgService, store);
+                    await configLoader.LoadConfigAsync(name, homePath, parentCwd);
                 }
                 else
                 {

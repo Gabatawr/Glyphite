@@ -11,6 +11,7 @@ public class ToolRegistry : IToolRegistry
 {
     private readonly IBashSessionManager _bashManager;
     private readonly IConfigService _cfgService;
+    private readonly ISubAgentConfigLoader _configLoader;
     private readonly IMemoryStore _memoryStore;
     private readonly IBlockMemoryProvider _blockMemory;
     private readonly SubAgentManager _subAgentManager;
@@ -23,6 +24,7 @@ public class ToolRegistry : IToolRegistry
     public ToolRegistry(
         IBashSessionManager bashManager,
         IConfigService cfgService,
+        ISubAgentConfigLoader configLoader,
         IMemoryStore memoryStore,
         IBlockMemoryProvider blockMemory,
         SubAgentManager subAgentManager,
@@ -33,6 +35,7 @@ public class ToolRegistry : IToolRegistry
     {
         _bashManager = bashManager;
         _cfgService = cfgService;
+        _configLoader = configLoader;
         _memoryStore = memoryStore;
         _blockMemory = blockMemory;
         _subAgentManager = subAgentManager;
@@ -68,8 +71,8 @@ public class ToolRegistry : IToolRegistry
         // Subagent tools: only for main agent (prevents recursion)
         if (!isSubAgent)
         {
-            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _cfgService, _deepseekOpts, _agentOpts, sessionId));
-            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _cfgService, _deepseekOpts, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _configLoader, _deepseekOpts, _agentOpts, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _configLoader, _deepseekOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _memoryStore, sessionId));
         }
 
