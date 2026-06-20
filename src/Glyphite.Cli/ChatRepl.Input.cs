@@ -318,31 +318,30 @@ public partial class ChatRepl
         var bufHeight = Console.BufferHeight;
         var promptLen = _promptPrefix.Length + text.Length;
 
-        var linesToClear = Math.Max(
-            _lastBufferLen > 0 ? (2 + _lastBufferLen) / bufWidth + 1 : 1,
-            promptLen / bufWidth + 1);
+        // Сохраняем старый диапазон ДО перерисовки
+        var oldLine = _promptLine;
+        var oldMaxLine = _maxVisualLine;
 
-        for (var i = 0; i < linesToClear; i++)
+        // Очищаем весь старый диапазон
+        for (var line = oldLine; line <= oldMaxLine && line < bufHeight; line++)
         {
-            var line = _promptLine + i;
-            if (line >= bufHeight) break;
             Console.SetCursorPosition(0, line);
             Console.Write(new string(' ', bufWidth));
         }
 
-        Console.SetCursorPosition(0, _promptLine);
+        Console.SetCursorPosition(0, oldLine);
         WriteColoredPrompt();
         Console.ResetColor();
         Console.Write(text);
 
+        // Обновляем _promptLine и _maxVisualLine под новый текст
         var cursorTop = Console.CursorTop;
         _promptLine = cursorTop - (promptLen > bufWidth ? (promptLen - 1) / bufWidth : 0);
         if (_promptLine < 0) _promptLine = 0;
 
-        var textLines = promptLen / bufWidth;
-        var visualBottom = _promptLine + textLines;
-        if (visualBottom > _maxVisualLine)
-            _maxVisualLine = visualBottom;
+        var textLines = promptLen / bufWidth + (promptLen % bufWidth > 0 ? 1 : 0);
+        _maxVisualLine = _promptLine + textLines - 1;
+        if (_maxVisualLine < _promptLine) _maxVisualLine = _promptLine;
 
         _lastBufferLen = text.Length;
     }
