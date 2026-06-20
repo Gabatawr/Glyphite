@@ -18,7 +18,6 @@ public class ToolRegistry : IToolRegistry
     private readonly IAgentManager _agentManager;
     private readonly IAgentScopeFactory _scopeFactory;
     private readonly IOptions<DeepSeekOptions> _deepseekOpts;
-    private readonly IOptions<AgentOptions> _agentOpts;
     private readonly string _defaultDir;
 
     public ToolRegistry(
@@ -30,8 +29,7 @@ public class ToolRegistry : IToolRegistry
         SubAgentManager subAgentManager,
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
-        IOptions<DeepSeekOptions> deepseekOpts,
-        IOptions<AgentOptions> agentOpts)
+        IOptions<DeepSeekOptions> deepseekOpts)
     {
         _bashManager = bashManager;
         _cfgService = cfgService;
@@ -42,7 +40,6 @@ public class ToolRegistry : IToolRegistry
         _agentManager = agentManager;
         _scopeFactory = scopeFactory;
         _deepseekOpts = deepseekOpts;
-        _agentOpts = agentOpts;
         _defaultDir = Directory.GetCurrentDirectory();
     }
 
@@ -71,7 +68,7 @@ public class ToolRegistry : IToolRegistry
         // Subagent tools: only for main agent (prevents recursion)
         if (!isSubAgent)
         {
-            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _configLoader, _deepseekOpts, _agentOpts, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _configLoader, _deepseekOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _configLoader, _deepseekOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _memoryStore, sessionId));
         }

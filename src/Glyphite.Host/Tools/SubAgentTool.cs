@@ -86,51 +86,97 @@ public static class SubAgentTool
         IMemoryStore store,
         ISubAgentConfigLoader configLoader,
         IOptions<DeepSeekOptions> deepseekOpts,
-        IOptions<AgentOptions> agentOpts,
         string currentSessionId)
     {
         var deepseek = deepseekOpts.Value;
 
         return AIFunctionFactory.Create(async (
             [Description("Initial task/instruction for the subagent.")] string task,
-            [Description("Agent name (optional — auto-generated GUID if omitted). If provided, config is loaded from home/working directory.")] string? name = null,
+            [Description("Agent name (optional — auto-generated GUID if omitted). If name is provided and the agent already exists, runs a dry-clean task (blocks cleared after). If the agent doesn't exist, creates a temporary one and deletes after.")] string? name = null,
             [Description("Working directory (defaults to main agent's cwd).")] string? cwd = null,
             [Description("Execution mode: 'sequential' (default, wait) or 'parallel' (hint for orchestrator).")] string? mode = null,
             [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
-            var agentId = name ?? Guid.NewGuid().ToString("N");
+            var parentCwd = await store.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
+            var homePath = cwd ?? parentCwd;
 
+            // ── name provided + agent exists → dry-run with cleanup ──
+            if (name is not null && await store.AgentExistsAsync(name))
+            {
+                var scopeErr = await EnsureScope(subAgentManager, scopeFactory, store, name);
+                if (scopeErr is not null) return scopeErr;
+
+                try
+                {
+                    var result = await subAgentManager.RunAsync(name, async s =>
+                    {
+                        var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId, saveMemory: false);
+                        // Clean up blocks and usage after dry-run
+                        await store.ClearUsageAsync(name);
+                        await store.DeleteBlocksSinceAsync(name, blockCk);
+                        return output;
+                    });
+                    return result;
+                }
+                catch (Exception ex)
+                {
+                    return $"Error: {ex.Message}";
+                }
+            }
+
+            // ── name provided + agent doesn't exist → create temp, run, delete ──
             if (name is not null)
             {
                 if (!AgentManager.IsValidAgentName(name))
                     return $"Error: Invalid agent name '{name}'.";
 
-                if (await store.AgentExistsAsync(name))
-                    return $"Error: Agent '{name}' already exists.";
-            }
-
-            var parentCwd = await store.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
-            var homePath = cwd ?? parentCwd;
-
-            await agentManager.CreateAgentAsync(agentId, deepseek.Model, homePath);
-            if (name is not null)
+                var agentId = name;
+                await agentManager.CreateAgentAsync(agentId, deepseek.Model, homePath);
                 await configLoader.LoadConfigAsync(agentId, homePath, parentCwd);
 
-            var scope = scopeFactory.CreateScope();
-            if (!subAgentManager.TryRegister(agentId, scope))
+                var scope = scopeFactory.CreateScope();
+                if (!subAgentManager.TryRegister(agentId, scope))
+                {
+                    scope.Dispose();
+                    return $"Error: Failed to register subagent '{agentId}'.";
+                }
+
+                try
+                {
+                    var result = await subAgentManager.RunAsync(agentId, async s =>
+                    {
+                        var (output, _) = await RunAgentTask(s, store, agentId, task, currentSessionId);
+                        return output;
+                    });
+                    return $"{result}";
+                }
+                catch (Exception ex)
+                {
+                    return $"Error: {ex.Message}";
+                }
+                finally
+                {
+                    subAgentManager.Remove(agentId);
+                    await store.DeleteSessionAsync(agentId);
+                }
+            }
+
+            // ── no name → auto-GUID, temp, run, delete ──
+            var guidId = Guid.NewGuid().ToString("N");
+            await agentManager.CreateAgentAsync(guidId, deepseek.Model, homePath);
+
+            var guidScope = scopeFactory.CreateScope();
+            if (!subAgentManager.TryRegister(guidId, guidScope))
             {
-                scope.Dispose();
-                return $"Error: Failed to register subagent '{agentId}'.";
+                guidScope.Dispose();
+                return $"Error: Failed to register subagent '{guidId}'.";
             }
 
             try
             {
-                var result = await subAgentManager.RunAsync(agentId, async s =>
+                var result = await subAgentManager.RunAsync(guidId, async s =>
                 {
-                    var (output, _) = await RunAgentTask(s, store, agentId, task, currentSessionId);
-                    // Delete agent entirely after one-shot task
-                    subAgentManager.Remove(agentId);
-                    await store.DeleteSessionAsync(agentId);
+                    var (output, _) = await RunAgentTask(s, store, guidId, task, currentSessionId);
                     return output;
                 });
                 return $"{result}";
@@ -139,9 +185,14 @@ public static class SubAgentTool
             {
                 return $"Error: {ex.Message}";
             }
+            finally
+            {
+                subAgentManager.Remove(guidId);
+                await store.DeleteSessionAsync(guidId);
+            }
         },
         name: "subagent_run",
-        description: "Create a temporary subagent, run the given task, record usage delta into main session, then delete the subagent. One-shot ephemeral agent execution. Use mode=\"parallel\" to allow grouping with other parallel-safe tools."
+        description: "Run a one-shot task on an agent. Without a name: auto-GUID temp agent created then deleted. With a name and agent exists: dry-run (blocks cleaned after). With a name and no agent: temp agent with config created then deleted. Use mode=\"parallel\" for concurrent grouping."
         );
     }
 
@@ -157,31 +208,22 @@ public static class SubAgentTool
         var deepseek = deepseekOpts.Value;
 
         return AIFunctionFactory.Create(async (
-            [Description("Name of the subagent to execute the task on. If saveMemory=true and agent doesn't exist, it will be auto-created.")] string name,
+            [Description("Name of the subagent to execute the task on. Auto-created if not found.")] string name,
             [Description("Task/instruction for the subagent.")] string task,
-            [Description("Working directory (ignored if agent already exists, present for API consistency).")] string? cwd = null,
+            [Description("Working directory (used only when auto-creating the agent).")] string? cwd = null,
             [Description("Execution mode: 'sequential' (default, wait for result) or 'parallel' (queues for batch execution via Task.WhenAll).")] string? mode = null,
-            [Description("Preserve memory after use (default: false — blocks and usage are cleaned). When true, memory tool is available and context accumulates across calls.")] bool saveMemory = false,
             [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
             if (!await store.AgentExistsAsync(name))
             {
-                if (saveMemory)
-                {
-                    // Auto-create the agent for persistent use
-                    if (!AgentManager.IsValidAgentName(name))
-                        return $"Error: Invalid agent name '{name}'.";
+                if (!AgentManager.IsValidAgentName(name))
+                    return $"Error: Invalid agent name '{name}'.";
 
-                    var parentCwd = await store.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
-                    var homePath = cwd ?? parentCwd;
+                var parentCwd = await store.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
+                var homePath = cwd ?? parentCwd;
 
-                    await agentManager.CreateAgentAsync(name, deepseek.Model, homePath);
-                    await configLoader.LoadConfigAsync(name, homePath, parentCwd);
-                }
-                else
-                {
-                    return $"Error: Agent '{name}' not found. Use saveMemory=true to auto-create, or create with subagent_run first.";
-                }
+                await agentManager.CreateAgentAsync(name, deepseek.Model, homePath);
+                await configLoader.LoadConfigAsync(name, homePath, parentCwd);
             }
 
             var scopeErr = await EnsureScope(subAgentManager, scopeFactory, store, name);
@@ -191,12 +233,7 @@ public static class SubAgentTool
             {
                 var result = await subAgentManager.RunAsync(name, async s =>
                 {
-                    var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId, saveMemory);
-                    if (!saveMemory)
-                    {
-                        await store.ClearUsageAsync(name);
-                        await store.DeleteBlocksSinceAsync(name, blockCk);
-                    }
+                    var (output, _) = await RunAgentTask(s, store, name, task, currentSessionId, saveMemory: true);
                     return output;
                 });
                 return result;
@@ -207,7 +244,7 @@ public static class SubAgentTool
             }
         },
         name: "subagent_use",
-        description: "Execute a task on a subagent (auto-creates if saveMemory=true and not found). Usage delta recorded in main session. When saveMemory=false (default), blocks/usage are cleaned. When saveMemory=true, memory tool is available and context accumulates across calls."
+        description: "Execute a task on a named subagent (auto-creates if not found). Memory and context accumulate across calls — the agent persists. Usage delta recorded in main session."
         );
     }
 

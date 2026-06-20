@@ -22,17 +22,27 @@ public sealed class SubAgentManager
     public void Remove(string agentId)
     {
         if (_entries.TryRemove(agentId, out var entry))
+        {
             entry.Scope.Dispose();
+            entry.Semaphore.Dispose();
+        }
     }
 
     /// <summary>Execute a task on a subagent and return the result.</summary>
-    public Task<string> RunAsync(string agentId, Func<AgentScope, Task<string>> runFunc)
+    public async Task<string> RunAsync(string agentId, Func<AgentScope, Task<string>> runFunc)
     {
         if (!_entries.TryGetValue(agentId, out var entry))
             throw new InvalidOperationException($"Subagent '{agentId}' not registered.");
 
-        var task = Task.Run(async () => await runFunc(entry.Scope));
-        return task;
+        await entry.Semaphore.WaitAsync();
+        try
+        {
+            return await Task.Run(async () => await runFunc(entry.Scope));
+        }
+        finally
+        {
+            entry.Semaphore.Release();
+        }
     }
 
     // ── Results ──
@@ -50,6 +60,7 @@ public sealed class SubAgentManager
     private sealed class AgentScopeEntry(AgentScope scope)
     {
         public AgentScope Scope { get; } = scope;
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
         public string? StoredResult { get; set; }
         public DateTime CreatedAt { get; } = DateTime.UtcNow;
     }

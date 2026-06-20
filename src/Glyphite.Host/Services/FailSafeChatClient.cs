@@ -48,7 +48,8 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
     /// <summary>
     /// Group consecutive parallel-safe tool calls into batches for concurrent execution.
-    /// For subagent_use / subagent_run: mode="parallel" is parallel-safe (with duplicate agent name check),
+    /// For subagent_use / subagent_run: mode="parallel" is parallel-safe
+    /// (with duplicate agent name check — same name splits into sequential groups).
     /// mode="sequential" or no mode (default) stops the group.
     /// </summary>
     private static List<List<FunctionCallContent>> BuildToolGroups(IReadOnlyList<FunctionCallContent> fccs)
