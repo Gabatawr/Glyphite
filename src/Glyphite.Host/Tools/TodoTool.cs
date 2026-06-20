@@ -31,8 +31,7 @@ public static class TodoTool
         TodoItem[]? items,
         IMemoryStore store,
         string sessionId,
-        TodoOptions opts,
-        bool? peek = null)
+        TodoOptions opts)
     {
         var nextNumber = await store.GetNextNumberAsync(sessionId);
         await store.SetNextNumberAsync(sessionId, nextNumber + 1);
@@ -60,8 +59,7 @@ public static class TodoTool
         TodoAction[] actions,
         IMemoryStore store,
         string sessionId,
-        TodoOptions opts,
-        bool? peek = null)
+        TodoOptions opts)
     {
         var existing = await store.GetBlockAsync(sessionId, block);
         if (existing is null)
@@ -279,8 +277,7 @@ public static class TodoTool
         [Description("Create a todo list block to plan and track task progress. Use this FREQUENTLY for complex/multi-step tasks to break them down and show progress. Statuses: pending, in_progress, done, cancelled, blocked. Priority: low, medium, high.")]
         public async Task<string> Write(
             [Description("Title/description of the todo list")] string title,
-            [Description("Optional array of items: [{text: '...', status: 'pending', priority: 'medium'}]. Status and priority default to pending, medium.")] TodoItem[]? items,
-            [Description("Auto-clean result after tool loop.")] bool? peek = null)
+            [Description("Optional array of items: [{text: '...', status: 'pending', priority: 'medium'}]. Status and priority default to pending, medium.")] TodoItem[]? items)
         {
             var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
             return await TodoWrite(title, items, store, sessionId, opts);
@@ -289,8 +286,7 @@ public static class TodoTool
         [Description("Modify a todo list block. Action types: set_status (change item status by index), update (change text/status/priority by index), add (insert new item), remove (delete item by index). Creates a snapshot block to track progress history.")]
         public async Task<string> Update(
             [Description("Block number of the todo list to modify")] double block,
-            [Description("Array of action objects: {type: 'set_status'|'update'|'add'|'remove', index?: number, text?: string, status?: string, priority?: string}")] TodoAction[] actions,
-            [Description("Auto-clean result after tool loop.")] bool? peek = null)
+            [Description("Array of action objects: {type: 'set_status'|'update'|'add'|'remove', index?: number, text?: string, status?: string, priority?: string}")] TodoAction[] actions)
         {
             var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
             return await TodoUpdate(block, actions, store, sessionId, opts);

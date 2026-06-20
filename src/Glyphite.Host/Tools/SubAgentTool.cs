@@ -92,39 +92,45 @@ public static class SubAgentTool
         var deepseek = deepseekOpts.Value;
 
         return AIFunctionFactory.Create(async (
-            [Description("Unique name for the subagent. Must not exist. Alphanumeric, dash, underscore (max 100 chars).")] string name,
             [Description("Initial task/instruction for the subagent.")] string task,
+            [Description("Agent name (optional — auto-generated GUID if omitted). If provided, config is loaded from home/working directory.")] string? name = null,
             [Description("Working directory (defaults to main agent's cwd).")] string? cwd = null,
             [Description("Execution mode: 'sequential' (default, wait) or 'parallel' (hint for orchestrator).")] string? mode = null,
             [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
-            if (!AgentManager.IsValidAgentName(name))
-                return $"Error: Invalid agent name '{name}'.";
+            var agentId = name ?? Guid.NewGuid().ToString("N");
 
-            if (await store.AgentExistsAsync(name))
-                return $"Error: Agent '{name}' already exists.";
+            if (name is not null)
+            {
+                if (!AgentManager.IsValidAgentName(name))
+                    return $"Error: Invalid agent name '{name}'.";
+
+                if (await store.AgentExistsAsync(name))
+                    return $"Error: Agent '{name}' already exists.";
+            }
 
             var parentCwd = await store.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
             var homePath = cwd ?? parentCwd;
 
-            await agentManager.CreateAgentAsync(name, deepseek.Model, homePath);
-            await configLoader.LoadConfigAsync(name, homePath, parentCwd);
+            await agentManager.CreateAgentAsync(agentId, deepseek.Model, homePath);
+            if (name is not null)
+                await configLoader.LoadConfigAsync(agentId, homePath, parentCwd);
 
             var scope = scopeFactory.CreateScope();
-            if (!subAgentManager.TryRegister(name, scope))
+            if (!subAgentManager.TryRegister(agentId, scope))
             {
                 scope.Dispose();
-                return $"Error: Failed to register subagent '{name}'.";
+                return $"Error: Failed to register subagent '{agentId}'.";
             }
 
             try
             {
-                var result = await subAgentManager.RunAsync(name, async s =>
+                var result = await subAgentManager.RunAsync(agentId, async s =>
                 {
-                    var (output, _) = await RunAgentTask(s, store, name, task, currentSessionId);
+                    var (output, _) = await RunAgentTask(s, store, agentId, task, currentSessionId);
                     // Delete agent entirely after one-shot task
-                    subAgentManager.Remove(name);
-                    await store.DeleteSessionAsync(name);
+                    subAgentManager.Remove(agentId);
+                    await store.DeleteSessionAsync(agentId);
                     return output;
                 });
                 return $"{result}";
@@ -135,7 +141,7 @@ public static class SubAgentTool
             }
         },
         name: "subagent_run",
-        description: "Create a temporary subagent, run the given task, record usage delta into main session, then delete the subagent. One-shot ephemeral agent execution."
+        description: "Create a temporary subagent, run the given task, record usage delta into main session, then delete the subagent. One-shot ephemeral agent execution. Use mode=\"parallel\" to allow grouping with other parallel-safe tools."
         );
     }
 
@@ -181,34 +187,6 @@ public static class SubAgentTool
             var scopeErr = await EnsureScope(subAgentManager, scopeFactory, store, name);
             if (scopeErr is not null) return scopeErr;
 
-            var isParallel = string.Equals(mode, "parallel", StringComparison.OrdinalIgnoreCase);
-
-            if (isParallel)
-            {
-                subAgentManager.EnqueueParallel(name, task, async s =>
-                {
-                    var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId, saveMemory);
-                    if (!saveMemory)
-                    {
-                        await store.ClearUsageAsync(name);
-                        await store.DeleteBlocksSinceAsync(name, blockCk);
-                    }
-                    return output;
-                });
-                return $"[queued parallel] Agent '{name}' will execute in parallel batch.";
-            }
-
-            // Sequential: flush any pending parallel queue first, then execute this one
-            var flushResults = await subAgentManager.FlushParallelAsync();
-            var parts = new List<string>();
-            foreach (var (agentId, result, error) in flushResults)
-            {
-                if (error is not null)
-                    parts.Add($"[{agentId}] Error: {error}");
-                else
-                    parts.Add($"[{agentId}]\n{result}");
-            }
-
             try
             {
                 var result = await subAgentManager.RunAsync(name, async s =>
@@ -221,18 +199,11 @@ public static class SubAgentTool
                     }
                     return output;
                 });
-
-                if (parts.Count > 0)
-                    parts.Add($"[{name}]\n{result}");
-                else
-                    parts.Add(result);
-
-                return string.Join("\n\n---\n\n", parts);
+                return result;
             }
             catch (Exception ex)
             {
-                parts.Add($"[{name}] Error: {ex.Message}");
-                return string.Join("\n\n---\n\n", parts);
+                return $"Error: {ex.Message}";
             }
         },
         name: "subagent_use",

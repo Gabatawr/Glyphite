@@ -86,22 +86,7 @@ public class TurnProcessor : ITurnProcessor
         var failSafeClient = new FailSafeChatClient(
             sessionClient, _agentOpts.MaxToolIterations, _streamOpts);
 
-        // Flush queued parallel subagent tasks after each tool batch
-        failSafeClient.OnBatchComplete = async () =>
-        {
-            var flushResults = await _subAgentManager.FlushParallelAsync();
-            if (flushResults.Count == 0) return null;
-
-            var lines = new List<string> { $"[subagent_flush] {flushResults.Count} parallel task(s) completed:" };
-            foreach (var (agentId, result, error) in flushResults)
-            {
-                if (error is not null)
-                    lines.Add($"  [{agentId}] Error: {error}");
-                else
-                    lines.Add($"  [{agentId}]\n    {(result ?? "(no output)").Replace("\n", "\n    ")}");
-            }
-            return string.Join("\n", lines);
-        };
+        // No OnBatchComplete needed — subagent tasks run synchronously within their group's Task.WhenAll
 
         _blockMemory.CurrentExecutedIds.Value = failSafeClient.ExecutedCallIds;
 
@@ -112,7 +97,7 @@ public class TurnProcessor : ITurnProcessor
         // ── Per-turn state (local variables, not instance fields) ──
         var reasoningAccum = new StringBuilder();
         var textAccum = new StringBuilder();
-        var pendingToolCalls = new List<(string name, string args, bool isPeek, double blockNumber)>();
+        var pendingToolCalls = new Dictionary<string, (string name, string args, bool isPeek, double blockNumber)>();
 
         async Task<List<TurnEvent>> ProcessUpdate(ChatResponseUpdate update)
         {
@@ -155,7 +140,8 @@ public class TurnProcessor : ITurnProcessor
                 callBlock.Number = nextNum++;
                 await _store.AppendBlocksAsync(sessionId, [callBlock], nextNum);
 
-                pendingToolCalls.Add((fcc.Name, args, isPeek, callBlock.Number));
+                var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
+                pendingToolCalls[callId] = (fcc.Name, args, isPeek, callBlock.Number);
 
                 events.Add(new ToolCallTurnEvent(fcc.Name, args, isPeek));
             }
@@ -166,10 +152,11 @@ public class TurnProcessor : ITurnProcessor
                 events.AddRange(await FlushText());
 
                 var output = frc.Result?.ToString() ?? "";
-                if (pendingToolCalls.Count > 0)
+                var frcCallId = frc.CallId;
+                if (frcCallId is not null && pendingToolCalls.TryGetValue(frcCallId, out var pending))
                 {
-                    var (name, args, isPeek, callBlockNumber) = pendingToolCalls[0];
-                    pendingToolCalls.RemoveAt(0);
+                    pendingToolCalls.Remove(frcCallId);
+                    var (name, args, isPeek, callBlockNumber) = pending;
 
                     if (name is "read_file" or "write_file")
                     {
@@ -333,19 +320,6 @@ public class TurnProcessor : ITurnProcessor
         // Persist usage from all iterations
         await _store.RecordUsageAsync(sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens, model: modelStr);
         yield return new UsageTurnEvent(failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
-
-        // Final flush: any remaining parallel tasks that were never flushed by a sequential call
-        if (_subAgentManager.HasPendingParallel)
-        {
-            var finalResults = await _subAgentManager.FlushParallelAsync();
-            foreach (var (agentId, result, error) in finalResults)
-            {
-                var msg = error is not null
-                    ? $"[AutoTool: subagent_flush] [{agentId}] Error: {error}"
-                    : $"[AutoTool: subagent_flush] [{agentId}]\n{result}";
-                yield return new TextTurnEvent(msg);
-            }
-        }
 
         var flushEvents = await FlushAll();
         foreach (var e in flushEvents)

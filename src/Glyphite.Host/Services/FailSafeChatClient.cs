@@ -40,6 +40,109 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     private int GetMaxLength(string toolName)
         => _streamOpts.ToolMaxLength.TryGetValue(toolName, out var len) ? len : -1;
 
+    // ── Parallel-safe tool names (can be grouped for concurrent execution) ──
+    private static readonly HashSet<string> _parallelSafeTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "read_file", "fetch_web", "search_glob", "search_grep", "subagent_use", "subagent_run"
+    };
+
+    /// <summary>
+    /// Group consecutive parallel-safe tool calls into batches for concurrent execution.
+    /// For subagent_use / subagent_run: mode="parallel" is parallel-safe (with duplicate agent name check),
+    /// mode="sequential" or no mode (default) stops the group.
+    /// </summary>
+    private static List<List<FunctionCallContent>> BuildToolGroups(IReadOnlyList<FunctionCallContent> fccs)
+    {
+        var groups = new List<List<FunctionCallContent>>();
+        var current = new List<FunctionCallContent>();
+        var agentNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var fcc in fccs)
+        {
+            var name = fcc.Name ?? "";
+            var isSafe = _parallelSafeTools.Contains(name);
+
+            if (!isSafe)
+            {
+                if (current.Count > 0) { groups.Add(current); current = []; agentNames.Clear(); }
+                groups.Add([fcc]);
+                continue;
+            }
+
+            // subagent_use / subagent_run: check mode and duplicate agent names
+            if (name is "subagent_use" or "subagent_run")
+            {
+                // Check mode — default is "sequential"
+                string? mode = null;
+                if (fcc.Arguments?.TryGetValue("mode", out var modeObj) == true)
+                    mode = modeObj?.ToString();
+                var isParallelMode = string.Equals(mode, "parallel", StringComparison.OrdinalIgnoreCase);
+
+                if (!isParallelMode)
+                {
+                    // Sequential mode: stop current group, add as sequential
+                    if (current.Count > 0) { groups.Add(current); current = []; agentNames.Clear(); }
+                    groups.Add([fcc]);
+                    continue;
+                }
+
+                // Parallel mode: check for duplicate explicitly-provided agent names
+                if (fcc.Arguments?.TryGetValue("name", out var nameObj) == true)
+                {
+                    var agentName = nameObj?.ToString();
+                    if (!string.IsNullOrEmpty(agentName) && !agentNames.Add(agentName))
+                    {
+                        // Duplicate agent — flush current batch, start new one
+                        groups.Add(current);
+                        current = [];
+                        agentNames.Clear();
+                        agentNames.Add(agentName);
+                    }
+                }
+            }
+
+            current.Add(fcc);
+        }
+
+        if (current.Count > 0) groups.Add(current);
+        return groups;
+    }
+
+    /// <summary>Run a single tool and return (resultText, errorText, exception).</summary>
+    private static async Task<(string? Result, string? Error, Exception? Exception)> RunToolAsync(
+        AIFunction tool, IDictionary<string, object?>? args, CancellationToken ct)
+    {
+        try
+        {
+            var argsObj = args is not null ? new AIFunctionArguments(args) : null;
+            var r = await tool.InvokeAsync(argsObj, ct);
+            return (r?.ToString() ?? "", null, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Error executing '{tool.Name}': {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>Track memory clean blocks for removal from messageList after LLM consumes them.</summary>
+    private void TrackMemoryClean(IDictionary<string, object?>? args, string toolName, string? resultText, string? errorText)
+    {
+        if (errorText is null && toolName == "memory" && resultText?.StartsWith("Deleted ") == true)
+        {
+            try
+            {
+                var argsJson = args is not null ? JsonSerializer.Serialize(args) : "{}";
+                using var doc = JsonDocument.Parse(argsJson);
+                if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var num in blk.EnumerateArray().Select(e => e.GetDouble()))
+                        _pendingMemoryCleanBlocks.Add(num);
+                }
+            }
+            catch { }
+        }
+    }
+
     private async Task<List<ChatMessage>> ExecuteTools(
         IReadOnlyList<FunctionCallContent> fccs, ChatOptions? options, CancellationToken ct)
     {
@@ -245,97 +348,151 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
             messageList.Add(fixedAssistant);
 
-            // Execute tools one by one, yielding fcc before each and frc after
+            // ── Tool grouping: consecutive parallel-safe tools execute concurrently ──
             var tools = options?.Tools?.OfType<AIFunction>().ToList() ?? [];
             var toolResults = new List<ChatMessage>();
             var hasError = false;
 
-            for (var i = 0; i < fixedFccs.Count; i++)
+            var groups = BuildToolGroups(fixedFccs);
+
+            foreach (var group in groups)
             {
-                var fcc = fixedFccs[i];
-                var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
-                var toolName = fcc.Name ?? "";
-
-                // Track peek tools — their results are cleaned after LLM sees them once
-                bool? peekExplicit = null;
-                if (fcc.Arguments?.TryGetValue("peek", out var pv) == true)
-                    peekExplicit = pv is bool pb ? pb : (pv is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.True);
-                var isPeek = peekExplicit ?? (toolName == "patch_file"); // patch_file defaults to peek=true
-                if (isPeek)
-                    _pendingPeekCallIds.Add(callId);
-
-                // Yield tool call before execution — user sees "[Tool: name | args]" immediately
-                yield return new ChatResponseUpdate
-                {
-                    Contents = [new FunctionCallContent(callId, toolName, fcc.Arguments ?? new Dictionary<string, object?>())]
-                };
-
                 if (hasError)
                 {
-                    var skipped = $"Skipped — previous tool errored";
-                    toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, skipped), new TextContent(skipped)]));
-                    yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, skipped)] };
+                    foreach (var fcc in group)
+                    {
+                        var skipId = fcc.CallId ?? Guid.NewGuid().ToString("N");
+                        var skipped = "Skipped — previous tool errored";
+                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(skipId, skipped), new TextContent(skipped)]));
+                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(skipId, skipped)] };
+                    }
                     continue;
                 }
 
-                var tool = tools.FirstOrDefault(t => t.Name == toolName);
-                if (tool is null)
+                if (group.Count == 1)
                 {
-                    var errMsg = $"No tool found: '{toolName}'";
-                    toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errMsg), new TextContent(errMsg)]));
-                    yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errMsg)] };
-                    continue;
-                }
+                    // ── Sequential: single tool ──
+                    var fcc = group[0];
+                    var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
+                    var toolName = fcc.Name ?? "";
 
-                // Execute — capture result/error outside try-catch (yield forbidden inside try-catch)
-                string? resultText = null;
-                string? errorText = null;
-                Exception? exception = null;
+                    // Track peek
+                    bool? peekExplicit = null;
+                    if (fcc.Arguments?.TryGetValue("peek", out var pv) == true)
+                        peekExplicit = pv is bool pb ? pb : (pv is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.True);
+                    var isPeek = peekExplicit ?? (toolName == "patch_file");
+                    if (isPeek) _pendingPeekCallIds.Add(callId);
 
-                try
-                {
-                    var argsObj = fcc.Arguments is not null ? new AIFunctionArguments(fcc.Arguments) : null;
-                    var r = await tool.InvokeAsync(argsObj, cancellationToken);
-                    resultText = r?.ToString() ?? "";
-                }
-                catch (Exception ex)
-                {
-                    errorText = $"Error executing '{toolName}': {ex.Message}";
-                    var skipped = fixedFccs.Count - i - 1;
-                    if (skipped > 0) errorText += $"; {skipped} tool call(s) were not executed";
-                    exception = ex;
-                    hasError = true;
-                }
+                    // Yield FCC
+                    yield return new ChatResponseUpdate
+                    {
+                        Contents = [new FunctionCallContent(callId, toolName, fcc.Arguments ?? new Dictionary<string, object?>())]
+                    };
 
-                if (errorText is not null)
-                {
-                    toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errorText) { Exception = exception }, new TextContent(errorText)]));
-                    yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errorText)] };
-                }
-                else
-                {
-                    toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText), new TextContent(resultText ?? "")]));
-                    yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
-                }
+                    var tool = tools.FirstOrDefault(t => t.Name == toolName);
+                    if (tool is null)
+                    {
+                        var errMsg = $"No tool found: '{toolName}'";
+                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errMsg), new TextContent(errMsg)]));
+                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errMsg)] };
+                        ExecutedCallIds.Add(callId);
+                        continue;
+                    }
 
-                ExecutedCallIds.Add(callId);
+                    // Execute
+                    string? resultText = null;
+                    string? errorText = null;
+                    Exception? exception = null;
 
-                // Track memory clean — deleted blocks are removed from messageList after LLM sees the result
-                if (errorText is null && toolName == "memory" && resultText?.StartsWith("Deleted ") == true)
-                {
                     try
                     {
-                        var argsJson = fcc.Arguments is not null
-                            ? System.Text.Json.JsonSerializer.Serialize(fcc.Arguments)
-                            : "{}";
-                        using var doc = System.Text.Json.JsonDocument.Parse(argsJson);
-                        if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == System.Text.Json.JsonValueKind.Array)
-                        {
-                            foreach (var num in blk.EnumerateArray().Select(e => e.GetDouble()))
-                                _pendingMemoryCleanBlocks.Add(num);
-                        }
+                        var argsObj = fcc.Arguments is not null ? new AIFunctionArguments(fcc.Arguments) : null;
+                        var r = await tool.InvokeAsync(argsObj, cancellationToken);
+                        resultText = r?.ToString() ?? "";
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        errorText = $"Error executing '{toolName}': {ex.Message}";
+                        exception = ex;
+                        hasError = true;
+                    }
+
+                    if (errorText is not null)
+                    {
+                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errorText) { Exception = exception }, new TextContent(errorText)]));
+                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errorText)] };
+                    }
+                    else
+                    {
+                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText), new TextContent(resultText ?? "")]));
+                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
+                    }
+
+                    ExecutedCallIds.Add(callId);
+                    TrackMemoryClean(fcc.Arguments, toolName, resultText, errorText);
+                    continue;
+                }
+
+                // ── Parallel batch (≥2 consecutive parallel-safe tools) ──
+                // Start all tasks first, then yield FCC+FRC together as each completes
+                var execData = new List<(string CallId, string ToolName, bool IsPeek, Task<(string? Result, string? Error, Exception? Exception)> Task)>();
+
+                foreach (var fcc in group)
+                {
+                    var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
+                    var toolName = fcc.Name ?? "";
+
+                    bool? peekExplicit = null;
+                    if (fcc.Arguments?.TryGetValue("peek", out var pv) == true)
+                        peekExplicit = pv is bool pb ? pb : (pv is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.True);
+                    var isPeek = peekExplicit ?? (toolName == "patch_file");
+
+                    var tool = tools.FirstOrDefault(t => t.Name == toolName);
+                    if (tool is null)
+                    {
+                        execData.Add((callId, toolName, isPeek,
+                            Task.FromResult<(string?, string?, Exception?)>((null, $"No tool found: '{toolName}'", null))));
+                        continue;
+                    }
+
+                    Task<(string?, string?, Exception?)> t = RunToolAsync(tool, fcc.Arguments, cancellationToken);
+                    execData.Add((callId, toolName, isPeek, t));
+                }
+
+                // Yield FCC + FRC as each task completes
+                var pending = execData.Select((d, idx) => (task: d.Task, idx)).ToList();
+                while (pending.Count > 0)
+                {
+                    var done = await Task.WhenAny(pending.Select(p => p.task));
+                    var item = pending.First(p => p.task == done);
+                    pending.Remove(item);
+
+                    var (callId, toolName, isPeek, _) = execData[item.idx];
+                    var (resultText, errorText, exception) = await done;
+                    var fcc = group[item.idx];
+
+                    if (isPeek) _pendingPeekCallIds.Add(callId);
+
+                    // Yield FCC first, then FRC immediately
+                    yield return new ChatResponseUpdate
+                    {
+                        Contents = [new FunctionCallContent(callId, toolName, fcc.Arguments ?? new Dictionary<string, object?>())]
+                    };
+
+                    if (errorText is not null)
+                    {
+                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errorText), new TextContent(errorText)]));
+                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errorText)] };
+                        hasError = true;
+                    }
+                    else
+                    {
+                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText), new TextContent(resultText ?? "")]));
+                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
+                    }
+
+                    ExecutedCallIds.Add(callId);
+                    TrackMemoryClean(fcc.Arguments, toolName, resultText, errorText);
                 }
             }
 
