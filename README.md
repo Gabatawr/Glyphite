@@ -189,13 +189,13 @@ Supported:
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
 
 ```bash
-glyphite -v       # → 0.4.61
-/version          # → Glyphite v0.4.61
+glyphite -v       # → 0.5.3
+/version          # → Glyphite v0.5.3
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.4.61 — MainAgent 🏠
+Glyphite CLI v0.5.3 — MainAgent 🏠
 ```
 
 ## Publishing and backups
@@ -213,7 +213,7 @@ Use `./publish.sh` to publish:
 
 Rollback:
 ```bash
-cp ~/.glyphite/backup/glyphite.v0.2.74 ~/.glyphite/glyphite
+cp ~/.glyphite/backup/glyphite.v0.5.0 ~/.glyphite/glyphite
 ```
 
 ## Testing

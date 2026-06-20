@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 
 namespace Glyphite.Host.Services;
@@ -255,18 +256,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             // Memory clean: remove deleted blocks from messageList after LLM consumed the result
             if (_pendingMemoryCleanBlocks.Count > 0)
             {
-                foreach (var num in _pendingMemoryCleanBlocks)
-                {
-                    var pat = $"[Block: {num:F1},";
-                    for (var i = messageList.Count - 1; i >= 0; i--)
-                    {
-                        if (messageList[i].Text?.StartsWith(pat) == true)
-                        {
-                            messageList.RemoveAt(i);
-                            break;
-                        }
-                    }
-                }
+                ToolCallHelper.RemoveBlocksFromMessageList(messageList, _pendingMemoryCleanBlocks);
                 _pendingMemoryCleanBlocks.Clear();
             }
 
@@ -370,72 +360,9 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     continue;
                 }
 
-                if (group.Count == 1)
-                {
-                    // ── Sequential: single tool ──
-                    var fcc = group[0];
-                    var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
-                    var toolName = fcc.Name ?? "";
-
-                    // Track peek
-                    bool? peekExplicit = null;
-                    if (fcc.Arguments?.TryGetValue("peek", out var pv) == true)
-                        peekExplicit = pv is bool pb ? pb : (pv is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.True);
-                    var isPeek = peekExplicit ?? (toolName == "patch_file");
-                    if (isPeek) _pendingPeekCallIds.Add(callId);
-
-                    // Yield FCC
-                    yield return new ChatResponseUpdate
-                    {
-                        Contents = [new FunctionCallContent(callId, toolName, fcc.Arguments ?? new Dictionary<string, object?>())]
-                    };
-
-                    var tool = tools.FirstOrDefault(t => t.Name == toolName);
-                    if (tool is null)
-                    {
-                        var errMsg = $"No tool found: '{toolName}'";
-                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errMsg), new TextContent(errMsg)]));
-                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errMsg)] };
-                        ExecutedCallIds.Add(callId);
-                        continue;
-                    }
-
-                    // Execute
-                    string? resultText = null;
-                    string? errorText = null;
-                    Exception? exception = null;
-
-                    try
-                    {
-                        var argsObj = fcc.Arguments is not null ? new AIFunctionArguments(fcc.Arguments) : null;
-                        var r = await tool.InvokeAsync(argsObj, cancellationToken);
-                        resultText = r?.ToString() ?? "";
-                    }
-                    catch (Exception ex)
-                    {
-                        errorText = $"Error executing '{toolName}': {ex.Message}";
-                        exception = ex;
-                        hasError = true;
-                    }
-
-                    if (errorText is not null)
-                    {
-                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errorText) { Exception = exception }, new TextContent(errorText)]));
-                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errorText)] };
-                    }
-                    else
-                    {
-                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText), new TextContent(resultText ?? "")]));
-                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
-                    }
-
-                    ExecutedCallIds.Add(callId);
-                    TrackMemoryClean(fcc.Arguments, toolName, resultText, errorText);
-                    continue;
-                }
-
-                // ── Parallel batch (≥2 consecutive parallel-safe tools) ──
-                // Start all tasks first, then yield FCC+FRC together as each completes
+                // ── Unified tool execution (sequential or parallel) ──
+                // Start all tasks in the group concurrently, then yield FCC+FRC as each completes.
+                // For a single-tool group, Task.WhenAny with 1 task ≡ await.
                 var execData = new List<(string CallId, string ToolName, bool IsPeek, Task<(string? Result, string? Error, Exception? Exception)> Task)>();
 
                 foreach (var fcc in group)
@@ -443,10 +370,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
                     var toolName = fcc.Name ?? "";
 
-                    bool? peekExplicit = null;
-                    if (fcc.Arguments?.TryGetValue("peek", out var pv) == true)
-                        peekExplicit = pv is bool pb ? pb : (pv is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.True);
-                    var isPeek = peekExplicit ?? (toolName == "patch_file");
+                    var isPeek = ToolCallHelper.IsPeekCall(toolName, fcc.Arguments);
 
                     var tool = tools.FirstOrDefault(t => t.Name == toolName);
                     if (tool is null)
@@ -461,12 +385,12 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                 }
 
                 // Yield FCC + FRC as each task completes
-                var pending = execData.Select((d, idx) => (task: d.Task, idx)).ToList();
-                while (pending.Count > 0)
+                var pendingIds = execData.Select((d, idx) => (task: d.Task, idx)).ToList();
+                while (pendingIds.Count > 0)
                 {
-                    var done = await Task.WhenAny(pending.Select(p => p.task));
-                    var item = pending.First(p => p.task == done);
-                    pending.Remove(item);
+                    var done = await Task.WhenAny(pendingIds.Select(p => p.task));
+                    var item = pendingIds.First(p => p.task == done);
+                    pendingIds.Remove(item);
 
                     var (callId, toolName, isPeek, _) = execData[item.idx];
                     var (resultText, errorText, exception) = await done;
@@ -474,7 +398,6 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
                     if (isPeek) _pendingPeekCallIds.Add(callId);
 
-                    // Yield FCC first, then FRC immediately
                     yield return new ChatResponseUpdate
                     {
                         Contents = [new FunctionCallContent(callId, toolName, fcc.Arguments ?? new Dictionary<string, object?>())]
@@ -482,13 +405,13 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
                     if (errorText is not null)
                     {
-                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errorText), new TextContent(errorText)]));
+                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errorText) { Exception = exception }, new TextContent(errorText)]));
                         yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errorText)] };
                         hasError = true;
                     }
                     else
                     {
-                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText), new TextContent(resultText ?? "")]));
+                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText ?? ""), new TextContent(resultText ?? "")]));
                         yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
                     }
 
@@ -527,8 +450,8 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
             try
             {
-                var json = JsonSerializer.Serialize(update.RawRepresentation);
-                using var doc = JsonDocument.Parse(json);
+                using var doc = GetUsageDocument(update.RawRepresentation);
+                if (doc is null) continue;
                 if (!doc.RootElement.TryGetProperty("Usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
                     continue;
 
@@ -560,5 +483,17 @@ public sealed class FailSafeChatClient : DelegatingChatClient
         }
 
         return (hit, miss, output);
+    }
+
+    /// <summary>Parse RawRepresentation into a JsonDocument without double-serialization.
+    /// RawRepresentation is typically already a JsonDocument or JsonElement from the OpenAI client.</summary>
+    private static JsonDocument? GetUsageDocument(object raw)
+    {
+        return raw switch
+        {
+            JsonDocument jd => JsonDocument.Parse(jd.RootElement.GetRawText()),
+            JsonElement je => JsonDocument.Parse(je.GetRawText()),
+            _ => JsonDocument.Parse(JsonSerializer.Serialize(raw))
+        };
     }
 }

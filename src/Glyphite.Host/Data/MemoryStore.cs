@@ -99,12 +99,40 @@ public partial class MemoryStore : IMemoryStore
                 last_request_miss INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER NOT NULL,
+                applied_at TEXT NOT NULL
+            );
             """);
-        try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_hit INTEGER NOT NULL DEFAULT 0"); } catch { }
-        try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_miss INTEGER NOT NULL DEFAULT 0"); } catch { }
-        try { _conn.Execute("ALTER TABLE session_usage ADD COLUMN model TEXT"); } catch { }
+        ApplyMigrations();
         _conn.Execute("CREATE INDEX IF NOT EXISTS idx_session_usage_agent ON session_usage(agent_id)");
         _conn.Execute("CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_deleted)");
+    }
+
+    private void ApplyMigrations()
+    {
+        var currentVersion = _conn.QueryFirstOrDefault<int>(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version");
+
+        if (currentVersion < 1)
+        {
+            // Migration v1: add columns for databases created before these were in the initial schema
+            if (!ColumnExists("session_usage", "last_request_hit"))
+                _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_hit INTEGER NOT NULL DEFAULT 0");
+            if (!ColumnExists("session_usage", "last_request_miss"))
+                _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_miss INTEGER NOT NULL DEFAULT 0");
+            if (!ColumnExists("session_usage", "model"))
+                _conn.Execute("ALTER TABLE session_usage ADD COLUMN model TEXT");
+            _conn.Execute("INSERT INTO schema_version (version, applied_at) VALUES (1, datetime('now'))");
+        }
+    }
+
+    private bool ColumnExists(string table, string column)
+    {
+        var count = _conn.ExecuteScalar<int>(
+            "SELECT COUNT(1) FROM pragma_table_info(@table) WHERE name = @column",
+            new { table, column });
+        return count > 0;
     }
 
     // ── Session ──
@@ -230,15 +258,6 @@ public partial class MemoryStore : IMemoryStore
             await _conn.ExecuteAsync("DELETE FROM sessions WHERE id = @sid", new { sid = agentId });
             await tx.CommitAsync();
         }
-        finally { _writeLock.Release(); }
-    }
-
-    // ── Diagnostics ──
-
-    public async Task<int> DirectExecuteAsync(string sql, object? param = null)
-    {
-        await _writeLock.WaitAsync();
-        try { return await _conn.ExecuteAsync(sql, param); }
         finally { _writeLock.Release(); }
     }
 

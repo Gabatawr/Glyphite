@@ -77,6 +77,68 @@ public static class SubAgentTool
         return null; // ok
     }
 
+    /// <summary>
+    /// Core runner: ensure scope is registered, execute task, optionally dry-clean blocks.
+    /// Does NOT delete the agent session — caller owns lifecycle.
+    /// </summary>
+    private static async Task<string> RunSubAgentTaskAsync(
+        string agentId, string task, bool isDryRun, bool saveMemory,
+        SubAgentManager subAgentManager, IAgentScopeFactory scopeFactory,
+        IMemoryStore store, string currentSessionId)
+    {
+        var scopeErr = await EnsureScope(subAgentManager, scopeFactory, store, agentId);
+        if (scopeErr is not null) return scopeErr;
+
+        try
+        {
+            return await subAgentManager.RunAsync(agentId, async s =>
+            {
+                var (output, blockCk) = await RunAgentTask(s, store, agentId, task, currentSessionId, saveMemory);
+                if (isDryRun)
+                {
+                    await store.ClearUsageAsync(agentId);
+                    await store.DeleteBlocksSinceAsync(agentId, blockCk);
+                }
+                return output;
+            });
+        }
+        catch (Exception ex)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Create a temporary agent, run a task, then delete the session.
+    /// Handles scope registration, execution, and cleanup (remove scope + delete session).
+    /// </summary>
+    private static async Task<string> CreateAndRunSubAgentAsync(
+        string agentId, string task, string homePath, string parentCwd,
+        bool validateName, bool loadConfig,
+        SubAgentManager subAgentManager, IAgentManager agentManager,
+        IAgentScopeFactory scopeFactory, IMemoryStore store,
+        ISubAgentConfigLoader configLoader, DeepSeekOptions deepseek,
+        string currentSessionId)
+    {
+        if (validateName && !AgentManager.IsValidAgentName(agentId))
+            return $"Error: Invalid agent name '{agentId}'.";
+
+        await agentManager.CreateAgentAsync(agentId, deepseek.Model, homePath);
+        if (loadConfig)
+            await configLoader.LoadConfigAsync(agentId, homePath, parentCwd);
+
+        try
+        {
+            return await RunSubAgentTaskAsync(agentId, task, isDryRun: false, saveMemory: false,
+                subAgentManager, scopeFactory, store, currentSessionId);
+        }
+        finally
+        {
+            subAgentManager.Remove(agentId);
+            await store.DeleteSessionAsync(agentId);
+        }
+    }
+
     // ── Tool functions ──
 
     public static AIFunction AsSubAgentRunFunction(
@@ -103,93 +165,25 @@ public static class SubAgentTool
             // ── name provided + agent exists → dry-run with cleanup ──
             if (name is not null && await store.AgentExistsAsync(name))
             {
-                var scopeErr = await EnsureScope(subAgentManager, scopeFactory, store, name);
-                if (scopeErr is not null) return scopeErr;
-
-                try
-                {
-                    var result = await subAgentManager.RunAsync(name, async s =>
-                    {
-                        var (output, blockCk) = await RunAgentTask(s, store, name, task, currentSessionId, saveMemory: false);
-                        // Clean up blocks and usage after dry-run
-                        await store.ClearUsageAsync(name);
-                        await store.DeleteBlocksSinceAsync(name, blockCk);
-                        return output;
-                    });
-                    return result;
-                }
-                catch (Exception ex)
-                {
-                    return $"Error: {ex.Message}";
-                }
+                return await RunSubAgentTaskAsync(name, task, isDryRun: true, saveMemory: false,
+                    subAgentManager, scopeFactory, store, currentSessionId);
             }
 
             // ── name provided + agent doesn't exist → create temp, run, delete ──
             if (name is not null)
             {
-                if (!AgentManager.IsValidAgentName(name))
-                    return $"Error: Invalid agent name '{name}'.";
-
-                var agentId = name;
-                await agentManager.CreateAgentAsync(agentId, deepseek.Model, homePath);
-                await configLoader.LoadConfigAsync(agentId, homePath, parentCwd);
-
-                var scope = scopeFactory.CreateScope();
-                if (!subAgentManager.TryRegister(agentId, scope))
-                {
-                    scope.Dispose();
-                    return $"Error: Failed to register subagent '{agentId}'.";
-                }
-
-                try
-                {
-                    var result = await subAgentManager.RunAsync(agentId, async s =>
-                    {
-                        var (output, _) = await RunAgentTask(s, store, agentId, task, currentSessionId);
-                        return output;
-                    });
-                    return $"{result}";
-                }
-                catch (Exception ex)
-                {
-                    return $"Error: {ex.Message}";
-                }
-                finally
-                {
-                    subAgentManager.Remove(agentId);
-                    await store.DeleteSessionAsync(agentId);
-                }
+                return await CreateAndRunSubAgentAsync(name, task, homePath, parentCwd,
+                    validateName: true, loadConfig: true,
+                    subAgentManager, agentManager, scopeFactory, store,
+                    configLoader, deepseek, currentSessionId);
             }
 
             // ── no name → auto-GUID, temp, run, delete ──
             var guidId = Guid.NewGuid().ToString("N");
-            await agentManager.CreateAgentAsync(guidId, deepseek.Model, homePath);
-
-            var guidScope = scopeFactory.CreateScope();
-            if (!subAgentManager.TryRegister(guidId, guidScope))
-            {
-                guidScope.Dispose();
-                return $"Error: Failed to register subagent '{guidId}'.";
-            }
-
-            try
-            {
-                var result = await subAgentManager.RunAsync(guidId, async s =>
-                {
-                    var (output, _) = await RunAgentTask(s, store, guidId, task, currentSessionId);
-                    return output;
-                });
-                return $"{result}";
-            }
-            catch (Exception ex)
-            {
-                return $"Error: {ex.Message}";
-            }
-            finally
-            {
-                subAgentManager.Remove(guidId);
-                await store.DeleteSessionAsync(guidId);
-            }
+            return await CreateAndRunSubAgentAsync(guidId, task, homePath, parentCwd,
+                validateName: false, loadConfig: false,
+                subAgentManager, agentManager, scopeFactory, store,
+                configLoader, deepseek, currentSessionId);
         },
         name: "subagent_run",
         description: "Run a one-shot task on an agent. Without a name: auto-GUID temp agent created then deleted. With a name and agent exists: dry-run (blocks cleaned after). With a name and no agent: temp agent with config created then deleted. Use mode=\"parallel\" for concurrent grouping."
@@ -226,22 +220,8 @@ public static class SubAgentTool
                 await configLoader.LoadConfigAsync(name, homePath, parentCwd);
             }
 
-            var scopeErr = await EnsureScope(subAgentManager, scopeFactory, store, name);
-            if (scopeErr is not null) return scopeErr;
-
-            try
-            {
-                var result = await subAgentManager.RunAsync(name, async s =>
-                {
-                    var (output, _) = await RunAgentTask(s, store, name, task, currentSessionId, saveMemory: true);
-                    return output;
-                });
-                return result;
-            }
-            catch (Exception ex)
-            {
-                return $"Error: {ex.Message}";
-            }
+            return await RunSubAgentTaskAsync(name, task, isDryRun: false, saveMemory: true,
+                subAgentManager, scopeFactory, store, currentSessionId);
         },
         name: "subagent_use",
         description: "Execute a task on a named subagent (auto-creates if not found). Memory and context accumulate across calls — the agent persists. Usage delta recorded in main session."

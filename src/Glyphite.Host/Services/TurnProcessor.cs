@@ -4,6 +4,7 @@ using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Tools;
+using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 
@@ -20,6 +21,14 @@ public class TurnProcessor : ITurnProcessor
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
     private readonly ToolStreamingOptions _streamOpts;
+
+    private static readonly Dictionary<string, string[]> FileToolCleanArgs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["read_file"] = ["content"],
+        ["write_file"] = ["content"],
+        ["patch_file"] = ["newString", "oldString"]
+    };
+
     public TurnProcessor(
         IMemoryStore store,
         IBlockMemoryProvider blockMemory,
@@ -128,11 +137,7 @@ public class TurnProcessor : ITurnProcessor
                 var args = JsonSerializer.Serialize(fcc.Arguments ?? new Dictionary<string, object?>(),
                     new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
-                var isPeek = false;
-                if (fcc.Arguments?.TryGetValue("peek", out var peekVal) == true)
-                    isPeek = peekVal is bool pb ? pb : (peekVal is JsonElement je && je.ValueKind == JsonValueKind.True);
-                else if (fcc.Name == "patch_file")
-                    isPeek = true; // patch_file defaults to peek=true
+                var isPeek = ToolCallHelper.IsPeekCall(fcc);
 
                 var callBlock = MemoryBlock.ToolCall(fcc.Name, args, model: modelStr);
                 if (isPeek)
@@ -181,41 +186,35 @@ public class TurnProcessor : ITurnProcessor
                             {
                                 fileContent = output.TrimEnd('\n', '\r');
                             }
-
-                            if (!isPeek && !string.IsNullOrEmpty(fileContent))
-                                await _store.UpdateBlockToolResultAsync(sessionId, callBlockNumber, fileContent);
-
-                            var cleanedArgs = CleanToolArgs(args, "content");
-                            if (cleanedArgs is not null)
-                                await _store.UpdateBlockAsync(sessionId, callBlockNumber, content: cleanedArgs);
-
-                            events.Add(new ToolResultTurnEvent(name, fileContent));
+                            await EmitToolResult(fileContent, name == "write_file" ? ["content"] : null);
                         }
                         else
                         {
-                            events.Add(new ToolResultTurnEvent(name, output));
+                            await EmitToolResult(output, FileToolCleanArgs.GetValueOrDefault(name));
                         }
-                    }
-                    else if (name == "patch_file")
-                    {
-                        if (!isPeek && !string.IsNullOrEmpty(output))
-                            await _store.UpdateBlockToolResultAsync(sessionId, callBlockNumber, output);
-
-                        var cleanedArgs = CleanToolArgs(args, "newString", "oldString");
-                        if (cleanedArgs is not null)
-                            await _store.UpdateBlockAsync(sessionId, callBlockNumber, content: cleanedArgs);
-
-                        events.Add(new ToolResultTurnEvent(name, output));
                     }
                     else
                     {
-                        if (!isPeek && !string.IsNullOrEmpty(output))
-                            await _store.UpdateBlockToolResultAsync(sessionId, callBlockNumber, output);
-
-                        events.Add(new ToolResultTurnEvent(name, output));
+                        FileToolCleanArgs.TryGetValue(name, out var cleanKeys);
+                        await EmitToolResult(output, cleanKeys);
                     }
 
                     // ── After tool execution: update in-turn context ──
+
+                    async Task EmitToolResult(string emitOutput, string[]? cleanKeys)
+                    {
+                        if (!isPeek && !string.IsNullOrEmpty(emitOutput))
+                            await _store.UpdateBlockToolResultAsync(sessionId, callBlockNumber, emitOutput);
+
+                        if (cleanKeys is not null)
+                        {
+                            var cleanedArgs = CleanToolArgs(args, cleanKeys);
+                            if (cleanedArgs is not null)
+                                await _store.UpdateBlockAsync(sessionId, callBlockNumber, content: cleanedArgs);
+                        }
+
+                        events.Add(new ToolResultTurnEvent(name, emitOutput));
+                    }
                     // Memory clean: remove matching ChatMessages from context (by block numbers in args)
                     if (name == "memory" && output.StartsWith("Deleted "))
                     {
@@ -223,20 +222,7 @@ public class TurnProcessor : ITurnProcessor
                         {
                             using var doc = JsonDocument.Parse(args);
                             if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == JsonValueKind.Array)
-                            {
-                                foreach (var num in blk.EnumerateArray().Select(e => e.GetDouble()))
-                                {
-                                    var pat = $"[Block: {num:F1},";
-                                    for (var i = contextMessages.Count - 1; i >= 0; i--)
-                                    {
-                                        if (contextMessages[i].Text?.StartsWith(pat) == true)
-                                        {
-                                            contextMessages.RemoveAt(i);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
+                                ToolCallHelper.RemoveBlocksFromMessageList(contextMessages, blk.EnumerateArray().Select(e => e.GetDouble()));
                         }
                         catch { }
                     }

@@ -31,10 +31,7 @@ public partial class BlockMemoryProvider
             await _store.AppendBlocksAsync(sessionId, blocks, 2);
         }
 
-        // Clean up peek blocks from previous turn
-        var peekCount = await _store.RemovePeekBlocksAsync(sessionId);
-        if (peekCount > 0)
-            blocks = await _store.LoadBlocksAsync(sessionId);
+        // Peek blocks are cleaned by TurnProcessor before calling BuildContextAsync
 
         var modelStr = model ?? _defaultModel;
         var agentBlock = blocks.FirstOrDefault(b => b.Type == BlockType.agent_data);
