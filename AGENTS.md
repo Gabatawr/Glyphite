@@ -18,9 +18,55 @@ Settings are applied in this order (each overrides the previous):
 2. **`Glyphite.json`** in current working directory — overrides base defaults. Use this for your own preferences (e.g. `"patch_file": -1` to always show diffs).
 3. **`Glyphite.{agentName}.json`** in current working directory — agent-specific overrides (highest priority).
 
-## Session state (Jun 20)
+## Session state (Jul 24)
 
-### Latest changes — Subagent auto-create & config extraction (v0.4.58–0.4.61)
+### Latest changes — Parallel tool execution & subagent refactor (v0.4.62+)
+
+**1. Parallel tool execution (`FailSafeChatClient.cs`):**
+
+Added `BuildToolGroups` — groups consecutive parallel-safe tool calls into batches for concurrent execution:
+
+```csharp
+// Parallel-safe tools:
+"read_file", "fetch_web", "search_glob", "search_grep", "subagent_use", "subagent_run"
+```
+
+- Tools with `mode="parallel"` and same agent `name` are **split into separate groups** (sequential), preventing race conditions
+- Tools with `mode="sequential"` (default) or no mode are executed one at a time
+- Parallel batch uses `Task.WhenAll` — all tasks start, results yield as each completes
+
+**2. `SubAgentManager.RunAsync` — SemaphoreSlim added:**
+
+Each `AgentScopeEntry` now has a `SemaphoreSlim(1,1)`. `RunAsync` acquires it before execution and releases after, protecting against concurrent access to the same agent scope.
+
+```csharp
+await entry.Semaphore.WaitAsync();
+try { return await Task.Run(async () => await runFunc(entry.Scope)); }
+finally { entry.Semaphore.Release(); }
+```
+
+**3. `subagent_run` — three modes (replaces `saveMemory` logic):**
+
+| Scenario | Behavior |
+|---|---|
+| no name (auto-GUID) | Creates temp agent → runs → **deletes entirely** |
+| name + agent doesn't exist | Creates temp agent with config → runs → **deletes entirely** |
+| name + agent exists | **Dry-run**: runs → cleans **only delta** blocks/usage. Existing memory preserved |
+
+Used with `mode="parallel"` for concurrent one-shot tasks.
+
+**4. `subagent_use` — always persistent, always auto-creates:**
+
+- `saveMemory` parameter **removed** — now **always** preserves memory and context
+- If agent doesn't exist — **auto-creates** (no need for `saveMemory=true` flag)
+- `memory` tool always available for subagents created via `subagent_use`
+- Used with `mode="parallel"` to delegate concurrent work to named agents
+
+**5. Tool streaming config (`appsettings.json`):**
+
+Added `subagent_run` and `subagent_use` to `ToolStreaming:ToolMaxLength` (default: `-1` = full output). Can be set to `0` (hidden) or `N` (first N chars).
+
+### Previous — Subagent auto-create & config extraction (v0.4.58–0.4.61)
 
 **Problem:** `subagent_use saveMemory=true` couldn't be used on non-existing agents — there was no tool to create a persistent subagent. `subagent_run` always deleted the agent after execution. Also, config loading logic was mixed into the static `SubAgentTool` class, making it untestable and hard to reuse.
 
@@ -97,4 +143,4 @@ CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_delet
 See `MemoryStore.cs` `Initialize()` for full DDL.
 
 ### Version
-`Version.txt`: `0.4.61`, published up to v0.4.61
+`Version.txt`: `0.4.62`, published up to v0.4.62

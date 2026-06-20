@@ -97,27 +97,46 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `todo_write` | Create a structured todo list |
 | `todo_update` | Update tasks in a todo list (status, priority) — creates a snapshot chain |
 | `memory` | Memory management: `stats` (type breakdown), `clean` (soft-delete with optional `cascade`; also removes from messageList), `recover` (restore with optional `cascade`), `list` (view blocks) |
-| `subagent_run` | Create a temporary subagent, run a task, record usage delta, then delete it. One-shot ephemeral execution |
-| `subagent_use` | Execute a task on an existing (or auto-created) subagent. With `saveMemory=true`, context accumulates across calls and `memory` tool is available |
+| `subagent_run` | One-shot task execution. Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Supports `mode="parallel"` |
+| `subagent_use` | Execute a task on a named subagent (auto-creates if not found). Memory and context **accumulate** across calls — the agent persists. `memory` tool is available. Supports `mode="parallel"` |
 | `subagent_list` | List all existing agents (excluding current session) with home, model, block count, cache stats |
 
 ## Subagent architecture
 
-Subagents enable the main agent to delegate tasks to specialized worker agents:
+Subagents enable the main agent to delegate tasks to specialized worker agents.
 
-- **`subagent_run`** — creates a **temporary** agent, runs the task, then deletes it entirely. Blocks and usage never persist.
-- **`subagent_use`** — runs a task on an **existing** agent (or **auto-creates** one if `saveMemory=true` and the agent doesn't exist).
+### `subagent_run` — one-shot temporary execution
 
-### saveMemory modes
+Three modes:
 
-| Mode | Agent exists | Behavior |
-|------|-------------|----------|
-| `saveMemory=false` (default) | Yes | Executes, then **cleans** blocks and usage. Ephemeral — next call starts fresh |
-| `saveMemory=true` | Yes | Executes, **preserves** blocks and usage. Context accumulates across calls, `memory` tool is available |
-| `saveMemory=true` | **No** | **Auto-creates** the agent, executes, preserves context |
-| `saveMemory=false` | **No** | Returns error — use `saveMemory=true` to auto-create, or `subagent_run` for ephemeral task |
+| `name` | Agent exists | Behavior |
+|--------|-------------|----------|
+| not provided (auto-GUID) | — | Creates a temp agent, runs the task, **deletes it entirely** |
+| provided | **No** | Creates a temp agent with config, runs the task, **deletes it entirely** |
+| provided | **Yes** | **Dry-run**: executes the task, then **cleans only the delta blocks/usage** created during this run. Existing memory is preserved |
 
-When `saveMemory=true`, the subagent has access to the `memory` tool (`stats`/`clean`/`recover`/`list`), allowing it to manage its own context — clean old blocks, inspect memory, etc. Subagents **do not** have access to `subagent_*` tools (prevents recursive agent creation).
+### `subagent_use` — persistent named agent
+
+| Condition | Behavior |
+|-----------|----------|
+| Agent **exists** | Executes the task, **preserves** blocks and usage. Context accumulates across calls |
+| Agent **doesn't exist** | **Auto-creates** the agent (with config), executes, preserves context |
+
+The subagent has access to the `memory` tool (`stats`/`clean`/`recover`/`list`), allowing it to manage its own context — clean old blocks, inspect memory, etc. Subagents **do not** have access to `subagent_*` tools (prevents recursive agent creation).
+
+### Parallel execution
+
+Both `subagent_run` and `subagent_use` support **parallel execution** via `mode="parallel"`:
+
+```
+subagent_use(name="searcher", task="find files", mode="parallel")
+subagent_use(name="writer", task="write report", mode="parallel")
+```
+
+- Tools with `mode="parallel"` are grouped into a batch and executed concurrently via `Task.WhenAll`
+- Tools with `mode="sequential"` (default) or without `mode` are executed one at a time
+- If two parallel calls use the **same agent name**, they're automatically split into sequential groups to prevent race conditions
+- Parallel-safe tools: `read_file`, `fetch_web`, `search_glob`, `search_grep`, `subagent_use`, `subagent_run`
 
 ### Config loading
 
