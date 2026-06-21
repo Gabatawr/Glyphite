@@ -198,12 +198,7 @@ public partial class ChatRepl
             Console.ResetColor();
         }
         if (await _store.AgentExistsAsync(cloneName))
-        {
-            cloneName = sourceName + "-" + Guid.NewGuid().ToString("N")[..6];
-            Console.ForegroundColor = ConsoleColor.Gray;
-            Console.WriteLine($"Using unique name '{cloneName}'.");
-            Console.ResetColor();
-        }
+            cloneName = await GenerateUniqueNameAsync(cloneName);
         await _store.ForkSessionAsync(sourceName, cloneName, cwd);
         _agentId = cloneName;
         _agentOpts.AgentName = cloneName;
