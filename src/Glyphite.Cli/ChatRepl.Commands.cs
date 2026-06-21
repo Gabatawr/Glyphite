@@ -14,9 +14,13 @@ public partial class ChatRepl
 {
     private async Task<bool> HandleCommandAsync(string input)
     {
-        var parts = input.Split(' ', 2, StringSplitOptions.TrimEntries);
+        var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var cmd = parts[0];
         var arg = parts.Length > 1 ? parts[1] : null;
+
+        // Multiple words after command → treat as if no argument
+        if (arg is not null && arg.Contains(' '))
+            arg = null;
 
         switch (cmd)
         {
