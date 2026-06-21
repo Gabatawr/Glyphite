@@ -7,7 +7,7 @@ public partial class ChatRepl
         var merge = await ReadAgentConfigFilesAsync(agentId, cwd);
         if (merge.Count == 0) return;
 
-        var homePath = await _store.GetAgentHomePathAsync(agentId);
+        var homePath = await _agentStore.GetAgentHomePathAsync(agentId);
         if (string.Equals(homePath, cwd, StringComparison.OrdinalIgnoreCase))
         {
             // Home → persist to DB
@@ -23,7 +23,7 @@ public partial class ChatRepl
     /// <summary>Scan cwd for Glyphite.{agentName}.json files, validate against known agents, load into in-memory overlay.</summary>
     private async Task LoadAllAgentConfigsAsync(string cwd)
     {
-        var agents = await _store.ListAgentsAsync();
+        var agents = await _agentStore.ListAgentsAsync();
         var agentSet = new HashSet<string>(agents, StringComparer.OrdinalIgnoreCase);
 
         foreach (var file in Directory.EnumerateFiles(cwd, "Glyphite.*.json"))
@@ -40,7 +40,7 @@ public partial class ChatRepl
             var merge = await ReadAgentConfigFilesAsync(agentName, cwd);
             if (merge.Count > 0)
             {
-                var homePath = await _store.GetAgentHomePathAsync(agentName);
+                var homePath = await _agentStore.GetAgentHomePathAsync(agentName);
                 if (string.Equals(homePath, cwd, StringComparison.OrdinalIgnoreCase))
                     await _cfgService.UpdateConfigAsync(merge, scope: "session", sessionId: agentName);
                 else

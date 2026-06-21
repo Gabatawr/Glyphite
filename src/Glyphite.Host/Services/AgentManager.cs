@@ -6,10 +6,10 @@ namespace Glyphite.Host.Services;
 
 public class AgentManager : IAgentManager
 {
-    private readonly IMemoryStore _store;
+    private readonly IAgentStore _store;
     private readonly IConfigService _cfgService;
 
-    public AgentManager(IMemoryStore store, IConfigService cfgService)
+    public AgentManager(IAgentStore store, IConfigService cfgService)
     {
         _store = store;
         _cfgService = cfgService;

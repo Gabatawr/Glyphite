@@ -41,12 +41,12 @@ public partial class ChatRepl
                 }
 
                 var statsModel = await _blockMemory.GetAgentModelAsync(_agentId!);
-                var (cumHit, cumMiss, cumOutput) = await _store.GetUsageAsync(_agentId!);
+                var (cumHit, cumMiss, cumOutput) = await _agentStore.GetUsageAsync(_agentId!);
 
                 var totalCost = 0.0;
                 if (cumHit + cumMiss + cumOutput > 0)
                 {
-                    var usageByModel = await _store.GetUsageByModelAsync(_agentId!);
+                    var usageByModel = await _agentStore.GetUsageByModelAsync(_agentId!);
                     foreach (var (modelName, hit, miss, output) in usageByModel)
                     {
                         var (mPrice, hPrice, oPrice) = GetPricing(modelName);
@@ -109,7 +109,7 @@ public partial class ChatRepl
 
         var cwd = Directory.GetCurrentDirectory();
 
-        if (await _store.AgentExistsAsync(name))
+        if (await _agentStore.AgentExistsAsync(name))
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.Write($"Agent '{name}' already exists. Delete and recreate? (y/N): ");
@@ -117,7 +117,7 @@ public partial class ChatRepl
             var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
             if (confirm is "y" or "yes")
             {
-                await _store.DeleteSessionAsync(name);
+                await _agentStore.DeleteSessionAsync(name);
                 _agentId = await _agentManager.CreateAgentAsync(name, _deepseek.Model, cwd);
                 _agentOpts.AgentName = name;
                 SwitchScope();
@@ -149,7 +149,7 @@ public partial class ChatRepl
 
     private async Task<bool> HandleCloneCommandAsync(string? name = null)
     {
-        var sessions = await _store.ListAgentsAsync();
+        var sessions = await _agentStore.ListAgentsAsync();
         if (sessions.Count == 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
@@ -173,7 +173,7 @@ public partial class ChatRepl
         for (int i = 0; i < sessions.Count; i++)
         {
             var isCurrent = string.Equals(sessions[i], _agentId, StringComparison.Ordinal);
-            var blockCount = await _store.GetBlockCountAsync(sessions[i]);
+            var blockCount = await _blockStore.GetBlockCountAsync(sessions[i]);
             var marker = isCurrent ? " ← current" : "";
             Console.ForegroundColor = isCurrent ? ConsoleColor.Green : ConsoleColor.Gray;
             Console.WriteLine($"  [{i + 1}] {sessions[i]} ({blockCount} blocks){marker}");
@@ -239,7 +239,7 @@ public partial class ChatRepl
             return true;
         }
 
-        if (await _store.AgentExistsAsync(defaultCloneName))
+        if (await _agentStore.AgentExistsAsync(defaultCloneName))
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"Agent '{defaultCloneName}' already exists. Choose a different name.\n");
@@ -248,7 +248,7 @@ public partial class ChatRepl
         }
 
         var cwd = Directory.GetCurrentDirectory();
-        await _store.ForkSessionAsync(sourceName, defaultCloneName, cwd);
+        await _agentStore.ForkSessionAsync(sourceName, defaultCloneName, cwd);
         _agentId = defaultCloneName;
         _agentOpts.AgentName = defaultCloneName;
         SwitchScope();
@@ -263,12 +263,12 @@ public partial class ChatRepl
 
     private async Task<bool> HandleUseCommandAsync(string? name = null)
     {
-        if (name is not null && await _store.AgentExistsAsync(name))
+        if (name is not null && await _agentStore.AgentExistsAsync(name))
         {
             var cwd = Directory.GetCurrentDirectory();
             _agentId = name;
             _agentOpts.AgentName = name;
-            await _store.RecordLaunchAsync(name, cwd);
+            await _agentStore.RecordLaunchAsync(name, cwd);
             SwitchScope();
             await LoadAgentConfigAsync(name, cwd);
             await ResetSessionStateAsync();
@@ -278,7 +278,7 @@ public partial class ChatRepl
             return true;
         }
 
-        var sessions = await _store.ListAgentsAsync();
+        var sessions = await _agentStore.ListAgentsAsync();
         if (sessions.Count == 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
@@ -302,10 +302,10 @@ public partial class ChatRepl
         for (int i = 0; i < sessions.Count; i++)
         {
             var isCurrent = string.Equals(sessions[i], _agentId, StringComparison.Ordinal);
-            var agentHome = await _store.GetAgentHomePathAsync(sessions[i]) ?? "";
-            var createdAt = await _store.GetAgentCreatedAtAsync(sessions[i]) ?? "";
-            var blockCount = await _store.GetBlockCountAsync(sessions[i]);
-            var lastLaunch = await _store.GetLastLaunchPathAsync(sessions[i]);
+            var agentHome = await _agentStore.GetAgentHomePathAsync(sessions[i]) ?? "";
+            var createdAt = await _agentStore.GetAgentCreatedAtAsync(sessions[i]) ?? "";
+            var blockCount = await _blockStore.GetBlockCountAsync(sessions[i]);
+            var lastLaunch = await _agentStore.GetLastLaunchPathAsync(sessions[i]);
 
             var marker = isCurrent ? " ← current" : "";
             var atHome = (string.Equals(agentHome, cwd2, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(agentHome)) ? " [🏠 home]" : "";
@@ -347,7 +347,7 @@ public partial class ChatRepl
 
         _agentId = targetName;
         _agentOpts.AgentName = targetName;
-        await _store.RecordLaunchAsync(targetName, cwd2);
+        await _agentStore.RecordLaunchAsync(targetName, cwd2);
         SwitchScope();
         await LoadAgentConfigAsync(targetName, cwd2);
         await ResetSessionStateAsync();
@@ -360,7 +360,7 @@ public partial class ChatRepl
 
     private async Task<bool> HandleDeleteCommandAsync(string? name = null)
     {
-        var sessions = await _store.ListAgentsAsync();
+        var sessions = await _agentStore.ListAgentsAsync();
         var others = sessions.Where(s => !string.Equals(s, _agentId, StringComparison.Ordinal)).ToList();
 
         if (others.Count == 0)
@@ -388,8 +388,8 @@ public partial class ChatRepl
 
         for (int i = 0; i < others.Count; i++)
         {
-            var blockCount = await _store.GetBlockCountAsync(others[i]);
-            var createdAt = await _store.GetAgentCreatedAtAsync(others[i]) ?? "";
+            var blockCount = await _blockStore.GetBlockCountAsync(others[i]);
+            var createdAt = await _agentStore.GetAgentCreatedAtAsync(others[i]) ?? "";
             var createdDate = createdAt.Length >= 10 ? createdAt[..10] : "";
             Console.ForegroundColor = ConsoleColor.Gray;
             Console.WriteLine($"  [{i + 1}] {others[i]} ({blockCount} blocks, {createdDate})");
@@ -441,7 +441,7 @@ public partial class ChatRepl
             return true;
         }
 
-        await _store.DeleteSessionAsync(targetName);
+        await _agentStore.DeleteSessionAsync(targetName);
 
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{targetName}' deleted.\n");

@@ -11,7 +11,8 @@ public class ToolRegistry : IToolRegistry
 {
     private readonly IBashSessionManager _bashManager;
     private readonly IConfigService _cfgService;
-    private readonly IMemoryStore _memoryStore;
+    private readonly IAgentStore _agentStore;
+    private readonly IBlockStore _blockStore;
     private readonly IBlockMemoryProvider _blockMemory;
     private readonly SubAgentManager _subAgentManager;
     private readonly IAgentManager _agentManager;
@@ -23,7 +24,8 @@ public class ToolRegistry : IToolRegistry
     public ToolRegistry(
         IBashSessionManager bashManager,
         IConfigService cfgService,
-        IMemoryStore memoryStore,
+        IAgentStore agentStore,
+        IBlockStore blockStore,
         IBlockMemoryProvider blockMemory,
         SubAgentManager subAgentManager,
         IAgentManager agentManager,
@@ -33,7 +35,8 @@ public class ToolRegistry : IToolRegistry
     {
         _bashManager = bashManager;
         _cfgService = cfgService;
-        _memoryStore = memoryStore;
+        _agentStore = agentStore;
+        _blockStore = blockStore;
         _blockMemory = blockMemory;
         _subAgentManager = subAgentManager;
         _agentManager = agentManager;
@@ -52,10 +55,10 @@ public class ToolRegistry : IToolRegistry
         {
             BashTool.AsAIFunction(_bashManager, sessionId, _cfgService),
             FileReadTool.AsAIFunction(_cfgService, _defaultDir, sessionId),
-            FileWriteTool.AsAIFunction(_memoryStore, sessionId, _defaultDir),
+            FileWriteTool.AsAIFunction(_defaultDir),
             FilePatchTool.AsAIFunction(_defaultDir),
-            TodoTool.AsTodoWriteFunction(_memoryStore, sessionId, _cfgService),
-            TodoTool.AsTodoUpdateFunction(_memoryStore, sessionId, _cfgService),
+            TodoTool.AsTodoWriteFunction(_agentStore, _blockStore, sessionId, _cfgService),
+            TodoTool.AsTodoUpdateFunction(_agentStore, _blockStore, sessionId, _cfgService),
             WebFetchTool.AsFetchFunction(_cfgService, sessionId),
             SearchTools.AsGlobFunction(_cfgService, _defaultDir, sessionId),
             SearchTools.AsGrepFunction(_cfgService, _defaultDir, sessionId),
@@ -72,9 +75,9 @@ public class ToolRegistry : IToolRegistry
         // Subagent tools: only for main agent (prevents recursion)
         if (!isSubAgent)
         {
-            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _deepseekOpts, sessionId));
-            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _deepseekOpts, sessionId));
-            tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _memoryStore, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _deepseekOpts, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _deepseekOpts, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _agentStore, _blockStore, sessionId));
         }
 
         return tools;

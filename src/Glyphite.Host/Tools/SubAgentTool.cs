@@ -16,10 +16,10 @@ public static class SubAgentTool
     /// session's usage, returns subagent's text response and block checkpoint (for caller to clean blocks
     /// that were created during this task).</summary>
     private static async Task<(string Result, double BlockCheckpoint)> RunAgentTask(
-        AgentScope scope, IMemoryStore store, string agentId, string task,
+        AgentScope scope, IAgentStore agentStore, IBlockStore blockStore, string agentId, string task,
         string mainSessionId, bool saveMemory = false)
     {
-        var resolvedModel = await store.GetAgentModelAsync(agentId) ?? "deepseek-v4-flash";
+        var resolvedModel = await agentStore.GetAgentModelAsync(agentId) ?? "deepseek-v4-flash";
         var chatOptions = new ChatOptions
         {
             ModelId = resolvedModel,
@@ -34,8 +34,8 @@ public static class SubAgentTool
         chatOptions.Tools = (await scope.ToolRegistry.GetBuiltinToolsAsync(agentId)).ToList();
 
         // ── Checkpoint: save block number + usage before task ──
-        var blockCk = await store.GetNextNumberAsync(agentId);
-        var (ckHit, ckMiss, ckOutput) = await store.GetUsageAsync(agentId);
+        var blockCk = await agentStore.GetNextNumberAsync(agentId);
+        var (ckHit, ckMiss, ckOutput) = await agentStore.GetUsageAsync(agentId);
 
         var sb = new StringBuilder();
         await foreach (var turnEvent in scope.TurnProcessor.ProcessAsync(
@@ -46,7 +46,7 @@ public static class SubAgentTool
         }
 
         // ── Delta after task completes ──
-        var (newHit, newMiss, newOutput) = await store.GetUsageAsync(agentId);
+        var (newHit, newMiss, newOutput) = await agentStore.GetUsageAsync(agentId);
         var dHit = newHit - ckHit;
         var dMiss = newMiss - ckMiss;
         var dOutput = newOutput - ckOutput;
@@ -54,7 +54,7 @@ public static class SubAgentTool
         // Record the subagent's usage delta into the MAIN chat's session_usage
         // Only 3 deltas (hit/miss/output) + model — no lastRequest, no cache rate
         if (dHit > 0 || dMiss > 0 || dOutput > 0)
-            await store.RecordUsageAsync(mainSessionId, dHit, dMiss, dOutput,
+            await agentStore.RecordUsageAsync(mainSessionId, dHit, dMiss, dOutput,
                 model: resolvedModel);
 
         return (sb.ToString().Trim(), blockCk);
@@ -63,7 +63,7 @@ public static class SubAgentTool
     /// <summary>Ensure a scope is registered for the given agent, creating one if needed.</summary>
     private static async Task<string?> EnsureScope(
         SubAgentManager subAgentManager, IAgentScopeFactory scopeFactory,
-        IMemoryStore store, string agentId)
+        IAgentStore agentStore, string agentId)
     {
         if (!subAgentManager.Exists(agentId))
         {
@@ -84,20 +84,20 @@ public static class SubAgentTool
     private static async Task<string> RunSubAgentTaskAsync(
         string agentId, string task, bool isDryRun, bool saveMemory,
         SubAgentManager subAgentManager, IAgentScopeFactory scopeFactory,
-        IMemoryStore store, string currentSessionId)
+        IAgentStore agentStore, IBlockStore blockStore, string currentSessionId)
     {
-        var scopeErr = await EnsureScope(subAgentManager, scopeFactory, store, agentId);
+        var scopeErr = await EnsureScope(subAgentManager, scopeFactory, agentStore, agentId);
         if (scopeErr is not null) return scopeErr;
 
         try
         {
             return await subAgentManager.RunAsync(agentId, async s =>
             {
-                var (output, blockCk) = await RunAgentTask(s, store, agentId, task, currentSessionId, saveMemory);
+                var (output, blockCk) = await RunAgentTask(s, agentStore, blockStore, agentId, task, currentSessionId, saveMemory);
                 if (isDryRun)
                 {
-                    await store.ClearUsageAsync(agentId);
-                    await store.DeleteBlocksSinceAsync(agentId, blockCk);
+                    await agentStore.ClearUsageAsync(agentId);
+                    await blockStore.DeleteBlocksSinceAsync(agentId, blockCk);
                 }
                 return output;
             });
@@ -116,7 +116,7 @@ public static class SubAgentTool
         string agentId, string task, string homePath, string parentCwd,
         bool validateName,
         SubAgentManager subAgentManager, IAgentManager agentManager,
-        IAgentScopeFactory scopeFactory, IMemoryStore store,
+        IAgentScopeFactory scopeFactory, IAgentStore agentStore, IBlockStore blockStore,
         DeepSeekOptions deepseek,
         string currentSessionId)
     {
@@ -128,12 +128,12 @@ public static class SubAgentTool
         try
         {
             return await RunSubAgentTaskAsync(agentId, task, isDryRun: false, saveMemory: false,
-                subAgentManager, scopeFactory, store, currentSessionId);
+                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId);
         }
         finally
         {
             subAgentManager.Remove(agentId);
-            await store.DeleteSessionAsync(agentId);
+            await agentStore.DeleteSessionAsync(agentId);
         }
     }
 
@@ -143,7 +143,8 @@ public static class SubAgentTool
         SubAgentManager subAgentManager,
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
-        IMemoryStore store,
+        IAgentStore agentStore,
+        IBlockStore blockStore,
         IOptions<DeepSeekOptions> deepseekOpts,
         string currentSessionId)
     {
@@ -156,14 +157,14 @@ public static class SubAgentTool
             [Description("Execution mode: 'sequential' (default, wait) or 'parallel' (hint for orchestrator).")] string? mode = null,
             [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
-            var parentCwd = await store.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
+            var parentCwd = await agentStore.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
             var homePath = cwd ?? parentCwd;
 
             // ── name provided + agent exists → dry-run with cleanup ──
-            if (name is not null && await store.AgentExistsAsync(name))
+            if (name is not null && await agentStore.AgentExistsAsync(name))
             {
                 return await RunSubAgentTaskAsync(name, task, isDryRun: true, saveMemory: false,
-                    subAgentManager, scopeFactory, store, currentSessionId);
+                    subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId);
             }
 
             // ── name provided + agent doesn't exist → create temp, run, delete ──
@@ -171,7 +172,7 @@ public static class SubAgentTool
             {
                 return await CreateAndRunSubAgentAsync(name, task, homePath, parentCwd,
                     validateName: true,
-                    subAgentManager, agentManager, scopeFactory, store,
+                    subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
                     deepseek, currentSessionId);
             }
 
@@ -179,7 +180,7 @@ public static class SubAgentTool
             var guidId = Guid.NewGuid().ToString("N");
             return await CreateAndRunSubAgentAsync(guidId, task, homePath, parentCwd,
                 validateName: false,
-                subAgentManager, agentManager, scopeFactory, store,
+                subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
                 deepseek, currentSessionId);
         },
         name: "subagent_run",
@@ -191,7 +192,8 @@ public static class SubAgentTool
         SubAgentManager subAgentManager,
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
-        IMemoryStore store,
+        IAgentStore agentStore,
+        IBlockStore blockStore,
         IOptions<DeepSeekOptions> deepseekOpts,
         string currentSessionId)
     {
@@ -204,19 +206,19 @@ public static class SubAgentTool
             [Description("Execution mode: 'sequential' (default, wait for result) or 'parallel' (queues for batch execution via Task.WhenAll).")] string? mode = null,
             [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
-            if (!await store.AgentExistsAsync(name))
+            if (!await agentStore.AgentExistsAsync(name))
             {
                 if (!AgentManager.IsValidAgentName(name))
                     return $"Error: Invalid agent name '{name}'.";
 
-                var parentCwd = await store.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
+                var parentCwd = await agentStore.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
                 var homePath = cwd ?? parentCwd;
 
                 await agentManager.CreateAgentAsync(name, deepseek.Model, homePath, recordLaunch: false);
             }
 
             return await RunSubAgentTaskAsync(name, task, isDryRun: false, saveMemory: true,
-                subAgentManager, scopeFactory, store, currentSessionId);
+                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId);
         },
         name: "subagent_use",
         description: "Execute a task on a named subagent (auto-creates if not found). Memory and context accumulate across calls — the agent persists. Usage delta recorded in main session."
@@ -225,13 +227,14 @@ public static class SubAgentTool
 
     public static AIFunction AsSubAgentListFunction(
         SubAgentManager subAgentManager,
-        IMemoryStore store,
+        IAgentStore agentStore,
+        IBlockStore blockStore,
         string currentSessionId)
     {
         return AIFunctionFactory.Create(async (
             [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
         {
-            var allAgents = await store.ListAgentsAsync();
+            var allAgents = await agentStore.ListAgentsAsync();
             var filtered = allAgents.Where(a => !string.Equals(a, currentSessionId)).ToList();
             if (filtered.Count == 0)
                 return "No agents found.";
@@ -240,11 +243,11 @@ public static class SubAgentTool
 
             foreach (var agentId in filtered.Order())
             {
-                var homePath = await store.GetAgentHomePathAsync(agentId) ?? "?";
-                var model = await store.GetAgentModelAsync(agentId) ?? "?";
-                var blockCount = await store.GetBlockCountAsync(agentId);
-                var usage = await store.GetLastUsageAsync(agentId);
-                var createdAt = await store.GetAgentCreatedAtAsync(agentId) ?? "?";
+                var homePath = await agentStore.GetAgentHomePathAsync(agentId) ?? "?";
+                var model = await agentStore.GetAgentModelAsync(agentId) ?? "?";
+                var blockCount = await blockStore.GetBlockCountAsync(agentId);
+                var usage = await agentStore.GetLastUsageAsync(agentId);
+                var createdAt = await agentStore.GetAgentCreatedAtAsync(agentId) ?? "?";
                 var isSub = subAgentManager.Exists(agentId);
 
                 lines.Add($"  [{agentId}]");

@@ -29,12 +29,13 @@ public static class TodoTool
     public static async Task<string> TodoWrite(
         string title,
         TodoItem[]? items,
-        IMemoryStore store,
+        IAgentStore agentStore,
+        IBlockStore blockStore,
         string sessionId,
         TodoOptions opts)
     {
-        var nextNumber = await store.GetNextNumberAsync(sessionId);
-        await store.SetNextNumberAsync(sessionId, nextNumber + 1);
+        var nextNumber = await agentStore.GetNextNumberAsync(sessionId);
+        await agentStore.SetNextNumberAsync(sessionId, nextNumber + 1);
 
         items ??= [];
 
@@ -49,7 +50,7 @@ public static class TodoTool
         var block = MemoryBlock.Create(BlockType.todo, title, toolName: "todo_write", data: data);
         block.Number = nextNumber;
 
-        await store.AppendBlocksAsync(sessionId, [block], nextNumber + 1);
+        await blockStore.AppendBlocksAsync(sessionId, [block], nextNumber + 1);
 
         return FormattableString.Invariant($"Created todo list '{title}' as block {nextNumber:F1} with {items.Length} items\n") + FormatItems(dictItems);
     }
@@ -57,11 +58,12 @@ public static class TodoTool
     public static async Task<string> TodoUpdate(
         double block,
         TodoAction[] actions,
-        IMemoryStore store,
+        IAgentStore agentStore,
+        IBlockStore blockStore,
         string sessionId,
         TodoOptions opts)
     {
-        var existing = await store.GetBlockAsync(sessionId, block);
+        var existing = await blockStore.GetBlockAsync(sessionId, block);
         if (existing is null)
             return FormattableString.Invariant($"Block {block:F1} not found");
 
@@ -69,7 +71,7 @@ public static class TodoTool
             return FormattableString.Invariant($"Block {block:F1} is not a todo or todo_update block");
 
         // Follow chain forward from the passed block to find the latest todo_update
-        var snapshots = await store.LoadBlocksByTypeAsync(sessionId, BlockType.todo_update, null, true);
+        var snapshots = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo_update, null, true);
         MemoryBlock? latestSnapshot = existing.Type == BlockType.todo_update ? existing : null;
         double? chainCursor = existing.Number;
         while (chainCursor.HasValue)
@@ -234,14 +236,14 @@ public static class TodoTool
         {
             ["items"] = snapshotItems!
         };
-        var nextNumber = await store.GetNextNumberAsync(sessionId);
+        var nextNumber = await agentStore.GetNextNumberAsync(sessionId);
         var snapshot = MemoryBlock.Create(BlockType.todo_update, existing.Content ?? "", toolName: "todo_update", data: snapshotData);
         snapshot.Number = nextNumber;
         var parentBlock = latestSnapshot?.Number ?? existing.Number;
         snapshot.ParentNumber = parentBlock;
         snapshot.Data ??= [];
         snapshot.Data["parentNumber"] = parentBlock;
-        await store.AppendBlocksAsync(sessionId, [snapshot], nextNumber + 1);
+        await blockStore.AppendBlocksAsync(sessionId, [snapshot], nextNumber + 1);
 
         return FormattableString.Invariant($"Updated block {existing.Number:F1}: {string.Join("; ", results)}\n") + FormatItems(items);
     }
@@ -272,7 +274,7 @@ public static class TodoTool
         return sb.ToString().TrimEnd('\n', '\r');
     }
 
-    private sealed class TodoInvoker(IMemoryStore store, string sessionId, IConfigService cfg)
+    private sealed class TodoInvoker(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService cfg)
     {
         [Description("Create a todo list block to plan and track task progress. Use this FREQUENTLY for complex/multi-step tasks to break them down and show progress. Statuses: pending, in_progress, done, cancelled, blocked. Priority: low, medium, high.")]
         public async Task<string> Write(
@@ -280,7 +282,7 @@ public static class TodoTool
             [Description("Optional array of items: [{text: '...', status: 'pending', priority: 'medium'}]. Status and priority default to pending, medium.")] TodoItem[]? items)
         {
             var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
-            return await TodoWrite(title, items, store, sessionId, opts);
+            return await TodoWrite(title, items, agentStore, blockStore, sessionId, opts);
         }
 
         [Description("Modify a todo list block. Action types: set_status (change item status by index), update (change text/status/priority by index), add (insert new item), remove (delete item by index). Creates a snapshot block to track progress history.")]
@@ -289,17 +291,17 @@ public static class TodoTool
             [Description("Array of action objects: {type: 'set_status'|'update'|'add'|'remove', index?: number, text?: string, status?: string, priority?: string}")] TodoAction[] actions)
         {
             var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
-            return await TodoUpdate(block, actions, store, sessionId, opts);
+            return await TodoUpdate(block, actions, agentStore, blockStore, sessionId, opts);
         }
     }
 
-    public static AIFunction AsTodoWriteFunction(IMemoryStore store, string sessionId, IConfigService? cfg)
+    public static AIFunction AsTodoWriteFunction(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService? cfg)
         => AIFunctionFactory.Create(
-            new TodoInvoker(store, sessionId, cfg!).Write,
+            new TodoInvoker(agentStore, blockStore, sessionId, cfg!).Write,
             "todo_write");
 
-    public static AIFunction AsTodoUpdateFunction(IMemoryStore store, string sessionId, IConfigService? cfg)
+    public static AIFunction AsTodoUpdateFunction(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService? cfg)
         => AIFunctionFactory.Create(
-            new TodoInvoker(store, sessionId, cfg!).Update,
+            new TodoInvoker(agentStore, blockStore, sessionId, cfg!).Update,
             "todo_update");
 }

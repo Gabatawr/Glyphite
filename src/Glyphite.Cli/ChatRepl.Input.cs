@@ -86,7 +86,7 @@ public partial class ChatRepl
     /// <summary>Calculate total cumulative cost ($) from all usage rows, using per-model pricing.</summary>
     private async Task<double> GetCurrentCumulativeCostAsync()
     {
-        var usageByModel = await _store.GetUsageByModelAsync(_agentId);
+        var usageByModel = await _agentStore.GetUsageByModelAsync(_agentId);
         var total = 0.0;
         foreach (var (modelName, hit, miss, output) in usageByModel)
         {

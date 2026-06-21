@@ -11,7 +11,8 @@ namespace Glyphite.Cli;
 
 public partial class ChatRepl
 {
-    private readonly IMemoryStore _store;
+    private readonly IAgentStore _agentStore;
+    private readonly IBlockStore _blockStore;
     private ITurnProcessor _turnProcessor = null!;
     private IBlockMemoryProvider _blockMemory = null!;
     private readonly IConfigService _cfgService;
@@ -31,7 +32,8 @@ public partial class ChatRepl
     private double _prevCumulativeCost = -1;
 
     public ChatRepl(
-        IMemoryStore store,
+        IAgentStore agentStore,
+        IBlockStore blockStore,
         IConfigService cfgService,
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
@@ -40,7 +42,8 @@ public partial class ChatRepl
         IOptions<AgentOptions> agentOpts,
         IOptions<CompressionOptions> compressionOpts)
     {
-        _store = store;
+        _agentStore = agentStore;
+        _blockStore = blockStore;
         _cfgService = cfgService;
         _agentManager = agentManager;
         _scopeFactory = scopeFactory;

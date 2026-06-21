@@ -39,8 +39,12 @@ public static class HostServiceCollectionExtensions
         Directory.CreateDirectory(dataDir);
 
         // ── Data ──
-        services.AddSingleton<IMemoryStore>(sp =>
+        services.AddSingleton<MemoryStore>(sp =>
             MemoryStore.CreateForApp(dataDir, dataOpts.DatabaseFileName));
+        services.AddSingleton<IMemoryStore>(sp => sp.GetRequiredService<MemoryStore>());
+        services.AddSingleton<IAgentStore>(sp => sp.GetRequiredService<MemoryStore>());
+        services.AddSingleton<IBlockStore>(sp => sp.GetRequiredService<MemoryStore>());
+        services.AddSingleton<IConfigStore>(sp => sp.GetRequiredService<MemoryStore>());
 
         // ── IChatClient ──
         services.AddSingleton<IChatClient>(sp =>
@@ -65,13 +69,13 @@ public static class HostServiceCollectionExtensions
 
         services.AddSingleton<IConfigService>(sp =>
         {
-            var store = sp.GetRequiredService<IMemoryStore>();
+            var store = sp.GetRequiredService<IConfigStore>();
             return new ConfigService(store, configuration.GetSection("Glyphite"));
         });
 
         services.AddSingleton<IAgentManager>(sp =>
         {
-            var store = sp.GetRequiredService<IMemoryStore>();
+            var store = sp.GetRequiredService<IAgentStore>();
             var cfg = sp.GetRequiredService<IConfigService>();
             return new AgentManager(store, cfg);
         });
@@ -86,13 +90,14 @@ public static class HostServiceCollectionExtensions
         services.AddScoped<ITurnProcessor, TurnProcessor>();
         services.AddScoped<IBlockMemoryProvider>(sp =>
         {
-            var store = sp.GetRequiredService<IMemoryStore>();
+            var agentStore = sp.GetRequiredService<IAgentStore>();
+            var blockStore = sp.GetRequiredService<IBlockStore>();
             var cfgService = sp.GetRequiredService<IConfigService>();
             var memOpts = sp.GetRequiredService<IOptions<MemoryOptions>>().Value;
             var agentOpts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
             var deepseek = sp.GetRequiredService<IOptions<DeepSeekOptions>>().Value;
             var compOpts = sp.GetRequiredService<IOptions<CompressionOptions>>().Value;
-            return new BlockMemoryProvider(store, cfgService, memOpts, agentOpts, deepseek.Model, compOpts);
+            return new BlockMemoryProvider(agentStore, blockStore, cfgService, memOpts, agentOpts, deepseek.Model, compOpts);
         });
         services.AddScoped<IToolRegistry, ToolRegistry>();
 

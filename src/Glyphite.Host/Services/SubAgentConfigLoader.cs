@@ -10,12 +10,14 @@ namespace Glyphite.Host.Services;
 public class SubAgentConfigLoader : ISubAgentConfigLoader
 {
     private readonly IConfigService _cfgService;
-    private readonly IMemoryStore _store;
+    private readonly IAgentStore _agentStore;
+    private readonly IConfigStore _configStore;
 
-    public SubAgentConfigLoader(IConfigService cfgService, IMemoryStore store)
+    public SubAgentConfigLoader(IConfigService cfgService, IAgentStore agentStore, IConfigStore configStore)
     {
         _cfgService = cfgService;
-        _store = store;
+        _agentStore = agentStore;
+        _configStore = configStore;
     }
 
     public async Task LoadConfigAsync(string agentId, string agentCwd, string parentCwd)
@@ -30,12 +32,12 @@ public class SubAgentConfigLoader : ISubAgentConfigLoader
 
         if (merged.Count == 0) return;
 
-        var homePath = await _store.GetAgentHomePathAsync(agentId);
+        var homePath = await _agentStore.GetAgentHomePathAsync(agentId);
         if (string.Equals(homePath, agentCwd, StringComparison.OrdinalIgnoreCase))
         {
             // Full replace: clear old session keys then upsert new ones.
             // This prevents orphaned keys when the config file is renamed or structurally changed.
-            await _store.DeleteConfigByScopeAsync("session", agentId);
+            await _configStore.DeleteConfigByScopeAsync("session", agentId);
             await _cfgService.UpdateConfigAsync(merged, scope: "session", sessionId: agentId);
         }
         else

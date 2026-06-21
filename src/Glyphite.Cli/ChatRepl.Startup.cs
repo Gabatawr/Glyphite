@@ -12,7 +12,7 @@ public partial class ChatRepl
         _cfgService.LogAction = msg => Serilog.Log.Information("{ConfigMessage}", msg);
         await _cfgService.InitializeAsync(replaceSections: ["McpServers"]);
 
-        var agents = await _store.ListAgentsAsync();
+        var agents = await _agentStore.ListAgentsAsync();
 
         if (agents.Count == 0)
         {
@@ -46,7 +46,7 @@ public partial class ChatRepl
         await LoadAllAgentConfigsAsync(cwd);
 
         // Try resume last active agent in this directory
-        var lastActive = await _store.GetLastActiveAgentAsync(cwd);
+        var lastActive = await _agentStore.GetLastActiveAgentAsync(cwd);
 
         if (lastActive is not null)
         {
@@ -122,7 +122,7 @@ public partial class ChatRepl
             Console.WriteLine($"Using default name '{newName}'.");
             Console.ResetColor();
         }
-        if (await _store.AgentExistsAsync(newName))
+        if (await _agentStore.AgentExistsAsync(newName))
         {
             newName = await GenerateUniqueNameAsync(newName);
         }
@@ -141,9 +141,9 @@ public partial class ChatRepl
         Console.WriteLine("Select agent to use:\n");
         for (int i = 0; i < agents.Count; i++)
         {
-            var homePath = await _store.GetAgentHomePathAsync(agents[i]) ?? "";
-            var blockCount = await _store.GetBlockCountAsync(agents[i]);
-            var createdAt = (await _store.GetAgentCreatedAtAsync(agents[i]) ?? "")[..10];
+            var homePath = await _agentStore.GetAgentHomePathAsync(agents[i]) ?? "";
+            var blockCount = await _blockStore.GetBlockCountAsync(agents[i]);
+            var createdAt = (await _agentStore.GetAgentCreatedAtAsync(agents[i]) ?? "")[..10];
             Console.ForegroundColor = ConsoleColor.Gray;
             Console.WriteLine($"  [{i + 1}] {agents[i]} ({blockCount} blocks, {createdAt})");
         }
@@ -172,7 +172,7 @@ public partial class ChatRepl
         Console.WriteLine("Pick source agent to copy from:\n");
         for (int i = 0; i < agents.Count; i++)
         {
-            var blockCount = await _store.GetBlockCountAsync(agents[i]);
+            var blockCount = await _blockStore.GetBlockCountAsync(agents[i]);
             Console.ForegroundColor = ConsoleColor.Gray;
             Console.WriteLine($"  [{i + 1}] {agents[i]} ({blockCount} blocks)");
         }
@@ -197,9 +197,9 @@ public partial class ChatRepl
             Console.WriteLine($"Using default name '{cloneName}'.");
             Console.ResetColor();
         }
-        if (await _store.AgentExistsAsync(cloneName))
+        if (await _agentStore.AgentExistsAsync(cloneName))
             cloneName = await GenerateUniqueNameAsync(cloneName);
-        await _store.ForkSessionAsync(sourceName, cloneName, cwd);
+        await _agentStore.ForkSessionAsync(sourceName, cloneName, cwd);
         _agentId = cloneName;
         _agentOpts.AgentName = cloneName;
         SwitchScope();
@@ -223,15 +223,15 @@ public partial class ChatRepl
         _renderer.AgentCwd = cwd;
 
         // Record this launch for the current agent
-        await _store.RecordLaunchAsync(_agentId, cwd);
+        await _agentStore.RecordLaunchAsync(_agentId, cwd);
 
         var agentsPath = Path.Combine(cwd, "AGENTS.md");
         _blockMemory.AgentFilePath = File.Exists(agentsPath) ? agentsPath : null;
 
-        await _renderer.ReplayBlocksAsync(_agentId, _store);
+        await _renderer.ReplayBlocksAsync(_agentId, _blockStore);
 
         // Load existing user messages into input history
-        var userBlocks = await _store.LoadBlocksByTypeAsync(_agentId, BlockType.user_message, null, desc: false);
+        var userBlocks = await _blockStore.LoadBlocksByTypeAsync(_agentId, BlockType.user_message, null, desc: false);
         foreach (var b in userBlocks)
             _inputHistory.Add(b.Content);
 
@@ -258,7 +258,7 @@ public partial class ChatRepl
             ModelId = await _blockMemory.GetAgentModelAsync(_agentId) ?? _deepseek.Model,
         };
 
-        var agentHome = await _store.GetAgentHomePathAsync(_agentId);
+        var agentHome = await _agentStore.GetAgentHomePathAsync(_agentId);
         var homeIcon = string.Equals(agentHome, cwd, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(agentHome) ? " 🏠" : "";
 
         var version = System.Reflection.Assembly.GetEntryAssembly()?.GetName()?.Version;
@@ -274,7 +274,7 @@ public partial class ChatRepl
 
     private async Task ResetSessionStateAsync()
     {
-        var last = await _store.GetLastUsageAsync(_agentId!);
+        var last = await _agentStore.GetLastUsageAsync(_agentId!);
         _lastTurnHit = last.Hit;
         _lastTurnMiss = last.Miss;
         _lastTurnOutput = last.Output;

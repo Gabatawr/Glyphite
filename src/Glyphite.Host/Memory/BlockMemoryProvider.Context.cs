@@ -11,14 +11,14 @@ public partial class BlockMemoryProvider
 {
     public async Task<List<ChatMessage>> BuildContextAsync(string sessionId, string? model = null, int? contextWindow = null)
     {
-        await _store.EnsureSessionAsync(sessionId);
-        model ??= await _store.GetAgentModelAsync(sessionId);
+        await _agentStore.EnsureSessionAsync(sessionId);
+        model ??= await _agentStore.GetAgentModelAsync(sessionId);
 
         // Fresh options this turn — IOptions<T> DI values may be stale
         var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
         var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", sessionId);
 
-        var blocks = await _store.LoadBlocksAsync(sessionId);
+        var blocks = await _blockStore.LoadBlocksAsync(sessionId);
         if (blocks.Count == 0)
         {
             var data = new Dictionary<string, object> { ["agent"] = _agentOpts.AgentName };
@@ -33,7 +33,7 @@ public partial class BlockMemoryProvider
             var agentData = MemoryBlock.Create(BlockType.agent_data, content, data: data);
             agentData.Number = 1;
             blocks.Add(agentData);
-            await _store.AppendBlocksAsync(sessionId, blocks, 2);
+            await _blockStore.AppendBlocksAsync(sessionId, blocks, 2);
         }
 
         // Peek blocks are cleaned by TurnProcessor before calling BuildContextAsync
@@ -70,7 +70,7 @@ public partial class BlockMemoryProvider
             if (agentBlock.Content != newContent)
             {
                 agentBlock.Content = newContent;
-                await _store.UpdateBlockAsync(sessionId, agentBlock.Number, newContent, agentBlock.Data, modelStr);
+                await _blockStore.UpdateBlockAsync(sessionId, agentBlock.Number, newContent, agentBlock.Data, modelStr);
             }
         }
 

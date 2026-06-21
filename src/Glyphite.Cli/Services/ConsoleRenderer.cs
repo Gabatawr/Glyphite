@@ -155,7 +155,7 @@ public class ConsoleRenderer
         }
     }
 
-    public async Task ReplayBlocksAsync(string sid, IMemoryStore store, bool showResumed = true)
+    public async Task ReplayBlocksAsync(string sid, IBlockStore store, bool showResumed = true)
     {
         await RefreshAsync(sid);
         if (showResumed) Console.WriteLine($"Resumed agent '{sid}'.");

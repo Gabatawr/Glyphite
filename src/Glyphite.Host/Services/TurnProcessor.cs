@@ -12,7 +12,8 @@ namespace Glyphite.Host.Services;
 
 public class TurnProcessor : ITurnProcessor
 {
-    private readonly IMemoryStore _store;
+    private readonly IAgentStore _agentStore;
+    private readonly IBlockStore _blockStore;
     private readonly IBlockMemoryProvider _blockMemory;
     private readonly IChatClient _chatClient;
     private readonly IToolRegistry _toolRegistry;
@@ -31,7 +32,8 @@ public class TurnProcessor : ITurnProcessor
     };
 
     public TurnProcessor(
-        IMemoryStore store,
+        IAgentStore agentStore,
+        IBlockStore blockStore,
         IBlockMemoryProvider blockMemory,
         IChatClient chatClient,
         IToolRegistry toolRegistry,
@@ -41,7 +43,8 @@ public class TurnProcessor : ITurnProcessor
         IOptions<DeepSeekOptions> deepseek,
         IOptions<AgentOptions> agentOpts)
     {
-        _store = store;
+        _agentStore = agentStore;
+        _blockStore = blockStore;
         _blockMemory = blockMemory;
         _chatClient = chatClient;
         _toolRegistry = toolRegistry;
@@ -61,7 +64,7 @@ public class TurnProcessor : ITurnProcessor
         // Reload config from disk every turn so changes to Glyphite.json
         // and Glyphite.{sessionId}.json are picked up without restart.
         var parentCwd = Directory.GetCurrentDirectory();
-        var agentCwd = await _store.GetAgentHomePathAsync(sessionId) ?? parentCwd;
+        var agentCwd = await _agentStore.GetAgentHomePathAsync(sessionId) ?? parentCwd;
         await _configLoader.LoadConfigAsync(sessionId, agentCwd, parentCwd);
 
         // Fresh options this turn — IOptions<T> DI values may be stale within agent scope.
@@ -75,13 +78,13 @@ public class TurnProcessor : ITurnProcessor
         chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(sessionId, includeMemory)).ToList();
 
         // Get peek block stats before cleaning (for informative message)
-        var peekStats = await _store.GetPeekBlockStatsAsync(sessionId);
-        var peekCleaned = await _store.RemovePeekBlocksAsync(sessionId);
+        var peekStats = await _blockStore.GetPeekBlockStatsAsync(sessionId);
+        var peekCleaned = await _blockStore.RemovePeekBlocksAsync(sessionId);
 
         var contextMessages = await _blockMemory.BuildContextAsync(
             sessionId, modelStr, deepseekOpts.ContextWindow);
 
-        var nextNum = await _store.GetNextNumberAsync(sessionId);
+        var nextNum = await _agentStore.GetNextNumberAsync(sessionId);
         if (nextNum <= 0) nextNum = 1;
 
         // Auto-tool: peek cleanup — visible to user AND model
@@ -93,7 +96,7 @@ public class TurnProcessor : ITurnProcessor
 
             var autoBlock = MemoryBlock.AutoTool("peek_clean", cleanArgs, peekMsg, modelStr);
             autoBlock.Number = nextNum++;
-            await _store.AppendBlocksAsync(sessionId, [autoBlock], nextNum);
+            await _blockStore.AppendBlocksAsync(sessionId, [autoBlock], nextNum);
 
             contextMessages.Add(new ChatMessage(ChatRole.System, autoBlock.ToContextString()));
         }
@@ -113,7 +116,7 @@ public class TurnProcessor : ITurnProcessor
 
         var userBlock = MemoryBlock.UserMessage(input);
         userBlock.Number = nextNum++;
-        await _store.AppendBlocksAsync(sessionId, [userBlock], nextNum);
+        await _blockStore.AppendBlocksAsync(sessionId, [userBlock], nextNum);
 
         // ── Per-turn state (local variables, not instance fields) ──
         var reasoningAccum = new StringBuilder();
@@ -155,7 +158,7 @@ public class TurnProcessor : ITurnProcessor
                 if (isPeek)
                     callBlock.Data = new() { ["peek"] = true };
                 callBlock.Number = nextNum++;
-                await _store.AppendBlocksAsync(sessionId, [callBlock], nextNum);
+                await _blockStore.AppendBlocksAsync(sessionId, [callBlock], nextNum);
 
                 var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
                 pendingToolCalls[callId] = (fcc.Name, args, isPeek, callBlock.Number);
@@ -216,13 +219,13 @@ public class TurnProcessor : ITurnProcessor
                     async Task EmitToolResult(string emitOutput, string[]? cleanKeys)
                     {
                         if (!isPeek && !string.IsNullOrEmpty(emitOutput))
-                            await _store.UpdateBlockToolResultAsync(sessionId, callBlockNumber, emitOutput);
+                            await _blockStore.UpdateBlockToolResultAsync(sessionId, callBlockNumber, emitOutput);
 
                         if (cleanKeys is not null)
                         {
                             var cleanedArgs = CleanToolArgs(args, cleanKeys);
                             if (cleanedArgs is not null)
-                                await _store.UpdateBlockAsync(sessionId, callBlockNumber, content: cleanedArgs);
+                                await _blockStore.UpdateBlockAsync(sessionId, callBlockNumber, content: cleanedArgs);
                         }
 
                         events.Add(new ToolResultTurnEvent(name, emitOutput));
@@ -242,7 +245,7 @@ public class TurnProcessor : ITurnProcessor
                     // Only tool blocks — reasoning peek blocks persist for the current turn
                     else if (isPeek)
                     {
-                        var updatedBlock = await _store.GetBlockAsync(sessionId, callBlockNumber);
+                        var updatedBlock = await _blockStore.GetBlockAsync(sessionId, callBlockNumber);
                         if (updatedBlock?.Type == BlockType.tool)
                         {
                             var newText = updatedBlock.ToContextString();
@@ -260,14 +263,14 @@ public class TurnProcessor : ITurnProcessor
 
                     // Inter-iteration: clear peek markers (not reasoning)
                     if (pendingToolCalls.Count == 0)
-                        await _store.ClearPeekMarkersAsync(sessionId, false);
+                        await _blockStore.ClearPeekMarkersAsync(sessionId, false);
                 }
                 else
                 {
                     var block = MemoryBlock.ToolCall("unknown", output, model: modelStr);
                     block.Number = nextNum++;
                     block.ToolResult = output;
-                    await _store.AppendBlocksAsync(sessionId, [block], nextNum);
+                    await _blockStore.AppendBlocksAsync(sessionId, [block], nextNum);
                 }
             }
 
@@ -283,7 +286,7 @@ public class TurnProcessor : ITurnProcessor
             block.Number = nextNum++;
             if (isPeek)
                 block.Data = new() { ["peek"] = true };
-            await _store.AppendBlocksAsync(sessionId, [block], nextNum);
+            await _blockStore.AppendBlocksAsync(sessionId, [block], nextNum);
         }
 
         async Task FlushText()
@@ -293,7 +296,7 @@ public class TurnProcessor : ITurnProcessor
             textAccum.Clear();
             var block = MemoryBlock.AgentMessage(fullText, model: modelStr);
             block.Number = nextNum++;
-            await _store.AppendBlocksAsync(sessionId, [block], nextNum);
+            await _blockStore.AppendBlocksAsync(sessionId, [block], nextNum);
         }
 
         async Task FlushAll()
@@ -312,7 +315,7 @@ public class TurnProcessor : ITurnProcessor
         }
 
         // Persist usage from all iterations
-        await _store.RecordUsageAsync(sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens, model: modelStr);
+        await _agentStore.RecordUsageAsync(sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens, model: modelStr);
         yield return new UsageTurnEvent(failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
 
         await FlushAll();

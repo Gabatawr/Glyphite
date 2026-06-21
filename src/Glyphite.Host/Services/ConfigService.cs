@@ -7,14 +7,14 @@ namespace Glyphite.Host.Services;
 
 public class ConfigService : IConfigService
 {
-    private readonly IMemoryStore _store;
+    private readonly IConfigStore _store;
     private readonly IConfiguration _appConfig;
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _overlays = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _configCache = new(StringComparer.OrdinalIgnoreCase);
 
     public Action<string>? LogAction { get; set; }
 
-    public ConfigService(IMemoryStore store, IConfiguration appConfig)
+    public ConfigService(IConfigStore store, IConfiguration appConfig)
     {
         _store = store;
         _appConfig = appConfig;
