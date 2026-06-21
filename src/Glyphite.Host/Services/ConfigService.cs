@@ -84,13 +84,15 @@ public class ConfigService : IConfigService
 
     public void InvalidateCache(string? sessionId = null)
     {
-        var key = sessionId ?? "__global__";
-        _configCache.TryRemove(key, out _);
+        if (sessionId is null)
+            _configCache.Clear(); // global change — all session caches stale
+        else
+            _configCache.TryRemove(sessionId, out _);
     }
 
     public async Task<Dictionary<string, string>> GetConfigAsync(string? sessionId = null)
     {
-        var cacheKey = sessionId ?? "__global__";
+        var cacheKey = sessionId ?? "";
         if (_configCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
