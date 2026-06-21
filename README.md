@@ -15,18 +15,24 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
   - `search_glob` / `search_grep` — file and content search
   - `todo_write` / `todo_update` — task management within the conversation
   - `memory` — context and memory management (stats, delete, recover blocks)
+  - `subagent_run` / `subagent_use` / `subagent_list` — delegate tasks to worker agents
+- **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`). Every agent (main + subagents) can have its own MCP servers via `Glyphite.{agentName}.json`
 - **Block-based memory** — full conversation history stored in SQLite with smart deduplication and compression
   - **`ParentNumber` + cascade** — blocks carry parent references; `memory delete` and `recover` cascade through `Data["parentNumber"]` chains
   - **Todo chain** — each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
-- **Rich rendering** — syntax highlighting, diffs, color schemes
+- **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
+- **ToolMaxLength** — per-tool output length control. Set `0` to hide, `-1` for full output, or `N` for first N characters. Works for all tools including MCP.
+- **Content deduplication** — repeated lines compressed in bash, read, and search tool outputs
+- **Rich rendering** — syntax highlighting, diffs, color schemes. Color-coded tool rendering for subagent and memory actions.
 - **Incremental saving** — conversation blocks are saved as they're generated
 - **Live streaming** — text/reasoning chunks rendered in real-time with color transitions and mode switches
 - **Peek tool calls** — LLM can mark tool calls as `peek=true` to see the result once before it's truncated to `(peek)`. File writes/patches always execute regardless of peek.
 - **Memory clean from messageList** — `memory clean` removes blocks from both SQLite and the in-memory message list, preventing stale data from reaching the LLM.
 - **Prompt prefix** — colored segments: DarkGray default, DarkYellow (good cache rate), White (bad rate / significant cost)
-- **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`)
 - **Auto-tool events** — peek cleanup notifications shown as compact auto-tool blocks
+- **Tab completion** — `/*` commands with tab completion
+- **Inline args** — `/new MyAgent`, `/use OtherAgent`, `/delete OldAgent`
 - **Versioning** — auto-increment patch on every debug build, rollover at >99, version shown in greeting and via `-v`
 
 ## Quick start
@@ -72,13 +78,15 @@ Configuration is loaded in cascading order: `appsettings.json` (embedded) → `G
 | Command | Description |
 |---------|-------------|
 | `/new` | Create a new agent / reset an existing one |
+| `/new MyAgent` | Create with inline name |
 | `/clone` | Clone an agent's history to a new name (two-step: pick source, enter name) |
 | `/use` | Switch to another agent (from the list of existing ones) |
+| `/use AgentName` | Switch with inline name |
 | `/delete` | Delete an agent permanently (select from list, excludes current session) |
+| `/delete AgentName` | Delete with inline name |
 | `/stats` | Current agent statistics: blocks by type, input/output tokens, cache rate, cost |
 | `/version` | Show Glyphite version |
 | `/models` | List available models and switch between them |
-| `/reload` | Reload configuration from JSON files |
 | `/exit` | Exit |
 
 ## Tools
@@ -92,7 +100,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `write_file` | Create / overwrite a file |
 | `patch_file` | Partially modify a file (with diff highlighting) |
 | `search_glob` | Find files by glob pattern |
-| `search_grep` | Search text inside files |
+| `search_grep` | Search text inside files (with content dedup) |
 | `fetch_web` | HTTP request (GET/POST) with text extraction |
 | `todo_write` | Create a structured todo list |
 | `todo_update` | Update tasks in a todo list (status, priority) — creates a snapshot chain |
@@ -100,6 +108,8 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `subagent_run` | One-shot task execution. Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Supports `mode="parallel"` |
 | `subagent_use` | Execute a task on a named subagent (auto-creates if not found). Memory and context **accumulate** across calls — the agent persists. `memory` tool is available. Supports `mode="parallel"` |
 | `subagent_list` | List all existing agents (excluding current session) with home, model, block count, cache stats |
+
+Any MCP-connected server's tools also become available automatically.
 
 ## Subagent architecture
 
@@ -138,14 +148,78 @@ subagent_use(name="writer", task="write report", mode="parallel")
 - If two parallel calls use the **same agent name**, they're automatically split into sequential groups to prevent race conditions
 - Parallel-safe tools: `read_file`, `fetch_web`, `search_glob`, `search_grep`, `subagent_use`, `subagent_run`
 
-### Config loading
+### Config loading per agent
 
-When a subagent is created (via `subagent_run` or `subagent_use saveMemory=true`), its configuration is loaded from:
+When a subagent is created (via `subagent_run` or `subagent_use`), its configuration is loaded from:
 1. `Glyphite.json` in the parent agent's working directory
 2. `Glyphite.{agentName}.json` in the parent agent's working directory
 3. `Glyphite.{agentName}.json` in the subagent's own home directory (if different)
 
-Config is loaded by the `SubAgentConfigLoader` service, extracted into a dedicated DI-registered service for testability.
+Config is loaded by `SubAgentConfigLoader` every turn — changes to config files are reflected immediately.
+
+## MCP (Model Context Protocol)
+
+Glyphite supports MCP servers via `stdio`, `streamablehttp`, and `sse` transports. Configure servers in `Glyphite.json`:
+
+```json
+{
+  "Glyphite": {
+    "McpServers": {
+      "Servers": {
+        "my-server": {
+          "Enabled": true,
+          "Type": "stdio",
+          "Command": "npx",
+          "Args": ["-y", "@org/mcp-server"],
+          "TimeoutSeconds": 30
+        }
+      }
+    }
+  }
+}
+```
+
+Per-agent MCP servers via `Glyphite.{agentName}.json` — loaded only when that agent is active.
+
+**Hot-reload:** When MCP server config changes, `McpService` detects the hash change and reconnects automatically on the next turn. No restart needed.
+
+## Config hot-reload
+
+All configuration is reloaded from disk every turn — no `/reload` command needed:
+
+| Section | Applied to | Refresh mechanism |
+|---------|-----------|-------------------|
+| `DeepSeek.*` | Model, context window | per-turn via `TurnProcessor` |
+| `Agent.*` | Max tool iterations, peek settings | per-turn via `TurnProcessor` |
+| `ToolStreaming.ToolMaxLength` | Per-tool output display | per-turn via `ConsoleRenderer.RefreshAsync` |
+| `McpServers.*` | MCP server connections | hash-based reconnect via `McpService` |
+| `Bash.*` | Shell timeouts, forbidden commands | per-call via `BashTool` + per-session via `BashSessionManager` |
+| `Search.*` | Search exclusions | per-call via `SearchTools` |
+| `Todo.*` | Todo valid statuses | per-call via `TodoTool` |
+| `WebFetch.*` | HTTP timeouts | per-call via `WebFetchTool` |
+| `Memory.*` | Protected block types, reload agent file | per-turn via `BlockMemoryProvider` |
+| `Compression.*` | Compression thresholds | per-turn via `BlockMemoryProvider` |
+
+Changes are reflected immediately on the next user turn — no restart required.
+
+## ToolMaxLength
+
+Control how much of a tool's output is shown in the console. Configured in `Glyphite.json`:
+
+```json
+"ToolMaxLength": {
+  "execute_bash": -1,     // -1 = full output
+  "read_file": 0,         // 0 = hidden (LLM still sees full result)
+  "fetch_web": 500,       // N = first N characters
+  "codegraph_explore": 0  // works for MCP tools too
+}
+```
+
+- **`-1`** (default) — full output
+- **`0`** — hidden from console (LLM still sees everything)
+- **`N > 0`** — first N characters
+
+Works for all tools including MCP. Changes are picked up per-turn without restart.
 
 ## Peek tool calls
 
@@ -181,7 +255,7 @@ Use `memory recover blocks=[5, 7]` to restore soft-deleted blocks.
 
 Supported:
 - **DeepSeek** — v4-flash, v4-pro (via DeepSeek API with cache metrics)
-- **OpenAI** — via Microsoft.Agents.AI.OpenAI
+- **OpenAI** — via Microsoft.Extensions.AI
 - Any models compatible with Microsoft.Extensions.AI
 
 ## Versioning
@@ -189,13 +263,13 @@ Supported:
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
 
 ```bash
-glyphite -v       # → 0.5.3
-/version          # → Glyphite v0.5.3
+glyphite -v       # → 0.6.6
+/version          # → Glyphite v0.6.6
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.5.3 — MainAgent 🏠
+Glyphite CLI v0.6.6 — MainAgent 🏠
 ```
 
 ## Publishing and backups
@@ -213,7 +287,7 @@ Use `./publish.sh` to publish:
 
 Rollback:
 ```bash
-cp ~/.glyphite/backup/glyphite.v0.5.0 ~/.glyphite/glyphite
+cp ~/.glyphite/backup/glyphite.v0.6.5 ~/.glyphite/glyphite
 ```
 
 ## Testing
