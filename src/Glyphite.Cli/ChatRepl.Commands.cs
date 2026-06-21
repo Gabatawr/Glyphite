@@ -142,7 +142,7 @@ public partial class ChatRepl
             name = Console.ReadLine()?.Trim();
             if (string.IsNullOrEmpty(name))
             {
-                Console.ForegroundColor = ConsoleColor.Red;
+                Console.ForegroundColor = ConsoleColor.White;
                 Console.WriteLine("Cancelled.\n");
                 Console.ResetColor();
                 return true;
@@ -179,7 +179,7 @@ public partial class ChatRepl
             }
             else
             {
-                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.ForegroundColor = ConsoleColor.White;
                 Console.WriteLine("Cancelled.\n");
                 Console.ResetColor();
             }
@@ -212,12 +212,9 @@ public partial class ChatRepl
         if (name is not null && sessions.Contains(name))
             return await PromptAndCloneAsync(name);
 
+        // Name provided but doesn't exist → show source list, use name as clone name
         if (name is not null)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Agent '{name}' not found.\n");
-            Console.ResetColor();
-        }
+            Console.WriteLine($"Clone name: {name}\n");
 
         Console.ForegroundColor = ConsoleColor.DarkYellow;
         Console.WriteLine("Clone copies an agent's history to a new name.\n");
@@ -233,15 +230,19 @@ public partial class ChatRepl
         }
 
         Console.ResetColor();
-        Console.Write($"\nSelect source [1, default=current]: ");
+        Console.Write($"\nSelect source [1-{sessions.Count}, Enter=cancel]: ");
         var selection = Console.ReadLine()?.Trim();
 
-        string sourceName;
         if (string.IsNullOrEmpty(selection))
         {
-            sourceName = _agentId;
+            Console.ForegroundColor = ConsoleColor.White;
+            Console.WriteLine("Cancelled.\n");
+            Console.ResetColor();
+            return true;
         }
-        else if (int.TryParse(selection, out var idx) && idx >= 1 && idx <= sessions.Count)
+
+        string sourceName;
+        if (int.TryParse(selection, out var idx) && idx >= 1 && idx <= sessions.Count)
         {
             sourceName = sessions[idx - 1];
         }
@@ -257,50 +258,55 @@ public partial class ChatRepl
             sourceName = selection;
         }
 
-        return await PromptAndCloneAsync(sourceName);
+        return await PromptAndCloneAsync(sourceName, name);
     }
 
-    private async Task<bool> PromptAndCloneAsync(string sourceName)
+    private async Task<bool> PromptAndCloneAsync(string sourceName, string? defaultCloneName = null)
     {
-        Console.ForegroundColor = ConsoleColor.DarkYellow;
-        Console.Write($"Enter new agent name (clone of '{sourceName}'): ");
-        Console.ResetColor();
-        var cloneName = Console.ReadLine()?.Trim();
-
-        if (string.IsNullOrEmpty(cloneName))
+        if (defaultCloneName is null)
         {
-            Console.ForegroundColor = ConsoleColor.Gray;
-            Console.WriteLine("Cancelled.\n");
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            Console.Write($"Enter new agent name (clone of '{sourceName}'): ");
+            Console.ResetColor();
+            var input = Console.ReadLine()?.Trim();
+
+            if (string.IsNullOrEmpty(input))
+            {
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.WriteLine("Cancelled.\n");
+                Console.ResetColor();
+                return true;
+            }
+
+            defaultCloneName = input;
+        }
+
+        if (!AgentManager.IsValidAgentName(defaultCloneName))
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Invalid agent name '{defaultCloneName}'. Use letters, digits, hyphens, underscores (max 100 chars).\n");
             Console.ResetColor();
             return true;
         }
 
-        if (!AgentManager.IsValidAgentName(cloneName))
+        if (await _store.AgentExistsAsync(defaultCloneName))
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Invalid agent name '{cloneName}'. Use letters, digits, hyphens, underscores (max 100 chars).\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        if (await _store.AgentExistsAsync(cloneName))
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Agent '{cloneName}' already exists. Choose a different name.\n");
+            Console.WriteLine($"Agent '{defaultCloneName}' already exists. Choose a different name.\n");
             Console.ResetColor();
             return true;
         }
 
         var cwd = Directory.GetCurrentDirectory();
-        await _store.ForkSessionAsync(sourceName, cloneName, cwd);
-        _agentId = cloneName;
-        _agentOpts.AgentName = cloneName;
+        await _store.ForkSessionAsync(sourceName, defaultCloneName, cwd);
+        _agentId = defaultCloneName;
+        _agentOpts.AgentName = defaultCloneName;
         SwitchScope();
         await LoadAgentConfigAsync(_agentId, cwd);
         await ResetSessionStateAsync();
 
         Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"Agent '{cloneName}' cloned from '{sourceName}'.\n");
+        Console.WriteLine($"Agent '{defaultCloneName}' cloned from '{sourceName}'.\n");
         Console.ResetColor();
         return true;
     }
@@ -361,12 +367,12 @@ public partial class ChatRepl
         }
 
         Console.ResetColor();
-        Console.Write($"\nSelect agent [1-{sessions.Count}, default=cancel]: ");
+        Console.Write($"\nSelect agent [1-{sessions.Count}, Enter=cancel]: ");
         var pick = Console.ReadLine()?.Trim();
 
         if (string.IsNullOrEmpty(pick))
         {
-            Console.ForegroundColor = ConsoleColor.Gray;
+            Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("Cancelled.\n");
             Console.ResetColor();
             return true;
@@ -440,12 +446,12 @@ public partial class ChatRepl
         }
 
         Console.ResetColor();
-        Console.Write($"\nSelect agent [1-{others.Count}, default=cancel]: ");
+        Console.Write($"\nSelect agent [1-{others.Count}, Enter=cancel]: ");
         var pick = Console.ReadLine()?.Trim();
 
         if (string.IsNullOrEmpty(pick))
         {
-            Console.ForegroundColor = ConsoleColor.Gray;
+            Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("Cancelled.\n");
             Console.ResetColor();
             return true;
@@ -479,7 +485,7 @@ public partial class ChatRepl
         var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
         if (confirm is not "y" and not "yes")
         {
-            Console.ForegroundColor = ConsoleColor.Gray;
+            Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("Cancelled.\n");
             Console.ResetColor();
             return true;
