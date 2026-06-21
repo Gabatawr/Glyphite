@@ -143,8 +143,8 @@ public class TurnProcessor : ITurnProcessor
 
             if (fcc is not null)
             {
-                events.AddRange(await FlushReasoning(agentOpts.PeekToolReasoning));
-                events.AddRange(await FlushText());
+                await FlushReasoning(agentOpts.PeekToolReasoning);
+                await FlushText();
 
                 var args = JsonSerializer.Serialize(fcc.Arguments ?? new Dictionary<string, object?>(),
                     new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
@@ -165,8 +165,8 @@ public class TurnProcessor : ITurnProcessor
 
             if (frc is not null)
             {
-                events.AddRange(await FlushReasoning(agentOpts.PeekToolReasoning));
-                events.AddRange(await FlushText());
+                await FlushReasoning(agentOpts.PeekToolReasoning);
+                await FlushText();
 
                 var output = frc.Result?.ToString() ?? "";
                 var frcCallId = frc.CallId;
@@ -274,9 +274,9 @@ public class TurnProcessor : ITurnProcessor
             return events;
         }
 
-        async Task<List<TurnEvent>> FlushReasoning(bool isPeek)
+        async Task FlushReasoning(bool isPeek)
         {
-            if (reasoningAccum.Length == 0) return [];
+            if (reasoningAccum.Length == 0) return;
             var fullReasoning = reasoningAccum.ToString();
             reasoningAccum.Clear();
             var block = MemoryBlock.AgentReasoning(fullReasoning, model: modelStr);
@@ -284,26 +284,22 @@ public class TurnProcessor : ITurnProcessor
             if (isPeek)
                 block.Data = new() { ["peek"] = true };
             await _store.AppendBlocksAsync(sessionId, [block], nextNum);
-            return [];
         }
 
-        async Task<List<TurnEvent>> FlushText()
+        async Task FlushText()
         {
-            if (textAccum.Length == 0) return [];
+            if (textAccum.Length == 0) return;
             var fullText = textAccum.ToString();
             textAccum.Clear();
             var block = MemoryBlock.AgentMessage(fullText, model: modelStr);
             block.Number = nextNum++;
             await _store.AppendBlocksAsync(sessionId, [block], nextNum);
-            return [];
         }
 
-        async Task<List<TurnEvent>> FlushAll()
+        async Task FlushAll()
         {
-            var events = new List<TurnEvent>();
-            events.AddRange(await FlushReasoning(agentOpts.PeekReasoning));
-            events.AddRange(await FlushText());
-            return events;
+            await FlushReasoning(agentOpts.PeekReasoning);
+            await FlushText();
         }
 
         await foreach (var update in failSafeClient
@@ -319,9 +315,7 @@ public class TurnProcessor : ITurnProcessor
         await _store.RecordUsageAsync(sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens, model: modelStr);
         yield return new UsageTurnEvent(failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
 
-        var flushEvents = await FlushAll();
-        foreach (var e in flushEvents)
-            yield return e;
+        await FlushAll();
     }
 
     private static string BuildPeekCleanMessage(int total, Dictionary<string, int> stats)
