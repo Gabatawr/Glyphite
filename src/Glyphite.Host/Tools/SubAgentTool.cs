@@ -123,7 +123,7 @@ public static class SubAgentTool
         if (validateName && !AgentManager.IsValidAgentName(agentId))
             return $"Error: Invalid agent name '{agentId}'.";
 
-        await agentManager.CreateAgentAsync(agentId, deepseek.Model, homePath);
+        await agentManager.CreateAgentAsync(agentId, deepseek.Model, homePath, recordLaunch: false);
         if (loadConfig)
             await configLoader.LoadConfigAsync(agentId, homePath, parentCwd);
 
@@ -216,7 +216,7 @@ public static class SubAgentTool
                 var parentCwd = await store.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
                 var homePath = cwd ?? parentCwd;
 
-                await agentManager.CreateAgentAsync(name, deepseek.Model, homePath);
+                await agentManager.CreateAgentAsync(name, deepseek.Model, homePath, recordLaunch: false);
                 await configLoader.LoadConfigAsync(name, homePath, parentCwd);
             }
 

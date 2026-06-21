@@ -39,7 +39,7 @@ public class AgentManager : IAgentManager
         return sessionId;
     }
 
-    public async Task<string> CreateAgentAsync(string agentName, string model, string cwd)
+    public async Task<string> CreateAgentAsync(string agentName, string model, string cwd, bool recordLaunch = true)
     {
         // Agent name is the session id
         var sessionId = agentName;
@@ -48,7 +48,8 @@ public class AgentManager : IAgentManager
 
         await _store.EnsureSessionAsync(sessionId, homePath: cwd);
         await _store.SetAgentModelAsync(sessionId, model);
-        await _store.RecordLaunchAsync(sessionId, cwd);
+        if (recordLaunch)
+            await _store.RecordLaunchAsync(sessionId, cwd);
         await _cfgService.UpdateConfigAsync(
             new() { ["Environment:OS"] = OSHelper.DetectOS(), ["Session:WorkingDirectory"] = cwd },
             scope: "session", sessionId: sessionId);

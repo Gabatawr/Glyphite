@@ -154,9 +154,23 @@ public class ConsoleRenderer
 
     private ConsoleColor GetToolColor(string? toolName, string args)
     {
-        // Subagent run/use → DarkMagenta (subagent_list stays default)
-        if (toolName is "subagent_run" or "subagent_use")
+        // Subagent tools
+        if (toolName == "subagent_run")
             return ConsoleColor.DarkMagenta;
+        if (toolName == "subagent_use")
+            return ConsoleColor.Magenta;
+
+        // read_file → Green
+        if (toolName == "read_file")
+            return ConsoleColor.Green;
+
+        // patch_file & write_file → Blue
+        if (toolName is "patch_file" or "write_file")
+            return ConsoleColor.Blue;
+
+        // bash → DarkCyan
+        if (toolName == "bash")
+            return ConsoleColor.DarkCyan;
 
         // Memory tool color depends on action
         if (toolName == "memory")
@@ -167,8 +181,7 @@ public class ConsoleRenderer
                 var action = doc.RootElement.GetProperty("action").GetString();
                 return action switch
                 {
-                    "delete" or "clean" => ConsoleColor.DarkMagenta,
-                    "recover" => ConsoleColor.Green,
+                    "delete" or "clean" or "recover" => ConsoleColor.Yellow,
                     _ => ToolCallColor // stats, list → unchanged
                 };
             }
