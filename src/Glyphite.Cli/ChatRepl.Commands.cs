@@ -40,62 +40,22 @@ public partial class ChatRepl
                     return true;
                 }
 
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine("── Stats ──────────────────────────────");
-                Console.ResetColor();
-
-                Console.ForegroundColor = ConsoleColor.DarkGray;
-                foreach (var kv in typeStats)
-                {
-                    if (kv.Key is "system_info" or "agent_data") continue;
-                    var label = kv.Key switch
-                    {
-                        "user_message" => "👤 user_message",
-                        "agent_message" => "💬 agent_message",
-                        "agent_reasoning" => "🧠 agent_reasoning",
-                        "tool" => "🔧 tool",
-                        "auto_tool" => "🤖 auto_tool",
-                        "todo" or "todo_update" => "📋 todo",
-                        _ => kv.Key
-                    };
-                    Console.WriteLine($"  {label,-22}: {kv.Value,4}");
-                }
-                Console.ResetColor();
-
-                Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.WriteLine("  ───────────────────────────────────");
-                Console.ResetColor();
-
-                // Model
                 var statsModel = await _blockMemory.GetAgentModelAsync(_agentId!);
-                Console.ForegroundColor = ConsoleColor.Gray;
-                Console.WriteLine($"  Blocks:    {totalBlocks}");
-                if (statsModel is not null)
-                    Console.WriteLine($"  Model:     {statsModel}");
-
-                // Real API usage
                 var (cumHit, cumMiss, cumOutput) = await _store.GetUsageAsync(_agentId!);
+
+                var totalCost = 0.0;
                 if (cumHit + cumMiss + cumOutput > 0)
                 {
-                    Console.WriteLine($"  Input:     {ConsoleRenderer.FormatTokenCount(cumHit + cumMiss)}");
-                    Console.WriteLine($"  Output:    {ConsoleRenderer.FormatTokenCount(cumOutput)}");
-                    var cumRate = (int)(cumHit * 100.0 / (cumHit + cumMiss + cumOutput));
-                    Console.WriteLine($"  Cache:     {ConsoleRenderer.FormatTokenCount(cumHit)} hit / {ConsoleRenderer.FormatTokenCount(cumMiss)} miss ({cumRate}%)");
-
-                    // Cost: sum per-model rows with per-model pricing
                     var usageByModel = await _store.GetUsageByModelAsync(_agentId!);
-                    var totalCost = 0.0;
                     foreach (var (modelName, hit, miss, output) in usageByModel)
                     {
                         var (mPrice, hPrice, oPrice) = GetPricing(modelName);
                         if (mPrice.HasValue)
                             totalCost += miss * mPrice.Value + (hPrice ?? 0) * hit + (oPrice ?? mPrice.Value) * output;
                     }
-                    Console.WriteLine($"  Cost:      ${totalCost / 1_000_000.0:F2}");
                 }
 
-                Console.ResetColor();
-                Console.WriteLine();
+                _renderer.RenderStats(totalBlocks, typeStats, statsModel, cumHit, cumMiss, cumOutput, totalCost);
                 return true;
 
             case "/version":

@@ -274,6 +274,53 @@ public class ConsoleRenderer
     public static string FormatTokenCount(long count) => count >= 1000
         ? $"{count / 1000.0:F1}K"
         : count.ToString();
+
+    public void RenderStats(int totalBlocks, Dictionary<string, int> typeStats, string? model,
+        long cumHit, long cumMiss, long cumOutput, double totalCost)
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("── Stats ──────────────────────────────");
+        Console.ResetColor();
+
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        foreach (var kv in typeStats)
+        {
+            if (kv.Key is "system_info" or "agent_data") continue;
+            var label = kv.Key switch
+            {
+                "user_message" => "👤 user_message",
+                "agent_message" => "💬 agent_message",
+                "agent_reasoning" => "🧠 agent_reasoning",
+                "tool" => "🔧 tool",
+                "auto_tool" => "🤖 auto_tool",
+                "todo" or "todo_update" => "📋 todo",
+                _ => kv.Key
+            };
+            Console.WriteLine($"  {label,-22}: {kv.Value,4}");
+        }
+        Console.ResetColor();
+
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine("  ───────────────────────────────────");
+        Console.ResetColor();
+
+        Console.ForegroundColor = ConsoleColor.Gray;
+        Console.WriteLine($"  Blocks:    {totalBlocks}");
+        if (model is not null)
+            Console.WriteLine($"  Model:     {model}");
+
+        if (cumHit + cumMiss + cumOutput > 0)
+        {
+            Console.WriteLine($"  Input:     {FormatTokenCount(cumHit + cumMiss)}");
+            Console.WriteLine($"  Output:    {FormatTokenCount(cumOutput)}");
+            var cumRate = (int)(cumHit * 100.0 / (cumHit + cumMiss + cumOutput));
+            Console.WriteLine($"  Cache:     {FormatTokenCount(cumHit)} hit / {FormatTokenCount(cumMiss)} miss ({cumRate}%)");
+            Console.WriteLine($"  Cost:      ${totalCost / 1_000_000.0:F2}");
+        }
+
+        Console.ResetColor();
+        Console.WriteLine();
+    }
 }
 
 public record struct RenderState
