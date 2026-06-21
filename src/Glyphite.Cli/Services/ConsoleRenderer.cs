@@ -20,6 +20,9 @@ public class ConsoleRenderer
     private ToolStreamingOptions _streamOpts;
     private readonly IConfigService _cfgService;
 
+    /// <summary>Current (fresh) ToolStreamingOptions. Updated by RefreshAsync before each render cycle.</summary>
+    public ToolStreamingOptions CurrentStreamOpts => _streamOpts;
+
     public ConsoleRenderer(ToolStreamingOptions streamOpts, IConfigService cfgService)
     {
         _streamOpts = streamOpts;
