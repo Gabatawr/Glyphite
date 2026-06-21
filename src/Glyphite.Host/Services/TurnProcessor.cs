@@ -218,7 +218,7 @@ public class TurnProcessor : ITurnProcessor
 
                     async Task EmitToolResult(string emitOutput, string[]? cleanKeys)
                     {
-                        if (!isPeek && !string.IsNullOrEmpty(emitOutput))
+                        if (!string.IsNullOrEmpty(emitOutput))
                             await _blockStore.UpdateBlockToolResultAsync(sessionId, callBlockNumber, emitOutput);
 
                         if (cleanKeys is not null)
@@ -261,9 +261,6 @@ public class TurnProcessor : ITurnProcessor
                         }
                     }
 
-                    // Inter-iteration: clear peek markers (not reasoning)
-                    if (pendingToolCalls.Count == 0)
-                        await _blockStore.ClearPeekMarkersAsync(sessionId, false);
                 }
                 else
                 {
@@ -319,6 +316,11 @@ public class TurnProcessor : ITurnProcessor
         yield return new UsageTurnEvent(failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
 
         await FlushAll();
+
+        // End-of-turn: clean peek markers on non-reasoning blocks (tool, auto_tool)
+        // Keeps the block in DB, removes $.peek flag + tool_result.
+        // Reasoning peek blocks are deleted at start of next turn via RemovePeekBlocksAsync.
+        await _blockStore.ClearPeekMarkersAsync(sessionId, false);
 
         // Insert turn marker block with usage summary (JSON like tool args)
         var turnBlock = MemoryBlock.TurnMarker(

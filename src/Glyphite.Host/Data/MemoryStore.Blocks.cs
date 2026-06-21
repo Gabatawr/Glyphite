@@ -74,11 +74,17 @@ public partial class MemoryStore
         await _writeLock.WaitAsync();
         try
         {
-            var typeFilter = includeReasoning ? "" : " AND type != 'agent_reasoning'";
-            var sql = $"""
+            // Only delete agent_reasoning peek blocks — they were already streamed to the user
+            // and never appear in the LLM's block context.
+            // Tool/auto_tool peek blocks are left untouched so they can reach the LLM
+            // if they didn't in the previous turn (crash safety). They are cleaned by
+            // ClearPeekMarkersAsync at end of turn.
+            if (!includeReasoning) return 0;
+            var sql = """
                 UPDATE blocks SET is_deleted = 1
                 WHERE agent_id = @sid AND is_deleted = 0
-                  AND data IS NOT NULL AND json_extract(data, '$.peek') = 1{typeFilter}
+                  AND data IS NOT NULL AND json_extract(data, '$.peek') = 1
+                  AND type = 'agent_reasoning'
                 """;
             return await _conn.ExecuteAsync(sql, new { sid = agentId });
         }
