@@ -229,8 +229,14 @@ public class ConsoleRenderer
                 pathVal is JsonValue jv && jv.TryGetValue<string>(out var str))
             {
                 var normalized = str.Replace('\\', '/');
-                var cwdPrefix = AgentCwd!.Replace('\\', '/').TrimEnd('/') + "/";
-                if (normalized.StartsWith(cwdPrefix, StringComparison.OrdinalIgnoreCase))
+                var cwd = AgentCwd!.Replace('\\', '/').TrimEnd('/');
+                var cwdPrefix = cwd + "/";
+
+                if (normalized == cwd)
+                {
+                    obj["path"] = "{cwd}";
+                }
+                else if (normalized.StartsWith(cwdPrefix, StringComparison.OrdinalIgnoreCase))
                 {
                     var rest = normalized[cwdPrefix.Length..];
                     obj["path"] = $"{{cwd}}/{rest}";
