@@ -42,7 +42,7 @@ public partial class ChatRepl
 
     private async Task ProcessInputAsync(string input, ChatOptions chatOptions, CancellationToken ct)
     {
-        await _renderer.RefreshAsync();
+        await _renderer.RefreshAsync(_agentId!);
         var s = new RenderState();
         _liveChunkType = "";
 

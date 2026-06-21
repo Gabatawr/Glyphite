@@ -30,9 +30,9 @@ public class ConsoleRenderer
     }
 
     /// <summary>Refresh ToolStreamingOptions from config. Call before rendering to pick up changes.</summary>
-    public async Task RefreshAsync()
+    public async Task RefreshAsync(string sessionId)
     {
-        _streamOpts = await _cfgService.GetOptionsAsync<ToolStreamingOptions>("ToolStreaming");
+        _streamOpts = await _cfgService.GetOptionsAsync<ToolStreamingOptions>("ToolStreaming", sessionId);
     }
 
     public void RenderBlock(MemoryBlock block, ref RenderState s)
@@ -157,7 +157,7 @@ public class ConsoleRenderer
 
     public async Task ReplayBlocksAsync(string sid, IMemoryStore store, bool showResumed = true)
     {
-        await RefreshAsync();
+        await RefreshAsync(sid);
         if (showResumed) Console.WriteLine($"Resumed agent '{sid}'.");
         var prevBlocks = await store.LoadBlocksAsync(sid);
         var s = new RenderState();
