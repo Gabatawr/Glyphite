@@ -16,7 +16,8 @@ public enum BlockType
     tool,
     todo,
     todo_update,
-    auto_tool
+    auto_tool,
+    turn
 }
 
 public class MemoryBlock
@@ -88,6 +89,9 @@ public class MemoryBlock
         block.ToolResult = result;
         return block;
     }
+
+    public static MemoryBlock TurnMarker(string? summary = null, string? model = null)
+        => Create(BlockType.turn, summary ?? "", model: model);
 
     public static MemoryBlock SystemInfo(string content)
         => Create(BlockType.system_info, content);

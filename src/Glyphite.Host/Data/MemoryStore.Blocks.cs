@@ -197,8 +197,7 @@ public partial class MemoryStore
             var all = await LoadBlocksCoreAsync(agentId);
             protectedTypes ??= new HashSet<BlockType>
             {
-                BlockType.agent_data,
-                BlockType.user_message, BlockType.agent_message
+                BlockType.agent_data
             };
 
             var protectedNums = new List<double>();
@@ -423,8 +422,7 @@ public partial class MemoryStore
             var all = await LoadBlocksCoreAsync(agentId);
             protectedTypes ??= new HashSet<BlockType>
             {
-                BlockType.agent_data,
-                BlockType.user_message, BlockType.agent_message
+                BlockType.agent_data
             };
 
             var typeSet = types is not null ? new HashSet<string>(types, StringComparer.OrdinalIgnoreCase) : null;

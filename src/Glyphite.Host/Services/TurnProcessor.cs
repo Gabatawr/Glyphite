@@ -319,6 +319,13 @@ public class TurnProcessor : ITurnProcessor
         yield return new UsageTurnEvent(failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens, failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
 
         await FlushAll();
+
+        // Insert turn marker block with usage summary (JSON like tool args)
+        var turnBlock = MemoryBlock.TurnMarker(
+            $"{{\"hit\":{failSafeClient.TotalCacheHitTokens},\"miss\":{failSafeClient.TotalCacheMissTokens},\"out\":{failSafeClient.TotalOutputTokens}}}");
+        turnBlock.Number = nextNum++;
+        await _blockStore.AppendBlocksAsync(sessionId, [turnBlock], nextNum);
+        yield return new TurnCompleteEvent();
     }
 
     private static string BuildPeekCleanMessage(int total, Dictionary<string, int> stats)
