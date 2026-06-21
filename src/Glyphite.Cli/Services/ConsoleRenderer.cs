@@ -98,7 +98,8 @@ public class ConsoleRenderer
                     Console.WriteLine();
                     s.lineStart = true;
                 }
-                Console.ForegroundColor = ToolCallColor;
+                var toolColor = GetToolColor(block.ToolName, block.Content);
+                Console.ForegroundColor = toolColor;
                 var displayContent = MaskContentArgs(block.ToolName, block.Content);
                 Console.WriteLine($"[Tool: {block.ToolName} | {displayContent}]");
                 Console.ResetColor();
@@ -149,6 +150,35 @@ public class ConsoleRenderer
             RenderBlock(block, ref s);
         Console.WriteLine();
         Console.WriteLine();
+    }
+
+    private ConsoleColor GetToolColor(string? toolName, string args)
+    {
+        // Subagent run/use → DarkMagenta (subagent_list stays default)
+        if (toolName is "subagent_run" or "subagent_use")
+            return ConsoleColor.DarkMagenta;
+
+        // Memory tool color depends on action
+        if (toolName == "memory")
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(args);
+                var action = doc.RootElement.GetProperty("action").GetString();
+                return action switch
+                {
+                    "delete" or "clean" => ConsoleColor.DarkMagenta,
+                    "recover" => ConsoleColor.Green,
+                    _ => ToolCallColor // stats, list → unchanged
+                };
+            }
+            catch
+            {
+                return ToolCallColor;
+            }
+        }
+
+        return ToolCallColor;
     }
 
     private string MaskContentArgs(string? toolName, string content)
