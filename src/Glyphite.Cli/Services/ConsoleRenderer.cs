@@ -17,7 +17,7 @@ public class ConsoleRenderer
     /// <summary>Agent's working directory — replaces with <c>{cwd}</c> in tool arg display.</summary>
     public string? AgentCwd { get; set; }
 
-    private readonly ToolStreamingOptions _streamOpts;
+    private ToolStreamingOptions _streamOpts;
     private readonly IConfigService _cfgService;
 
     public ConsoleRenderer(ToolStreamingOptions streamOpts, IConfigService cfgService)
@@ -26,9 +26,11 @@ public class ConsoleRenderer
         _cfgService = cfgService;
     }
 
-    private ToolStreamingOptions GetFreshOpts()
-        => _cfgService.GetOptionsAsync<ToolStreamingOptions>("ToolStreaming")
-            .GetAwaiter().GetResult() ?? _streamOpts;
+    /// <summary>Refresh ToolStreamingOptions from config. Call before rendering to pick up changes.</summary>
+    public async Task RefreshAsync()
+    {
+        _streamOpts = await _cfgService.GetOptionsAsync<ToolStreamingOptions>("ToolStreaming");
+    }
 
     public void RenderBlock(MemoryBlock block, ref RenderState s)
     {
@@ -122,7 +124,7 @@ public class ConsoleRenderer
                 {
                     var trLen = -1;
                     if (block.ToolName is not null)
-                        GetFreshOpts().ToolMaxLength.TryGetValue(block.ToolName, out trLen);
+                        _streamOpts.ToolMaxLength.TryGetValue(block.ToolName, out trLen);
                     if (trLen == 0) { /* hidden */ }
                     else
                     {
@@ -152,6 +154,7 @@ public class ConsoleRenderer
 
     public async Task ReplayBlocksAsync(string sid, IMemoryStore store, bool showResumed = true)
     {
+        await RefreshAsync();
         if (showResumed) Console.WriteLine($"Resumed agent '{sid}'.");
         var prevBlocks = await store.LoadBlocksAsync(sid);
         var s = new RenderState();
@@ -207,7 +210,7 @@ public class ConsoleRenderer
     {
         if (toolName is null) return content;
 
-        var hidden = GetFreshOpts().ToolHiddenArgs.GetValueOrDefault(toolName);
+        var hidden = _streamOpts.ToolHiddenArgs.GetValueOrDefault(toolName);
         var hasHidden = hidden is not null && hidden.Length > 0;
         var hasCwd = AgentCwd is not null;
 
