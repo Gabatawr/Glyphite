@@ -1,0 +1,14 @@
+{
+  "Glyphite": {
+    "McpServers": {
+      "Servers": {
+        "codegraph": {
+          "Enabled": true,
+          "Type": "stdio",
+          "Command": "npx",
+          "Args": ["-y", "@colbymchenry/codegraph"]
+        }
+      }
+    }
+  }
+}
