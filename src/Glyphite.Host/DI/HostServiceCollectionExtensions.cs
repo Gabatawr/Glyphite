@@ -60,11 +60,12 @@ public static class HostServiceCollectionExtensions
         // ── Services ──
         services.AddSingleton<IBashSessionManager>(sp =>
         {
+            var cfgService = sp.GetRequiredService<IConfigService>();
             var bashOpts = sp.GetRequiredService<IOptions<BashOptions>>().Value;
             var defaultDir = !string.IsNullOrEmpty(bashOpts.DefaultDirectory)
                 ? Path.GetFullPath(bashOpts.DefaultDirectory)
                 : Directory.GetCurrentDirectory();
-            return new BashSessionManager(bashOpts, defaultDir);
+            return new BashSessionManager(cfgService, bashOpts, defaultDir);
         });
 
         services.AddSingleton<IConfigService>(sp =>

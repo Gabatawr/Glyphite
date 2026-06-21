@@ -18,11 +18,17 @@ public class ConsoleRenderer
     public string? AgentCwd { get; set; }
 
     private readonly ToolStreamingOptions _streamOpts;
+    private readonly IConfigService _cfgService;
 
-    public ConsoleRenderer(ToolStreamingOptions streamOpts)
+    public ConsoleRenderer(ToolStreamingOptions streamOpts, IConfigService cfgService)
     {
         _streamOpts = streamOpts;
+        _cfgService = cfgService;
     }
+
+    private ToolStreamingOptions GetFreshOpts()
+        => _cfgService.GetOptionsAsync<ToolStreamingOptions>("ToolStreaming")
+            .GetAwaiter().GetResult() ?? _streamOpts;
 
     public void RenderBlock(MemoryBlock block, ref RenderState s)
     {
@@ -116,7 +122,7 @@ public class ConsoleRenderer
                 {
                     var trLen = -1;
                     if (block.ToolName is not null)
-                        _streamOpts.ToolMaxLength.TryGetValue(block.ToolName, out trLen);
+                        GetFreshOpts().ToolMaxLength.TryGetValue(block.ToolName, out trLen);
                     if (trLen == 0) { /* hidden */ }
                     else
                     {
@@ -201,7 +207,7 @@ public class ConsoleRenderer
     {
         if (toolName is null) return content;
 
-        var hidden = _streamOpts.ToolHiddenArgs.GetValueOrDefault(toolName);
+        var hidden = GetFreshOpts().ToolHiddenArgs.GetValueOrDefault(toolName);
         var hasHidden = hidden is not null && hidden.Length > 0;
         var hasCwd = AgentCwd is not null;
 

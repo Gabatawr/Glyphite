@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Cli.Services;
 using Glyphite.Host.DI;
@@ -73,7 +74,8 @@ public static class Bootstrapper
                 services.AddSingleton(sp =>
                 {
                     var streamOpts = sp.GetRequiredService<IOptions<ToolStreamingOptions>>().Value;
-                    return new ConsoleRenderer(streamOpts);
+                    var cfgService = sp.GetRequiredService<IConfigService>();
+                    return new ConsoleRenderer(streamOpts, cfgService);
                 });
                 services.AddSingleton<ChatRepl>();
             })

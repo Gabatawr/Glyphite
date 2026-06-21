@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using Glyphite.Abstractions.Interfaces;
@@ -229,12 +229,14 @@ public class BashSession : IDisposable
 public class BashSessionManager : IBashSessionManager, IDisposable
 {
     private readonly ConcurrentDictionary<string, Lazy<BashSession>> _sessions = new();
+    private readonly IConfigService _cfgService;
     private readonly BashOptions _opts;
     private readonly string? _defaultDirectory;
     private static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
 
-    public BashSessionManager(BashOptions opts, string? defaultDirectory = null)
+    public BashSessionManager(IConfigService cfgService, BashOptions opts, string? defaultDirectory = null)
     {
+        _cfgService = cfgService;
         _opts = opts;
         _defaultDirectory = defaultDirectory;
     }
@@ -243,7 +245,9 @@ public class BashSessionManager : IBashSessionManager, IDisposable
     {
         CleanupIdleSessions();
 
-        var lazy = _sessions.GetOrAdd(sessionId, _ => new Lazy<BashSession>(() => BashSession.Start(_opts, _defaultDirectory)));
+        // Load fresh BashOptions for new sessions — IOptions<T> singleton may be stale
+        var freshOpts = await _cfgService.GetOptionsAsync<BashOptions>("Bash");
+        var lazy = _sessions.GetOrAdd(sessionId, _ => new Lazy<BashSession>(() => BashSession.Start(freshOpts, _defaultDirectory)));
         BashSession session;
         try
         {
