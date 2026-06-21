@@ -225,6 +225,8 @@ public partial class ChatRepl
 
     private async Task<ChatOptions> InitializeAfterAgentAsync(string cwd)
     {
+        _renderer.AgentCwd = cwd;
+
         // Record this launch for the current agent
         await _store.RecordLaunchAsync(_agentId, cwd);
 

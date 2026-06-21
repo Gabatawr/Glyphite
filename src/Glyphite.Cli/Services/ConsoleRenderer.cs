@@ -14,6 +14,9 @@ public class ConsoleRenderer
     public ConsoleColor ToolCallColor { get; set; } = ConsoleColor.Cyan;
     public ConsoleColor ErrorColor { get; set; } = ConsoleColor.Red;
 
+    /// <summary>Agent's working directory — replaces with <c>{cwd}</c> in tool arg display.</summary>
+    public string? AgentCwd { get; set; }
+
     private readonly ToolStreamingOptions _streamOpts;
 
     public ConsoleRenderer(ToolStreamingOptions streamOpts)
@@ -197,18 +200,41 @@ public class ConsoleRenderer
     private string MaskContentArgs(string? toolName, string content)
     {
         if (toolName is null) return content;
+
         var hidden = _streamOpts.ToolHiddenArgs.GetValueOrDefault(toolName);
-        if (hidden is null || hidden.Length == 0) return content;
+        var hasHidden = hidden is not null && hidden.Length > 0;
+        var hasCwd = AgentCwd is not null;
+
+        // Skip JSON parsing if nothing to do
+        if (!hasHidden && !hasCwd)
+            return content;
 
         try
         {
             var json = JsonNode.Parse(content);
             if (json is not JsonObject obj) return content;
 
-            foreach (var arg in hidden)
+            // Hide sensitive args
+            if (hasHidden)
             {
-                if (obj.ContainsKey(arg))
-                    obj[arg] = "***";
+                foreach (var arg in hidden!)
+                {
+                    if (obj.ContainsKey(arg))
+                        obj[arg] = "***";
+                }
+            }
+
+            // Replace agent cwd prefix in path args with {cwd}
+            if (hasCwd && obj.TryGetPropertyValue("path", out var pathVal) &&
+                pathVal is JsonValue jv && jv.TryGetValue<string>(out var str))
+            {
+                var normalized = str.Replace('\\', '/');
+                var cwdPrefix = AgentCwd!.Replace('\\', '/').TrimEnd('/') + "/";
+                if (normalized.StartsWith(cwdPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    var rest = normalized[cwdPrefix.Length..];
+                    obj["path"] = $"{{cwd}}/{rest}";
+                }
             }
 
             return obj.ToJsonString(new JsonSerializerOptions
