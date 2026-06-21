@@ -41,7 +41,6 @@ public static class HostServiceCollectionExtensions
         // ── Data ──
         services.AddSingleton<MemoryStore>(sp =>
             MemoryStore.CreateForApp(dataDir, dataOpts.DatabaseFileName));
-        services.AddSingleton<IMemoryStore>(sp => sp.GetRequiredService<MemoryStore>());
         services.AddSingleton<IAgentStore>(sp => sp.GetRequiredService<MemoryStore>());
         services.AddSingleton<IBlockStore>(sp => sp.GetRequiredService<MemoryStore>());
         services.AddSingleton<IConfigStore>(sp => sp.GetRequiredService<MemoryStore>());

@@ -6,7 +6,7 @@ using Microsoft.Data.Sqlite;
 
 namespace Glyphite.Host.Data;
 
-public partial class MemoryStore : IMemoryStore, IAgentStore, IBlockStore, IConfigStore
+public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
 {
     private readonly SqliteConnection _conn;
     private readonly string _connectionString;
