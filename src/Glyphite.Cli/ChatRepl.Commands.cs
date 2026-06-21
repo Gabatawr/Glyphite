@@ -14,12 +14,16 @@ public partial class ChatRepl
 {
     private async Task<bool> HandleCommandAsync(string input)
     {
-        switch (input)
+        var parts = input.Split(' ', 2, StringSplitOptions.TrimEntries);
+        var cmd = parts[0];
+        var arg = parts.Length > 1 ? parts[1] : null;
+
+        switch (cmd)
         {
-            case "/new":    return await HandleNewCommandAsync();
-            case "/clone":  return await HandleCloneCommandAsync();
-            case "/use":    return await HandleUseCommandAsync();
-            case "/delete": return await HandleDeleteCommandAsync();
+            case "/new":    return await HandleNewCommandAsync(arg);
+            case "/clone":  return await HandleCloneCommandAsync(arg);
+            case "/use":    return await HandleUseCommandAsync(arg);
+            case "/delete": return await HandleDeleteCommandAsync(arg);
 
             case "/reload":
                 Console.Clear();
@@ -124,18 +128,21 @@ public partial class ChatRepl
 
         return false;
     }
-    private async Task<bool> HandleNewCommandAsync()
+    private async Task<bool> HandleNewCommandAsync(string? name = null)
     {
-        Console.ForegroundColor = ConsoleColor.DarkYellow;
-        Console.Write("Enter new agent name: ");
-        Console.ResetColor();
-        var name = Console.ReadLine()?.Trim();
-        if (string.IsNullOrEmpty(name))
+        if (name is null)
         {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("Cancelled.\n");
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            Console.Write("Enter new agent name: ");
             Console.ResetColor();
-            return true;
+            name = Console.ReadLine()?.Trim();
+            if (string.IsNullOrEmpty(name))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Cancelled.\n");
+                Console.ResetColor();
+                return true;
+            }
         }
 
         if (!AgentManager.IsValidAgentName(name))
@@ -186,7 +193,7 @@ public partial class ChatRepl
         return true;
     }
 
-    private async Task<bool> HandleCloneCommandAsync()
+    private async Task<bool> HandleCloneCommandAsync(string? name = null)
     {
         var sessions = await _store.ListAgentsAsync();
         if (sessions.Count == 0)
@@ -195,6 +202,17 @@ public partial class ChatRepl
             Console.WriteLine("No agents found. Create one with /new first.\n");
             Console.ResetColor();
             return true;
+        }
+
+        // If name provided and agent exists, prompt for clone name directly
+        if (name is not null && sessions.Contains(name))
+            return await PromptAndCloneAsync(name);
+
+        if (name is not null)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Agent '{name}' not found.\n");
+            Console.ResetColor();
         }
 
         Console.ForegroundColor = ConsoleColor.DarkYellow;
@@ -235,8 +253,13 @@ public partial class ChatRepl
             sourceName = selection;
         }
 
+        return await PromptAndCloneAsync(sourceName);
+    }
+
+    private async Task<bool> PromptAndCloneAsync(string sourceName)
+    {
         Console.ForegroundColor = ConsoleColor.DarkYellow;
-        Console.Write($"\nEnter new agent name (clone of '{sourceName}'): ");
+        Console.Write($"Enter new agent name (clone of '{sourceName}'): ");
         Console.ResetColor();
         var cloneName = Console.ReadLine()?.Trim();
 
@@ -278,8 +301,23 @@ public partial class ChatRepl
         return true;
     }
 
-    private async Task<bool> HandleUseCommandAsync()
+    private async Task<bool> HandleUseCommandAsync(string? name = null)
     {
+        if (name is not null && await _store.AgentExistsAsync(name))
+        {
+            var cwd = Directory.GetCurrentDirectory();
+            _agentId = name;
+            _agentOpts.AgentName = name;
+            await _store.RecordLaunchAsync(name, cwd);
+            SwitchScope();
+            await LoadAgentConfigAsync(name, cwd);
+            await ResetSessionStateAsync();
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"Switched to agent '{name}'.\n");
+            Console.ResetColor();
+            return true;
+        }
+
         var sessions = await _store.ListAgentsAsync();
         if (sessions.Count == 0)
         {
@@ -289,11 +327,18 @@ public partial class ChatRepl
             return true;
         }
 
+        if (name is not null)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Agent '{name}' not found.\n");
+            Console.ResetColor();
+        }
+
         Console.ForegroundColor = ConsoleColor.DarkYellow;
         Console.WriteLine("Select agent to use:\n");
         Console.ResetColor();
 
-        var cwd = Directory.GetCurrentDirectory();
+        var cwd2 = Directory.GetCurrentDirectory();
         for (int i = 0; i < sessions.Count; i++)
         {
             var isCurrent = string.Equals(sessions[i], _agentId, StringComparison.Ordinal);
@@ -303,7 +348,7 @@ public partial class ChatRepl
             var lastLaunch = await _store.GetLastLaunchPathAsync(sessions[i]);
 
             var marker = isCurrent ? " ← current" : "";
-            var atHome = (string.Equals(agentHome, cwd, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(agentHome)) ? " [🏠 home]" : "";
+            var atHome = (string.Equals(agentHome, cwd2, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(agentHome)) ? " [🏠 home]" : "";
             var createdDate = createdAt.Length >= 10 ? createdAt[..10] : "";
             var lastStr = lastLaunch is not null ? $" last: {lastLaunch}" : "";
 
@@ -342,9 +387,9 @@ public partial class ChatRepl
 
         _agentId = targetName;
         _agentOpts.AgentName = targetName;
-        await _store.RecordLaunchAsync(targetName, cwd);
+        await _store.RecordLaunchAsync(targetName, cwd2);
         SwitchScope();
-        await LoadAgentConfigAsync(targetName, cwd);
+        await LoadAgentConfigAsync(targetName, cwd2);
         await ResetSessionStateAsync();
 
         Console.ForegroundColor = ConsoleColor.Green;
@@ -353,7 +398,7 @@ public partial class ChatRepl
         return true;
     }
 
-    private async Task<bool> HandleDeleteCommandAsync()
+    private async Task<bool> HandleDeleteCommandAsync(string? name = null)
     {
         var sessions = await _store.ListAgentsAsync();
         var others = sessions.Where(s => !string.Equals(s, _agentId, StringComparison.Ordinal)).ToList();
@@ -364,6 +409,17 @@ public partial class ChatRepl
             Console.WriteLine("No other agents to delete.\n");
             Console.ResetColor();
             return true;
+        }
+
+        // If name provided and agent exists, confirm deletion directly
+        if (name is not null && others.Contains(name))
+            return await ConfirmAndDeleteAsync(name);
+
+        if (name is not null)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Agent '{name}' not found.\n");
+            Console.ResetColor();
         }
 
         Console.ForegroundColor = ConsoleColor.DarkYellow;
@@ -408,6 +464,11 @@ public partial class ChatRepl
             return true;
         }
 
+        return await ConfirmAndDeleteAsync(targetName);
+    }
+
+    private async Task<bool> ConfirmAndDeleteAsync(string targetName)
+    {
         Console.ForegroundColor = ConsoleColor.Red;
         Console.Write($"Delete agent '{targetName}'? This cannot be undone. (y/N): ");
         Console.ResetColor();
