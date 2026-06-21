@@ -4,12 +4,18 @@ namespace Glyphite.Cli;
 
 public partial class ChatRepl
 {
+    private static readonly string[] _knownCommands =
+        ["/new", "/clone", "/use", "/delete", "/reload", "/stats", "/version", "/models", "/exit"];
+
     private readonly List<string> _inputHistory = [];
     private int _historyIndex = -1;
     private string? _pendingInput;
     private int _lastBufferLen;
     private int _promptLine;
     private int _maxVisualLine;
+
+    private string? _tabCompletionPrefix;  // partial text that triggered completion
+    private int _tabCompletionIndex;       // current index in matches
 
     private string _promptPrefix = "> ";
     private readonly List<(string Text, ConsoleColor Color)> _promptSegments = [];
@@ -163,6 +169,7 @@ public partial class ChatRepl
                     return input;
 
                 case ConsoleKey.Escape:
+                    _tabCompletionPrefix = null;
                     if (pos < buffer.Count)
                     {
                         pos = buffer.Count;
@@ -184,12 +191,16 @@ public partial class ChatRepl
 
                 case ConsoleKey.UpArrow:
                 {
-                    var isCmd = IsCommand(buffer);
+                    if (IsCommand(buffer))
+                    {
+                        CompleteCommand(buffer, ref pos, forward: true);
+                        break;
+                    }
                     if (_historyIndex == _inputHistory.Count)
                         _pendingInput = new string(buffer.ToArray());
                     for (var i = _historyIndex - 1; i >= 0; i--)
                     {
-                        if ((_inputHistory[i][0] == '/') == isCmd)
+                        if ((_inputHistory[i][0] == '/') == false)
                         {
                             _historyIndex = i;
                             Redraw(_inputHistory[i]);
@@ -204,7 +215,11 @@ public partial class ChatRepl
 
                 case ConsoleKey.DownArrow:
                 {
-                    var isCmd = IsCommand(buffer);
+                    if (IsCommand(buffer))
+                    {
+                        CompleteCommand(buffer, ref pos, forward: false);
+                        break;
+                    }
                     for (var i = _historyIndex + 1; i <= _inputHistory.Count; i++)
                     {
                         if (i == _inputHistory.Count)
@@ -213,7 +228,7 @@ public partial class ChatRepl
                             Redraw(_pendingInput ?? "");
                             buffer = [.. (_pendingInput ?? "")];
                         }
-                        else if ((_inputHistory[i][0] == '/') == isCmd)
+                        else if ((_inputHistory[i][0] == '/') == false)
                         {
                             _historyIndex = i;
                             Redraw(_inputHistory[i]);
@@ -259,6 +274,7 @@ public partial class ChatRepl
                     break;
 
                 case ConsoleKey.Backspace:
+                    _tabCompletionPrefix = null;
                     if (pos > 0)
                     {
                         buffer.RemoveAt(pos - 1);
@@ -268,6 +284,7 @@ public partial class ChatRepl
                     break;
 
                 case ConsoleKey.Delete:
+                    _tabCompletionPrefix = null;
                     if (pos < buffer.Count)
                     {
                         buffer.RemoveAt(pos);
@@ -275,9 +292,14 @@ public partial class ChatRepl
                     }
                     break;
 
+                case ConsoleKey.Tab:
+                    CompleteCommand(buffer, ref pos);
+                    break;
+
                 default:
                     if (key.KeyChar >= 32 && !char.IsControl(key.KeyChar))
                     {
+                        _tabCompletionPrefix = null;
                         buffer.Insert(pos, key.KeyChar);
                         pos++;
                         Redraw(new string(buffer.ToArray()));
@@ -285,6 +307,43 @@ public partial class ChatRepl
                     break;
             }
         }
+    }
+
+    private void CompleteCommand(List<char> buffer, ref int pos, bool forward = true)
+    {
+        var text = new string(buffer.ToArray());
+
+        if (text.Length == 0 || text[0] != '/')
+            return;
+
+        // New completion session if text changed since last cycle
+        if (_tabCompletionPrefix is null || !text.StartsWith(_tabCompletionPrefix))
+        {
+            _tabCompletionPrefix = text;
+            _tabCompletionIndex = -1;
+        }
+
+        var matches = _knownCommands.Where(cmd => cmd.StartsWith(_tabCompletionPrefix)).ToArray();
+        if (matches.Length == 0)
+        {
+            _tabCompletionPrefix = null;
+            return;
+        }
+
+        // First press in this session — start from beginning or end
+        if (_tabCompletionIndex < 0)
+            _tabCompletionIndex = forward ? 0 : matches.Length - 1;
+        else if (forward)
+            _tabCompletionIndex = (_tabCompletionIndex + 1) % matches.Length;
+        else
+            _tabCompletionIndex = (_tabCompletionIndex - 1 + matches.Length) % matches.Length;
+
+        var completed = matches[_tabCompletionIndex];
+
+        buffer.Clear();
+        buffer.AddRange(completed);
+        pos = completed.Length;
+        Redraw(completed);
     }
 
     private static void DeleteWordBefore(List<char> buffer, ref int pos)
