@@ -19,6 +19,7 @@ public class BlockMemoryState
 public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvider
 {
     private readonly IMemoryStore _store;
+    private readonly IConfigService _cfgService;
     private readonly ProviderSessionState<BlockMemoryState> _sessionState;
     private readonly string? _defaultModel;
     private readonly MemoryOptions _memOpts;
@@ -44,9 +45,10 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
 
     public string? AgentFilePath { get; set; }
 
-    public BlockMemoryProvider(IMemoryStore store, MemoryOptions memOpts, AgentOptions agentOpts, string? defaultModel = null, CompressionOptions? compOpts = null)
+    public BlockMemoryProvider(IMemoryStore store, IConfigService cfgService, MemoryOptions memOpts, AgentOptions agentOpts, string? defaultModel = null, CompressionOptions? compOpts = null)
     {
         _store = store;
+        _cfgService = cfgService;
         _defaultModel = defaultModel;
         _memOpts = memOpts;
         _agentOpts = agentOpts;
@@ -80,8 +82,9 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
         if (!await _store.AgentExistsAsync(sessionId))
             return $"Session '{sessionId}' not found";
 
+        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
         var protectedTypes = new HashSet<BlockType>(
-            _memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
+            memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
         var (removed, protectedNums) = await _store.DeleteBlocksAsync(sessionId, numbers, protectedTypes, cascade);
         var msg = $"Deleted {removed} block{(removed == 1 ? "" : "s")}";
         if (protectedNums.Count > 0)
@@ -113,8 +116,9 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
             };
         }
 
+        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
         var protectedTypes = new HashSet<BlockType>(
-            _memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
+            memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
         var removed = await _store.DeleteBlocksByFilterAsync(sessionId, types, ts, protectedTypes);
         if (removed == 0)
             return "No matching blocks found to delete.";

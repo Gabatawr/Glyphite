@@ -60,13 +60,18 @@ public class TurnProcessor : ITurnProcessor
         ChatOptions chatOptions,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        var modelStr = chatOptions.ModelId ?? _deepseek.Model;
-
         // Reload config from disk every turn so changes to Glyphite.json
         // and Glyphite.{sessionId}.json are picked up without restart.
         var parentCwd = Directory.GetCurrentDirectory();
         var agentCwd = await _store.GetAgentHomePathAsync(sessionId) ?? parentCwd;
         await _configLoader.LoadConfigAsync(sessionId, agentCwd, parentCwd);
+
+        // Fresh options this turn — IOptions<T> DI values may be stale within agent scope.
+        // Tools get their own fresh config via _cfgService.GetOptionsAsync<T>() internally.
+        var deepseekOpts = await _cfgService.GetOptionsAsync<DeepSeekOptions>("DeepSeek", sessionId);
+        var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>("Agent", sessionId);
+
+        var modelStr = chatOptions.ModelId ?? deepseekOpts.Model;
 
         var includeMemory = chatOptions.AdditionalProperties?.ContainsKey("saveMemory") == true;
         chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(sessionId, includeMemory)).ToList();
@@ -76,7 +81,7 @@ public class TurnProcessor : ITurnProcessor
         var peekCleaned = await _store.RemovePeekBlocksAsync(sessionId);
 
         var contextMessages = await _blockMemory.BuildContextAsync(
-            sessionId, modelStr, _deepseek.ContextWindow);
+            sessionId, modelStr, deepseekOpts.ContextWindow);
 
         var nextNum = await _store.GetNextNumberAsync(sessionId);
         if (nextNum <= 0) nextNum = 1;
@@ -102,7 +107,7 @@ public class TurnProcessor : ITurnProcessor
         // Wrap with session-aware client so DeepSeek gets `user` = sessionId for cache isolation
         var sessionClient = new SessionChatClient(_chatClient, sessionId);
         var failSafeClient = new FailSafeChatClient(
-            sessionClient, _agentOpts.MaxToolIterations, _streamOpts);
+            sessionClient, agentOpts.MaxToolIterations);
 
         // No OnBatchComplete needed — subagent tasks run synchronously within their group's Task.WhenAll
 
@@ -140,7 +145,7 @@ public class TurnProcessor : ITurnProcessor
 
             if (fcc is not null)
             {
-                events.AddRange(await FlushReasoning(_agentOpts.PeekToolReasoning));
+                events.AddRange(await FlushReasoning(agentOpts.PeekToolReasoning));
                 events.AddRange(await FlushText());
 
                 var args = JsonSerializer.Serialize(fcc.Arguments ?? new Dictionary<string, object?>(),
@@ -162,7 +167,7 @@ public class TurnProcessor : ITurnProcessor
 
             if (frc is not null)
             {
-                events.AddRange(await FlushReasoning(_agentOpts.PeekToolReasoning));
+                events.AddRange(await FlushReasoning(agentOpts.PeekToolReasoning));
                 events.AddRange(await FlushText());
 
                 var output = frc.Result?.ToString() ?? "";
@@ -298,7 +303,7 @@ public class TurnProcessor : ITurnProcessor
         async Task<List<TurnEvent>> FlushAll()
         {
             var events = new List<TurnEvent>();
-            events.AddRange(await FlushReasoning(_agentOpts.PeekReasoning));
+            events.AddRange(await FlushReasoning(agentOpts.PeekReasoning));
             events.AddRange(await FlushText());
             return events;
         }

@@ -91,11 +91,12 @@ public static class HostServiceCollectionExtensions
         services.AddScoped<IBlockMemoryProvider>(sp =>
         {
             var store = sp.GetRequiredService<IMemoryStore>();
+            var cfgService = sp.GetRequiredService<IConfigService>();
             var memOpts = sp.GetRequiredService<IOptions<MemoryOptions>>().Value;
             var agentOpts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
             var deepseek = sp.GetRequiredService<IOptions<DeepSeekOptions>>().Value;
             var compOpts = sp.GetRequiredService<IOptions<CompressionOptions>>().Value;
-            return new BlockMemoryProvider(store, memOpts, agentOpts, deepseek.Model, compOpts);
+            return new BlockMemoryProvider(store, cfgService, memOpts, agentOpts, deepseek.Model, compOpts);
         });
         services.AddScoped<IToolRegistry, ToolRegistry>();
 

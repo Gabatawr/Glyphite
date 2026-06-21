@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Extensions.AI;
 
@@ -12,6 +13,10 @@ public partial class BlockMemoryProvider
     {
         await _store.EnsureSessionAsync(sessionId);
         model ??= await _store.GetAgentModelAsync(sessionId);
+
+        // Fresh options this turn — IOptions<T> DI values may be stale
+        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
+        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", sessionId);
 
         var blocks = await _store.LoadBlocksAsync(sessionId);
         if (blocks.Count == 0)
@@ -42,7 +47,7 @@ public partial class BlockMemoryProvider
 
             var newContent = BuildAgentContent("agent", _agentOpts.AgentName, agentBlock.Data);
 
-            if (_memOpts.ReloadAgentFile && AgentFilePath is not null)
+            if (memOpts.ReloadAgentFile && AgentFilePath is not null)
             {
                 if (File.Exists(AgentFilePath))
                 {
@@ -78,15 +83,15 @@ public partial class BlockMemoryProvider
             foreach (var msg in messages)
                 totalTokens += _encoding.Encode(msg.Text ?? "").Count;
 
-            if (_compOpts is not null && contextWindow.HasValue && totalTokens >= (int)(_compOpts.AutoThreshold / 100.0 * contextWindow.Value))
+            if (compOpts is not null && contextWindow.HasValue && totalTokens >= (int)(compOpts.AutoThreshold / 100.0 * contextWindow.Value))
             {
-                if (_compOpts.AutoCompress)
+                if (compOpts.AutoCompress)
                 {
-                    var protectedSet = new HashSet<string>(_memOpts.ProtectedBlockTypes, StringComparer.OrdinalIgnoreCase);
+                    var protectedSet = new HashSet<string>(memOpts.ProtectedBlockTypes, StringComparer.OrdinalIgnoreCase);
                     var deletable = blocks.Any(b => !protectedSet.Contains(b.Type.ToString()));
                     if (deletable)
                     {
-                        var protectedTypes = string.Join(", ", _memOpts.ProtectedBlockTypes);
+                        var protectedTypes = string.Join(", ", memOpts.ProtectedBlockTypes);
                         messages.Add(new ChatMessage(ChatRole.System,
                             $"AUTO-COMPRESSION: Context is at {totalTokens} tokens — clean old blocks now. Use `list` to inspect memory, then `clean` old tool calls, tool results, and reasoning blocks. PROTECTED (keep): {protectedTypes}."));
                     }

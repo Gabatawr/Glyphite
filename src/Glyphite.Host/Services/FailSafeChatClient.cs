@@ -9,7 +9,6 @@ namespace Glyphite.Host.Services;
 public sealed class FailSafeChatClient : DelegatingChatClient
 {
     private readonly int _maxIterations;
-    private readonly ToolStreamingOptions _streamOpts;
 
     public HashSet<string> ExecutedCallIds { get; } = [];
 
@@ -32,14 +31,10 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     public long LastHitTokens { get; private set; }
     public long LastMissTokens { get; private set; }
 
-    public FailSafeChatClient(IChatClient inner, int maxIterations, ToolStreamingOptions streamOpts) : base(inner)
+    public FailSafeChatClient(IChatClient inner, int maxIterations) : base(inner)
     {
         _maxIterations = maxIterations;
-        _streamOpts = streamOpts;
     }
-
-    private int GetMaxLength(string toolName)
-        => _streamOpts.ToolMaxLength.TryGetValue(toolName, out var len) ? len : -1;
 
     // ── Parallel-safe tool names (can be grouped for concurrent execution) ──
     private static readonly HashSet<string> _parallelSafeTools = new(StringComparer.OrdinalIgnoreCase)
