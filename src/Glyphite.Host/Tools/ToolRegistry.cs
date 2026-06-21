@@ -11,39 +11,39 @@ public class ToolRegistry : IToolRegistry
 {
     private readonly IBashSessionManager _bashManager;
     private readonly IConfigService _cfgService;
-    private readonly ISubAgentConfigLoader _configLoader;
     private readonly IMemoryStore _memoryStore;
     private readonly IBlockMemoryProvider _blockMemory;
     private readonly SubAgentManager _subAgentManager;
     private readonly IAgentManager _agentManager;
     private readonly IAgentScopeFactory _scopeFactory;
     private readonly IOptions<DeepSeekOptions> _deepseekOpts;
+    private readonly McpService _mcpService;
     private readonly string _defaultDir;
 
     public ToolRegistry(
         IBashSessionManager bashManager,
         IConfigService cfgService,
-        ISubAgentConfigLoader configLoader,
         IMemoryStore memoryStore,
         IBlockMemoryProvider blockMemory,
         SubAgentManager subAgentManager,
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
-        IOptions<DeepSeekOptions> deepseekOpts)
+        IOptions<DeepSeekOptions> deepseekOpts,
+        McpService mcpService)
     {
         _bashManager = bashManager;
         _cfgService = cfgService;
-        _configLoader = configLoader;
         _memoryStore = memoryStore;
         _blockMemory = blockMemory;
         _subAgentManager = subAgentManager;
         _agentManager = agentManager;
         _scopeFactory = scopeFactory;
         _deepseekOpts = deepseekOpts;
+        _mcpService = mcpService;
         _defaultDir = Directory.GetCurrentDirectory();
     }
 
-    public IReadOnlyList<AITool> GetBuiltinTools(string sessionId, bool includeMemory = false)
+    public async Task<IReadOnlyList<AITool>> GetBuiltinToolsAsync(string sessionId, bool includeMemory = false)
     {
         // Don't give subagent tools to subagents themselves — prevents recursive creation chaos
         var isSubAgent = _subAgentManager.Exists(sessionId);
@@ -65,11 +65,15 @@ public class ToolRegistry : IToolRegistry
         if (!isSubAgent || includeMemory)
             tools.Add(MemoryTool.AsAIFunction(_blockMemory, sessionId, _cfgService));
 
+        // MCP tools: available for all agents
+        var mcpTools = await _mcpService.GetToolsAsync(sessionId);
+        tools.AddRange(mcpTools);
+
         // Subagent tools: only for main agent (prevents recursion)
         if (!isSubAgent)
         {
-            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _configLoader, _deepseekOpts, sessionId));
-            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _configLoader, _deepseekOpts, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _deepseekOpts, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _memoryStore, _deepseekOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _memoryStore, sessionId));
         }
 

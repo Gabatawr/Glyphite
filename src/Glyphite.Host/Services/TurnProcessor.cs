@@ -21,6 +21,7 @@ public class TurnProcessor : ITurnProcessor
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
     private readonly ToolStreamingOptions _streamOpts;
+    private readonly ISubAgentConfigLoader _configLoader;
 
     private static readonly Dictionary<string, string[]> FileToolCleanArgs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -36,6 +37,7 @@ public class TurnProcessor : ITurnProcessor
         IToolRegistry toolRegistry,
         IConfigService cfgService,
         SubAgentManager subAgentManager,
+        ISubAgentConfigLoader configLoader,
         IOptions<DeepSeekOptions> deepseek,
         IOptions<AgentOptions> agentOpts,
         IOptions<ToolStreamingOptions> streamOpts)
@@ -46,6 +48,7 @@ public class TurnProcessor : ITurnProcessor
         _toolRegistry = toolRegistry;
         _cfgService = cfgService;
         _subAgentManager = subAgentManager;
+        _configLoader = configLoader;
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
         _streamOpts = streamOpts.Value;
@@ -59,8 +62,14 @@ public class TurnProcessor : ITurnProcessor
     {
         var modelStr = chatOptions.ModelId ?? _deepseek.Model;
 
+        // Reload config from disk every turn so changes to Glyphite.json
+        // and Glyphite.{sessionId}.json are picked up without restart.
+        var parentCwd = Directory.GetCurrentDirectory();
+        var agentCwd = await _store.GetAgentHomePathAsync(sessionId) ?? parentCwd;
+        await _configLoader.LoadConfigAsync(sessionId, agentCwd, parentCwd);
+
         var includeMemory = chatOptions.AdditionalProperties?.ContainsKey("saveMemory") == true;
-        chatOptions.Tools = _toolRegistry.GetBuiltinTools(sessionId, includeMemory).ToList();
+        chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(sessionId, includeMemory)).ToList();
 
         // Get peek block stats before cleaning (for informative message)
         var peekStats = await _store.GetPeekBlockStatsAsync(sessionId);

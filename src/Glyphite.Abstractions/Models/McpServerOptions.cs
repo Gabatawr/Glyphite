@@ -16,4 +16,5 @@ public class McpServersConfig
 {
     public const string Section = "McpServers";
     public Dictionary<string, McpServerOptions> Servers { get; set; } = [];
+    public void Validate() { }
 }

@@ -1,8 +1,8 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
+using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using ModelContextProtocol.Client;
 
 namespace Glyphite.Host.Services;
@@ -23,60 +23,106 @@ public class McpService : IAsyncDisposable
     private readonly ConcurrentDictionary<string, McpServerStatus> _statuses = new();
     private readonly ConcurrentDictionary<string, string?> _errors = new();
     private readonly ConcurrentDictionary<string, int> _toolCounts = new();
-    private readonly IOptionsMonitor<McpServersConfig> _config;
-    private readonly SemaphoreSlim _initLock = new(1, 1);
-    private bool _initialized;
+    private readonly ConcurrentDictionary<string, IReadOnlyList<AITool>> _toolCache = new();
+    private readonly ConcurrentDictionary<string, string> _serverConfigHashes = new();
+    private readonly IConfigService _cfg;
+    private string? _configHash;
 
-    public McpService(IOptionsMonitor<McpServersConfig> config)
+    public McpService(IConfigService cfg)
     {
-        _config = config;
+        _cfg = cfg;
     }
 
-    public async Task<IReadOnlyList<AITool>> GetToolsAsync(CancellationToken ct = default)
+    public async Task<IReadOnlyList<AITool>> GetToolsAsync(string? sessionId = null, CancellationToken ct = default)
     {
-        await EnsureInitializedAsync(ct);
+        var servers = await GetServerConfigAsync(sessionId, ct);
+        var newHash = ComputeHash(servers);
 
-        var allTools = new List<AITool>();
-        foreach (var (name, client) in _clients)
+        if (newHash != _configHash)
         {
-            try
+            _configHash = newHash;
+            _toolCache.Clear();
+            await SyncServersAsync(servers, ct);
+        }
+
+        if (_toolCache.IsEmpty)
+        {
+            foreach (var (name, client) in _clients)
             {
-                var tools = await client.ListToolsAsync(cancellationToken: ct).ConfigureAwait(false);
-                allTools.AddRange(tools);
-                _toolCounts[name] = tools.Count;
-                _statuses[name] = McpServerStatus.Connected;
-            }
-            catch (Exception ex)
-            {
-                _statuses[name] = McpServerStatus.Failed;
-                _errors[name] = ex.Message;
-                Console.Error.WriteLine($"[MCP] Failed to list tools from '{name}': {ex.Message}");
+                try
+                {
+                    var timeoutCt = CreateTimeoutToken(servers.GetValueOrDefault(name), ct);
+                    var tools = await client.ListToolsAsync(cancellationToken: timeoutCt).ConfigureAwait(false);
+                    var list = tools.ToList().AsReadOnly();
+                    _toolCache[name] = list;
+                    _toolCounts[name] = list.Count;
+                    _statuses[name] = McpServerStatus.Connected;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    _statuses[name] = McpServerStatus.Failed;
+                    _errors[name] = $"Timed out listing tools";
+                    Console.Error.WriteLine($"[MCP] Timed out listing tools from '{name}'");
+                }
+                catch (Exception ex)
+                {
+                    _statuses[name] = McpServerStatus.Failed;
+                    _errors[name] = ex.Message;
+                    Console.Error.WriteLine($"[MCP] Failed to list tools from '{name}': {ex.Message}");
+                }
             }
         }
-        return allTools.AsReadOnly();
+
+        return _toolCache.Values.SelectMany(t => t).ToList().AsReadOnly();
     }
 
-    public async Task<IReadOnlyList<McpServerInfo>> GetServersAsync(CancellationToken ct = default)
+    public async Task<IReadOnlyList<McpServerInfo>> GetServersAsync(string? sessionId = null, CancellationToken ct = default)
     {
-        await EnsureInitializedAsync(ct);
-        return await GetServersAsync(_config.CurrentValue.Servers, ct);
+        var servers = await GetServerConfigAsync(sessionId, ct);
+        var newHash = ComputeHash(servers);
+
+        if (newHash != _configHash)
+        {
+            _configHash = newHash;
+            _toolCache.Clear();
+            await SyncServersAsync(servers, ct);
+        }
+
+        var list = new List<McpServerInfo>();
+        foreach (var (name, opts) in servers)
+        {
+            var status = opts.Enabled
+                ? _statuses.GetValueOrDefault(name, McpServerStatus.Disabled)
+                : McpServerStatus.Disabled;
+
+            var toolCount = _toolCounts.GetValueOrDefault(name);
+
+            list.Add(new McpServerInfo(name, opts.Type, status, _errors.GetValueOrDefault(name), toolCount));
+        }
+        return list.AsReadOnly();
     }
 
-    public async Task ReconnectAllAsync(CancellationToken ct = default)
+    public async Task ReconnectAllAsync(string? sessionId = null, CancellationToken ct = default)
     {
         foreach (var (name, client) in _clients)
             try { await client.DisposeAsync().ConfigureAwait(false); } catch { }
         _clients.Clear();
         _statuses.Clear();
         _errors.Clear();
-        _initialized = false;
+        _toolCache.Clear();
+        _serverConfigHashes.Clear();
+        _configHash = null;
 
-        await EnsureInitializedAsync(ct);
+        var servers = await GetServerConfigAsync(sessionId, ct);
+        _configHash = ComputeHash(servers);
+        await SyncServersAsync(servers, ct);
     }
 
-    public async Task<McpServerInfo> ReconnectAsync(string name, CancellationToken ct = default)
+    public async Task<McpServerInfo> ReconnectAsync(string name, string? sessionId = null, CancellationToken ct = default)
     {
-        var servers = _config.CurrentValue.Servers;
+        var servers = await GetServerConfigAsync(sessionId, ct);
+        _toolCache.TryRemove(name, out _);
+
         if (!servers.TryGetValue(name, out var opts))
             return new McpServerInfo(name, "unknown", McpServerStatus.Failed, "Server not found", 0);
 
@@ -96,14 +142,24 @@ public class McpService : IAsyncDisposable
 
         try
         {
-            var client = await CreateClientAsync(name, opts, ct).ConfigureAwait(false);
+            var timeoutCt = CreateTimeoutToken(opts, ct);
+            var client = await CreateClientAsync(name, opts, timeoutCt).ConfigureAwait(false);
             _clients[name] = client;
             _statuses[name] = McpServerStatus.Connected;
             _errors.TryRemove(name, out _);
 
-            var tools = await client.ListToolsAsync(cancellationToken: ct).ConfigureAwait(false);
-            _toolCounts[name] = tools.Count;
-            return new McpServerInfo(name, opts.Type, McpServerStatus.Connected, null, tools.Count);
+            var tools = await client.ListToolsAsync(cancellationToken: timeoutCt).ConfigureAwait(false);
+            var list = tools.ToList().AsReadOnly();
+            _toolCache[name] = list;
+            _toolCounts[name] = list.Count;
+            _serverConfigHashes[name] = ComputeServerHash(name, opts);
+            return new McpServerInfo(name, opts.Type, McpServerStatus.Connected, null, list.Count);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _statuses[name] = McpServerStatus.Failed;
+            _errors[name] = "Timed out";
+            return new McpServerInfo(name, opts.Type, McpServerStatus.Failed, "Timed out", 0);
         }
         catch (Exception ex)
         {
@@ -113,60 +169,89 @@ public class McpService : IAsyncDisposable
         }
     }
 
-    private async Task<IReadOnlyList<McpServerInfo>> GetServersAsync(Dictionary<string, McpServerOptions> servers, CancellationToken ct)
+    private async Task<Dictionary<string, McpServerOptions>> GetServerConfigAsync(string? sessionId, CancellationToken ct)
     {
-        var list = new List<McpServerInfo>();
-        foreach (var (name, opts) in servers)
-        {
-            var status = opts.Enabled
-                ? _statuses.GetValueOrDefault(name, McpServerStatus.Disabled)
-                : McpServerStatus.Disabled;
-
-            var toolCount = _toolCounts.GetValueOrDefault(name);
-
-            list.Add(new McpServerInfo(name, opts.Type, status, _errors.GetValueOrDefault(name), toolCount));
-        }
-        return list.AsReadOnly();
+        var config = await _cfg.GetOptionsAsync<McpServersConfig>("McpServers", sessionId);
+        return config.Servers;
     }
 
-    private async Task EnsureInitializedAsync(CancellationToken ct)
+    private async Task SyncServersAsync(Dictionary<string, McpServerOptions> servers, CancellationToken ct)
     {
-        if (_initialized) return;
-
-        await _initLock.WaitAsync(ct).ConfigureAwait(false);
-        try
+        // Remove stale servers (no longer configured)
+        foreach (var (name, _) in _clients)
         {
-            if (_initialized) return;
-
-            var servers = _config.CurrentValue.Servers;
-            foreach (var (name, opts) in servers)
+            if (!servers.ContainsKey(name))
             {
-                if (!opts.Enabled)
-                {
-                    _statuses[name] = McpServerStatus.Disabled;
-                    continue;
-                }
-
-                _statuses[name] = McpServerStatus.Connecting;
-                try
-                {
-                    var client = await CreateClientAsync(name, opts, ct).ConfigureAwait(false);
-                    _clients[name] = client;
-                    _statuses[name] = McpServerStatus.Connected;
-                }
-                catch (Exception ex)
-                {
-                    _statuses[name] = McpServerStatus.Failed;
-                    _errors[name] = ex.Message;
-                    Console.Error.WriteLine($"[MCP] Failed to connect '{name}': {ex.Message}");
-                }
+                if (_clients.TryRemove(name, out var old))
+                    await old.DisposeAsync().ConfigureAwait(false);
+                _statuses.TryRemove(name, out _);
+                _errors.TryRemove(name, out _);
+                _toolCounts.TryRemove(name, out _);
+                _toolCache.TryRemove(name, out _);
+                _serverConfigHashes.TryRemove(name, out _);
             }
-            _initialized = true;
         }
-        finally
+
+        // Connect new, re-enabled, or reconfigured servers
+        foreach (var (name, opts) in servers)
         {
-            _initLock.Release();
+            if (!opts.Enabled)
+            {
+                if (_clients.TryRemove(name, out var old))
+                    await old.DisposeAsync().ConfigureAwait(false);
+                _statuses[name] = McpServerStatus.Disabled;
+                _toolCache.TryRemove(name, out _);
+                _serverConfigHashes.TryRemove(name, out _);
+                continue;
+            }
+
+            var configHash = ComputeServerHash(name, opts);
+
+            // Already connected with same config — skip
+            if (_clients.ContainsKey(name) &&
+                _serverConfigHashes.TryGetValue(name, out var existingHash) &&
+                existingHash == configHash)
+                continue;
+
+            // Options changed or new server — reconnect
+            if (_clients.TryRemove(name, out var oldClient))
+            {
+                await oldClient.DisposeAsync().ConfigureAwait(false);
+                _toolCache.TryRemove(name, out _);
+                Console.WriteLine($"[MCP] Reconnecting '{name}' (config changed)");
+            }
+
+            _statuses[name] = McpServerStatus.Connecting;
+            try
+            {
+                var timeoutCt = CreateTimeoutToken(opts, ct);
+                var client = await CreateClientAsync(name, opts, timeoutCt).ConfigureAwait(false);
+                _clients[name] = client;
+                _serverConfigHashes[name] = configHash;
+                _statuses[name] = McpServerStatus.Connected;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _statuses[name] = McpServerStatus.Failed;
+                _errors[name] = "Timed out";
+                Console.Error.WriteLine($"[MCP] Timed out connecting '{name}'");
+            }
+            catch (Exception ex)
+            {
+                _statuses[name] = McpServerStatus.Failed;
+                _errors[name] = ex.Message;
+                Console.Error.WriteLine($"[MCP] Failed to connect '{name}': {ex.Message}");
+            }
         }
+    }
+
+    private static CancellationToken CreateTimeoutToken(McpServerOptions? opts, CancellationToken ct)
+    {
+        var timeout = opts?.TimeoutSeconds ?? 30;
+        if (timeout <= 0) return ct;
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeout));
+        return cts.Token;
     }
 
     private static async Task<McpClient> CreateClientAsync(string name, McpServerOptions opts, CancellationToken ct)
@@ -202,11 +287,42 @@ public class McpService : IAsyncDisposable
         }
     }
 
+    private static string ComputeHash(Dictionary<string, McpServerOptions> servers)
+    {
+        // Simple content-based hash of server configs to detect changes
+        var sb = new System.Text.StringBuilder();
+        foreach (var (name, opts) in servers.OrderBy(kv => kv.Key))
+        {
+            sb.Append(name);
+            sb.Append(opts.Enabled);
+            sb.Append(opts.Type);
+            sb.Append(opts.Command);
+            sb.AppendJoin(",", opts.Args ?? []);
+            sb.Append(opts.Url);
+            sb.Append('|');
+        }
+        return sb.ToString();
+    }
+
+    private static string ComputeServerHash(string name, McpServerOptions opts)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append(name);
+        sb.Append(opts.Enabled);
+        sb.Append(opts.Type);
+        sb.Append(opts.Command);
+        sb.AppendJoin(",", opts.Args ?? []);
+        sb.Append(opts.Url);
+        return sb.ToString();
+    }
+
     public async ValueTask DisposeAsync()
     {
         foreach (var client in _clients.Values)
             try { await client.DisposeAsync().ConfigureAwait(false); } catch { }
         _clients.Clear();
+        _toolCache.Clear();
+        _serverConfigHashes.Clear();
     }
 }
 

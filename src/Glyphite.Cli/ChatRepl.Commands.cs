@@ -29,16 +29,6 @@ public partial class ChatRepl
             case "/use":    return await HandleUseCommandAsync(arg);
             case "/delete": return await HandleDeleteCommandAsync(arg);
 
-            case "/reload":
-                Console.Clear();
-                Console.WriteLine();
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("========= RELOAD =========");
-                Console.ResetColor();
-                Console.WriteLine();
-                await _renderer.ReplayBlocksAsync(_agentId!, _store, showResumed: false);
-                return true;
-
             case "/stats":
                 var (totalBlocks, _, typeStats) = await _blockMemory.ComputeStatsAsync(_agentId!);
                 if (totalBlocks == 0)

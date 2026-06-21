@@ -10,7 +10,7 @@ public partial class ChatRepl
     private async Task CreateOrResumeAgentAsync(string cwd)
     {
         _cfgService.LogAction = msg => Serilog.Log.Information("{ConfigMessage}", msg);
-        await _cfgService.InitializeAsync();
+        await _cfgService.InitializeAsync(replaceSections: ["McpServers"]);
 
         var agents = await _store.ListAgentsAsync();
 
@@ -241,7 +241,7 @@ public partial class ChatRepl
             _inputHistory.Add(b.Content);
 
         // Seed built-in commands so Up at "/" always shows something
-        foreach (var cmd in new[] { "/exit", "/new", "/clone", "/use", "/delete", "/stats", "/models", "/reload" })
+        foreach (var cmd in new[] { "/exit", "/new", "/clone", "/use", "/delete", "/stats", "/models" })
         {
             if (!_inputHistory.Contains(cmd))
                 _inputHistory.Add(cmd);

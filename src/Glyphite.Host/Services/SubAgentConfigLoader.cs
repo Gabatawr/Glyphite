@@ -32,7 +32,12 @@ public class SubAgentConfigLoader : ISubAgentConfigLoader
 
         var homePath = await _store.GetAgentHomePathAsync(agentId);
         if (string.Equals(homePath, agentCwd, StringComparison.OrdinalIgnoreCase))
+        {
+            // Full replace: clear old session keys then upsert new ones.
+            // This prevents orphaned keys when the config file is renamed or structurally changed.
+            await _store.DeleteConfigByScopeAsync("session", agentId);
             await _cfgService.UpdateConfigAsync(merged, scope: "session", sessionId: agentId);
+        }
         else
             _cfgService.SetSessionOverlay(agentId, merged);
     }
@@ -47,9 +52,14 @@ public class SubAgentConfigLoader : ISubAgentConfigLoader
             foreach (var prop in doc.RootElement.EnumerateObject())
             {
                 if (string.Equals(prop.Name, "Glyphite", StringComparison.OrdinalIgnoreCase))
-                    FlattenJsonElement("Glyphite", prop.Value, target);
+                    FlattenJsonElement("", prop.Value, target);
             }
         }
+    }
+
+    private static string CombinePrefix(string prefix, string name)
+    {
+        return string.IsNullOrEmpty(prefix) ? name : $"{prefix}:{name}";
     }
 
     private static void FlattenJsonElement(string prefix, JsonElement el, Dictionary<string, string> result)
@@ -58,12 +68,12 @@ public class SubAgentConfigLoader : ISubAgentConfigLoader
         {
             case JsonValueKind.Object:
                 foreach (var prop in el.EnumerateObject())
-                    FlattenJsonElement($"{prefix}:{prop.Name}", prop.Value, result);
+                    FlattenJsonElement(CombinePrefix(prefix, prop.Name), prop.Value, result);
                 break;
             case JsonValueKind.Array:
                 var i = 0;
                 foreach (var item in el.EnumerateArray())
-                    FlattenJsonElement($"{prefix}:{i++}", item, result);
+                    FlattenJsonElement(CombinePrefix(prefix, $"{i++}"), item, result);
                 break;
             case JsonValueKind.String:
                 result[prefix] = el.GetString() ?? "";

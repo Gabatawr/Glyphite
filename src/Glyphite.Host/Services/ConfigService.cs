@@ -56,10 +56,17 @@ public class ConfigService : IConfigService
     /// Seed DB from appsettings.json on startup. For each flat key in IConfiguration:
     ///   - if not in DB в†’ insert
     ///   - if value differs в†’ update (log mismatch)
+    /// If <paramref name="replaceSections"/> is provided, also removes any DB keys
+    /// under those section prefixes that no longer exist in appsettings (prevents
+    /// stale config from accumulating, e.g. renamed MCP server entries).
     /// </summary>
-    public async Task InitializeAsync()
+    public async Task InitializeAsync(HashSet<string>? replaceSections = null)
     {
         var appKeys = FlattenConfig(_appConfig);
+
+        var managedPrefixes = replaceSections?
+            .Select(s => s.EndsWith(':') ? s : s + ':')
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         foreach (var (key, value) in appKeys)
         {
@@ -76,6 +83,23 @@ public class ConfigService : IConfigService
                 Log($"[config] mismatch {key}: DB=\"{maskedExisting}\" appsettings=\"{masked}\"");
                 await _store.UpsertConfigAsync(key, value, "global");
                 Log($"[config] updated {key} = {masked}");
+            }
+        }
+
+        if (managedPrefixes is not null && managedPrefixes.Count > 0)
+        {
+            var allDb = await GetConfigAsync();
+            foreach (var (key, _) in allDb)
+            {
+                var prefix = managedPrefixes.FirstOrDefault(mp =>
+                    key.StartsWith(mp, StringComparison.OrdinalIgnoreCase));
+                if (prefix is null) continue;
+
+                if (!appKeys.ContainsKey(key))
+                {
+                    await _store.DeleteConfigAsync(key, "global");
+                    Log($"[config] removed stale {key}");
+                }
             }
         }
 
@@ -141,6 +165,40 @@ public class ConfigService : IConfigService
     {
         foreach (var key in keys)
             await _store.DeleteConfigAsync(key, scope, sessionId);
+        InvalidateCache(sessionId);
+    }
+
+    /// <summary>
+    /// Atomically replace an entire config section: delete all old keys under
+    /// <c>sectionName:</c> that are no longer present, then upsert the new ones.
+    /// Use this instead of <see cref="UpdateConfigAsync"/> when the set of keys
+    /// in a section has structurally changed (e.g. renamed MCP server names).
+    /// </summary>
+    public async Task ReplaceSectionAsync(string sectionName, Dictionary<string, string> newKeys, string scope = "global", string? sessionId = null)
+    {
+        var prefix = sectionName + ":";
+
+        // Gather existing keys under this section
+        var all = await GetConfigAsync(sessionId);
+        var staleKeys = all.Keys
+            .Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // Delete stale keys not in the new set
+        foreach (var key in staleKeys)
+        {
+            if (!newKeys.ContainsKey(key))
+                await _store.DeleteConfigAsync(key, scope, sessionId);
+        }
+
+        // Upsert new keys
+        foreach (var (key, value) in newKeys)
+        {
+            var existing = await _store.GetConfigAsync(key, scope, sessionId);
+            if (existing == value) continue;
+            await _store.UpsertConfigAsync(key, value, scope, sessionId);
+        }
+
         InvalidateCache(sessionId);
     }
 

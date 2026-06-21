@@ -13,3 +13,4 @@ appsettings.Development.json
 repos/
 node_modules/
 docker-compose.override.yml
+.codegraph/

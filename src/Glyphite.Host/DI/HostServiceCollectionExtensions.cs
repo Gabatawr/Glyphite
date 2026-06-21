@@ -34,6 +34,7 @@ public static class HostServiceCollectionExtensions
         RegisterOptions<SearchOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<TodoOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<ContentDedupOptions>(services, glConfig, o => o.Validate());
+        RegisterOptions<McpServersConfig>(services, glConfig, o => o.Validate());
 
         // ── Data directory ──
         var dataOpts = glConfig.GetSection(DataOptions.Section).Get<DataOptions>()

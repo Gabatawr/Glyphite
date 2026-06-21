@@ -3,6 +3,7 @@ using System.Text;
 using Glyphite.Abstractions.Models;
 using Glyphite.Cli.Services;
 using Glyphite.Host.DI;
+using Glyphite.Host.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -65,7 +66,8 @@ public static class Bootstrapper
                 services.AddSingleton<IHostLifetime, NoopLifetime>();
 
                 // ── Core services via Host DI extension ──
-                services.AddGlyphiteHost(ctx.Configuration);
+                services.AddGlyphiteHost(ctx.Configuration)
+                        .AddMcp();
 
                 // ── UI ──
                 services.AddSingleton(sp =>

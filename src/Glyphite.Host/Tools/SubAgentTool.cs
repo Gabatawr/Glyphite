@@ -31,7 +31,7 @@ public static class SubAgentTool
             chatOptions.AdditionalProperties ??= [];
             chatOptions.AdditionalProperties["saveMemory"] = "true";
         }
-        chatOptions.Tools = scope.ToolRegistry.GetBuiltinTools(agentId).ToList();
+        chatOptions.Tools = (await scope.ToolRegistry.GetBuiltinToolsAsync(agentId)).ToList();
 
         // ── Checkpoint: save block number + usage before task ──
         var blockCk = await store.GetNextNumberAsync(agentId);
@@ -114,18 +114,16 @@ public static class SubAgentTool
     /// </summary>
     private static async Task<string> CreateAndRunSubAgentAsync(
         string agentId, string task, string homePath, string parentCwd,
-        bool validateName, bool loadConfig,
+        bool validateName,
         SubAgentManager subAgentManager, IAgentManager agentManager,
         IAgentScopeFactory scopeFactory, IMemoryStore store,
-        ISubAgentConfigLoader configLoader, DeepSeekOptions deepseek,
+        DeepSeekOptions deepseek,
         string currentSessionId)
     {
         if (validateName && !AgentManager.IsValidAgentName(agentId))
             return $"Error: Invalid agent name '{agentId}'.";
 
         await agentManager.CreateAgentAsync(agentId, deepseek.Model, homePath, recordLaunch: false);
-        if (loadConfig)
-            await configLoader.LoadConfigAsync(agentId, homePath, parentCwd);
 
         try
         {
@@ -146,7 +144,6 @@ public static class SubAgentTool
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
         IMemoryStore store,
-        ISubAgentConfigLoader configLoader,
         IOptions<DeepSeekOptions> deepseekOpts,
         string currentSessionId)
     {
@@ -173,17 +170,17 @@ public static class SubAgentTool
             if (name is not null)
             {
                 return await CreateAndRunSubAgentAsync(name, task, homePath, parentCwd,
-                    validateName: true, loadConfig: true,
+                    validateName: true,
                     subAgentManager, agentManager, scopeFactory, store,
-                    configLoader, deepseek, currentSessionId);
+                    deepseek, currentSessionId);
             }
 
             // ── no name → auto-GUID, temp, run, delete ──
             var guidId = Guid.NewGuid().ToString("N");
             return await CreateAndRunSubAgentAsync(guidId, task, homePath, parentCwd,
-                validateName: false, loadConfig: false,
+                validateName: false,
                 subAgentManager, agentManager, scopeFactory, store,
-                configLoader, deepseek, currentSessionId);
+                deepseek, currentSessionId);
         },
         name: "subagent_run",
         description: "Run a one-shot task on an agent. Without a name: auto-GUID temp agent created then deleted. With a name and agent exists: dry-run (blocks cleaned after). With a name and no agent: temp agent with config created then deleted. Use mode=\"parallel\" for concurrent grouping."
@@ -195,7 +192,6 @@ public static class SubAgentTool
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
         IMemoryStore store,
-        ISubAgentConfigLoader configLoader,
         IOptions<DeepSeekOptions> deepseekOpts,
         string currentSessionId)
     {
@@ -217,7 +213,6 @@ public static class SubAgentTool
                 var homePath = cwd ?? parentCwd;
 
                 await agentManager.CreateAgentAsync(name, deepseek.Model, homePath, recordLaunch: false);
-                await configLoader.LoadConfigAsync(name, homePath, parentCwd);
             }
 
             return await RunSubAgentTaskAsync(name, task, isDryRun: false, saveMemory: true,

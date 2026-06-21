@@ -58,7 +58,7 @@ public partial class ChatRepl
             var glJson = await File.ReadAllTextAsync(glPath);
             var glConfig = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(glJson);
             if (glConfig is not null && glConfig.TryGetValue("Glyphite", out var gl) && gl is System.Text.Json.JsonElement el)
-                FlattenJsonElement("Glyphite", el, merge);
+                FlattenJsonElement("", el, merge);
         }
 
         var agentPath = Path.Combine(cwd, $"Glyphite.{agentId}.json");
@@ -67,7 +67,7 @@ public partial class ChatRepl
             var agentJson = await File.ReadAllTextAsync(agentPath);
             var agentConfig = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(agentJson);
             if (agentConfig is not null && agentConfig.TryGetValue("Glyphite", out var ac) && ac is System.Text.Json.JsonElement ael)
-                FlattenJsonElement("Glyphite", ael, merge);
+                FlattenJsonElement("", ael, merge);
         }
 
         return merge;
@@ -79,7 +79,10 @@ public partial class ChatRepl
         {
             case System.Text.Json.JsonValueKind.Object:
                 foreach (var prop in el.EnumerateObject())
-                    FlattenJsonElement($"{prefix}:{prop.Name}", prop.Value, result);
+                {
+                    var newPrefix = string.IsNullOrEmpty(prefix) ? prop.Name : $"{prefix}:{prop.Name}";
+                    FlattenJsonElement(newPrefix, prop.Value, result);
+                }
                 break;
             case System.Text.Json.JsonValueKind.Array:
                 var i = 0;

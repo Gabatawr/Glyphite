@@ -53,6 +53,23 @@ public partial class MemoryStore
         finally { _writeLock.Release(); }
     }
 
+    public async Task DeleteConfigByScopeAsync(string scope, string? agentId = null)
+    {
+        await _writeLock.WaitAsync();
+        try
+        {
+            if (agentId is null)
+                await _conn.ExecuteAsync(
+                    "DELETE FROM config WHERE scope = @scope",
+                    new { scope });
+            else
+                await _conn.ExecuteAsync(
+                    "DELETE FROM config WHERE scope = @scope AND agent_id = @sid",
+                    new { scope, sid = agentId });
+        }
+        finally { _writeLock.Release(); }
+    }
+
     public async Task<bool> ConfigExistsAsync(string key, string scope = "global", string? agentId = null)
     {
         using var conn = CreateReadConnection();

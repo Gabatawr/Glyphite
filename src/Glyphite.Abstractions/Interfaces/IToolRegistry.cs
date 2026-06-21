@@ -4,5 +4,5 @@ namespace Glyphite.Abstractions.Interfaces;
 
 public interface IToolRegistry
 {
-    IReadOnlyList<AITool> GetBuiltinTools(string sessionId, bool includeMemory = false);
+    Task<IReadOnlyList<AITool>> GetBuiltinToolsAsync(string sessionId, bool includeMemory = false);
 }
