@@ -137,7 +137,7 @@ public partial class ChatRepl
                             proc.StandardInput.Close();
                         }
                     }
-                    catch { }
+                    catch { /* wl-copy not available */ }
                 }
                 Console.WriteLine();
                 return "";

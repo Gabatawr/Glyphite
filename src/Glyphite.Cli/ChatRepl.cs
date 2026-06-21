@@ -4,7 +4,6 @@ using Glyphite.Cli.Services;
 using Glyphite.Host.DI;
 using Glyphite.Host.Services;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Serilog;
 
@@ -12,7 +11,6 @@ namespace Glyphite.Cli;
 
 public partial class ChatRepl
 {
-    private readonly IConfiguration _config;
     private readonly IMemoryStore _store;
     private ITurnProcessor _turnProcessor = null!;
     private IBlockMemoryProvider _blockMemory = null!;
@@ -22,7 +20,6 @@ public partial class ChatRepl
     private readonly ConsoleRenderer _renderer;
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
-    private readonly ToolStreamingOptions _streamOpts;
     private readonly CompressionOptions _compressionOpts;
     private AgentScope? _currentScope;
     private string _agentId = string.Empty;
@@ -34,7 +31,6 @@ public partial class ChatRepl
     private double _prevCumulativeCost = -1;
 
     public ChatRepl(
-        IConfiguration config,
         IMemoryStore store,
         IConfigService cfgService,
         IAgentManager agentManager,
@@ -42,10 +38,8 @@ public partial class ChatRepl
         ConsoleRenderer renderer,
         IOptions<DeepSeekOptions> deepseek,
         IOptions<AgentOptions> agentOpts,
-        IOptions<ToolStreamingOptions> streamOpts,
         IOptions<CompressionOptions> compressionOpts)
     {
-        _config = config;
         _store = store;
         _cfgService = cfgService;
         _agentManager = agentManager;
@@ -53,7 +47,6 @@ public partial class ChatRepl
         _renderer = renderer;
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
-        _streamOpts = streamOpts.Value;
         _compressionOpts = compressionOpts.Value;
         // Scoped services — resolved lazily from AgentScope
         _turnProcessor = null!;
@@ -93,7 +86,7 @@ public partial class ChatRepl
             var cancelMonitor = MonitorEscapeAsync(turnCts);
             await ProcessInputAsync(input, chatOptions, turnCts.Token);
             turnCts.Cancel(); // stop monitor
-            try { await cancelMonitor; } catch { }
+            try { await cancelMonitor; } catch { /* monitor cancelled */ }
             Console.WriteLine();
             Console.WriteLine();
             await UpdatePromptPrefixAsync();

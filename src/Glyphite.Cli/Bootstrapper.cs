@@ -9,7 +9,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Options;
 using Serilog;
 
 namespace Glyphite.Cli;
@@ -73,9 +72,8 @@ public static class Bootstrapper
                 // ── UI ──
                 services.AddSingleton(sp =>
                 {
-                    var streamOpts = sp.GetRequiredService<IOptions<ToolStreamingOptions>>().Value;
                     var cfgService = sp.GetRequiredService<IConfigService>();
-                    return new ConsoleRenderer(streamOpts, cfgService);
+                    return new ConsoleRenderer(cfgService);
                 });
                 services.AddSingleton<ChatRepl>();
             })

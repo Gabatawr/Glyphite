@@ -22,19 +22,14 @@ public static class HostServiceCollectionExtensions
     {
         var glConfig = configuration.GetSection("Glyphite");
 
-        // ── Options ──
+        // ── Options (consumed via IOptions<T>) ──
         RegisterOptions<DeepSeekOptions>(services, glConfig, o => o.Validate());
-        RegisterOptions<DataOptions>(services, glConfig, o => o.Validate());
+        RegisterOptions<AgentOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<MemoryOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<BashOptions>(services, glConfig, o => o.Validate());
-        RegisterOptions<AgentOptions>(services, glConfig, o => o.Validate());
-        RegisterOptions<ToolStreamingOptions>(services, glConfig);
         RegisterOptions<CompressionOptions>(services, glConfig, o => o.Validate());
-        RegisterOptions<WebFetchOptions>(services, glConfig, o => o.Validate());
-        RegisterOptions<SearchOptions>(services, glConfig, o => o.Validate());
-        RegisterOptions<TodoOptions>(services, glConfig, o => o.Validate());
-        RegisterOptions<ContentDedupOptions>(services, glConfig, o => o.Validate());
-        RegisterOptions<McpServersConfig>(services, glConfig, o => o.Validate());
+        // остальные секции (WebFetch, Search, Todo, ContentDedup, McpServers)
+        // потребляются через свежий _cfgService.GetOptionsAsync<T>() каждый turn
 
         // ── Data directory ──
         var dataOpts = glConfig.GetSection(DataOptions.Section).Get<DataOptions>()

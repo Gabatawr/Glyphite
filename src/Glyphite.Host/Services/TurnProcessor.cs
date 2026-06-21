@@ -20,7 +20,7 @@ public class TurnProcessor : ITurnProcessor
     private readonly SubAgentManager _subAgentManager;
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
-    private readonly ToolStreamingOptions _streamOpts;
+
     private readonly ISubAgentConfigLoader _configLoader;
 
     private static readonly Dictionary<string, string[]> FileToolCleanArgs = new(StringComparer.OrdinalIgnoreCase)
@@ -39,8 +39,7 @@ public class TurnProcessor : ITurnProcessor
         SubAgentManager subAgentManager,
         ISubAgentConfigLoader configLoader,
         IOptions<DeepSeekOptions> deepseek,
-        IOptions<AgentOptions> agentOpts,
-        IOptions<ToolStreamingOptions> streamOpts)
+        IOptions<AgentOptions> agentOpts)
     {
         _store = store;
         _blockMemory = blockMemory;
@@ -51,7 +50,6 @@ public class TurnProcessor : ITurnProcessor
         _configLoader = configLoader;
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
-        _streamOpts = streamOpts.Value;
     }
 
     public async IAsyncEnumerable<TurnEvent> ProcessAsync(
@@ -186,7 +184,7 @@ public class TurnProcessor : ITurnProcessor
                             if (doc.RootElement.TryGetProperty("path", out var p))
                                 fPath = p.GetString();
                         }
-                        catch { }
+                        catch { /* args not JSON */ }
 
                         if (fPath is not null)
                         {
@@ -194,7 +192,7 @@ public class TurnProcessor : ITurnProcessor
                             if (name == "write_file")
                             {
                                 try { fileContent = await File.ReadAllTextAsync(fPath); }
-                                catch { fileContent = output; }
+                                catch { fileContent = output; /* fallback to raw output */ }
                             }
                             else
                             {
@@ -238,7 +236,7 @@ public class TurnProcessor : ITurnProcessor
                             if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == JsonValueKind.Array)
                                 ToolCallHelper.RemoveBlocksFromMessageList(contextMessages, blk.EnumerateArray().Select(e => e.GetDouble()));
                         }
-                        catch { }
+                        catch { /* args not JSON */ }
                     }
                     // Peek tools: replace ChatMessage with cleaned block render (ToContextString)
                     // Only tool blocks — reasoning peek blocks persist for the current turn

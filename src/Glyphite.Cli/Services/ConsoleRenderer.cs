@@ -23,9 +23,9 @@ public class ConsoleRenderer
     /// <summary>Current (fresh) ToolStreamingOptions. Updated by RefreshAsync before each render cycle.</summary>
     public ToolStreamingOptions CurrentStreamOpts => _streamOpts;
 
-    public ConsoleRenderer(ToolStreamingOptions streamOpts, IConfigService cfgService)
+    public ConsoleRenderer(IConfigService cfgService)
     {
-        _streamOpts = streamOpts;
+        _streamOpts = new ToolStreamingOptions();
         _cfgService = cfgService;
     }
 
