@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Services;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 
@@ -15,7 +16,8 @@ public static class SearchTools
         string? path = null,
         SearchOptions? opts = null,
         string? defaultDirectory = null,
-        bool? peek = null)
+        bool? peek = null,
+        ContentDedupOptions? dedupOpts = null)
     {
         var searchDir = path ?? defaultDirectory ?? Directory.GetCurrentDirectory();
         searchDir = OSHelper.NormalizePath(searchDir);
@@ -45,7 +47,8 @@ public static class SearchTools
         if (truncated)
             sb.AppendLine($"[Truncated: more than {opts.MaxResultCount} files matched]");
 
-        return sb.ToString().TrimEnd();
+        var result = sb.ToString().TrimEnd();
+        return dedupOpts is not null ? ContentDedup.Compress(result, dedupOpts) : result;
     }
 
     public static async Task<string> Grep(
@@ -54,7 +57,8 @@ public static class SearchTools
         string? include = null,
         SearchOptions? opts = null,
         string? defaultDirectory = null,
-        bool? peek = null)
+        bool? peek = null,
+        ContentDedupOptions? dedupOpts = null)
     {
         if (string.IsNullOrEmpty(pattern))
             return "Error: Pattern is required";
@@ -149,7 +153,8 @@ public static class SearchTools
             sb.AppendLine($"[Stopped early: more than {maxMatches} matches — showing results from most recently modified files]");
         }
 
-        return sb.ToString().TrimEnd();
+        var result = sb.ToString().TrimEnd();
+        return dedupOpts is not null ? ContentDedup.Compress(result, dedupOpts) : result;
     }
 
     private static IEnumerable<string> EnumerateFiles(string root, HashSet<string> excludedDirs, int maxFiles = int.MaxValue)
@@ -243,7 +248,8 @@ public static class SearchTools
             [Description("Auto-clean result after tool loop.")] bool? peek = null)
         {
             var opts = await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId);
-            return await SearchTools.Glob(pattern, path, opts, defaultDirectory, peek);
+            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);
+            return await SearchTools.Glob(pattern, path, opts, defaultDirectory, peek, dedupOpts);
         }
 
         [Description("Search file contents using a regex pattern. Returns file paths with line numbers and matching lines, sorted by file modification time (most recent first). Supports full .NET regex syntax. Use `include` to filter by file pattern (e.g. \"*.cs\", \"*.{ts,tsx}\"). Ideal for finding code references, imports, function definitions, error messages.")]
@@ -254,7 +260,8 @@ public static class SearchTools
             [Description("Auto-clean result after tool loop.")] bool? peek = null)
         {
             var opts = await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId);
-            return await SearchTools.Grep(pattern, path, include, opts, defaultDirectory, peek);
+            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);
+            return await SearchTools.Grep(pattern, path, include, opts, defaultDirectory, peek, dedupOpts);
         }
     }
 
