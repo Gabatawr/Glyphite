@@ -10,6 +10,7 @@ public class ConfigService : IConfigService
     private readonly IMemoryStore _store;
     private readonly IConfiguration _appConfig;
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _overlays = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Dictionary<string, string>> _configCache = new(StringComparer.OrdinalIgnoreCase);
 
     public Action<string>? LogAction { get; set; }
 
@@ -22,11 +23,13 @@ public class ConfigService : IConfigService
     public void SetSessionOverlay(string sessionId, Dictionary<string, string> config)
     {
         _overlays[sessionId] = config;
+        InvalidateCache(sessionId);
     }
 
     public void ClearSessionOverlay(string sessionId)
     {
         _overlays.TryRemove(sessionId, out _);
+        InvalidateCache(sessionId);
     }
 
     /// <summary>Hydrate a typed options object from DB-stored flat config + in-memory overlay.</summary>
@@ -75,10 +78,22 @@ public class ConfigService : IConfigService
                 Log($"[config] updated {key} = {masked}");
             }
         }
+
+        InvalidateCache(); // global cache after seeding
+    }
+
+    public void InvalidateCache(string? sessionId = null)
+    {
+        var key = sessionId ?? "__global__";
+        _configCache.TryRemove(key, out _);
     }
 
     public async Task<Dictionary<string, string>> GetConfigAsync(string? sessionId = null)
     {
+        var cacheKey = sessionId ?? "__global__";
+        if (_configCache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
         var merged = await _store.GetMergedConfigAsync(sessionId);
 
         // Apply in-memory overlay on top of DB config
@@ -88,6 +103,7 @@ public class ConfigService : IConfigService
                 merged[key] = value;
         }
 
+        _configCache[cacheKey] = merged;
         return merged;
     }
 
@@ -115,6 +131,7 @@ public class ConfigService : IConfigService
             updated[key] = newValue;
         }
 
+        InvalidateCache(sessionId);
         return new ConfigDiffResult(updated, skipped);
     }
 
@@ -122,6 +139,7 @@ public class ConfigService : IConfigService
     {
         foreach (var key in keys)
             await _store.DeleteConfigAsync(key, scope, sessionId);
+        InvalidateCache(sessionId);
     }
 
     private void Log(string message)

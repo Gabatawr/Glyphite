@@ -224,23 +224,28 @@ public class ConsoleRenderer
                 }
             }
 
-            // Replace agent cwd prefix in path args with {cwd}
-            if (hasCwd && obj.TryGetPropertyValue("path", out var pathVal) &&
-                pathVal is JsonValue jv && jv.TryGetValue<string>(out var str))
+            // Replace agent cwd prefix in path/workdir/cwd args with {cwd}
+            if (hasCwd)
             {
-                var normalized = str.Replace('\\', '/');
                 var cwd = AgentCwd!.Replace('\\', '/').TrimEnd('/');
                 var cwdPrefix = cwd + "/";
 
-                if (normalized == cwd)
+                void ReplacePathArg(string argName)
                 {
-                    obj["path"] = "{cwd}";
+                    if (obj.TryGetPropertyValue(argName, out var val) &&
+                        val is JsonValue jv && jv.TryGetValue<string>(out var str))
+                    {
+                        var normalized = str.Replace('\\', '/');
+                        if (normalized == cwd)
+                            obj[argName] = "{cwd}";
+                        else if (normalized.StartsWith(cwdPrefix, StringComparison.OrdinalIgnoreCase))
+                            obj[argName] = $"{{cwd}}/{normalized[cwdPrefix.Length..]}";
+                    }
                 }
-                else if (normalized.StartsWith(cwdPrefix, StringComparison.OrdinalIgnoreCase))
-                {
-                    var rest = normalized[cwdPrefix.Length..];
-                    obj["path"] = $"{{cwd}}/{rest}";
-                }
+
+                ReplacePathArg("path");
+                ReplacePathArg("workdir");
+                ReplacePathArg("cwd");
             }
 
             return obj.ToJsonString(new JsonSerializerOptions
