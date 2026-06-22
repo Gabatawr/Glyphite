@@ -3,7 +3,6 @@ using Glyphite.Abstractions.Models;
 using Glyphite.Host.DI;
 using Glyphite.Host.Services;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Options;
 
 namespace Glyphite.Cli.Services;
 
@@ -16,13 +15,12 @@ public partial class SessionManager
     private readonly IAgentScopeFactory _scopeFactory;
     private readonly IConfigService _cfgService;
     private readonly ConsoleRenderer _renderer;
-    private readonly DeepSeekOptions _deepseek;
-    private readonly AgentOptions _agentOpts;
     private readonly InputHistory _inputHistory;
     private readonly ConfigLoader _configLoader;
 
     private AgentScope? _currentScope;
     private readonly string _cwd;
+    private DeepSeekOptions? _cachedDeepSeek;
 
     public SessionManager(
         IAgentStore agentStore,
@@ -31,8 +29,6 @@ public partial class SessionManager
         IAgentScopeFactory scopeFactory,
         IConfigService cfgService,
         ConsoleRenderer renderer,
-        IOptions<DeepSeekOptions> deepseek,
-        IOptions<AgentOptions> agentOpts,
         InputHistory inputHistory)
     {
         _agentStore = agentStore;
@@ -41,17 +37,29 @@ public partial class SessionManager
         _scopeFactory = scopeFactory;
         _cfgService = cfgService;
         _renderer = renderer;
-        _deepseek = deepseek.Value;
-        _agentOpts = agentOpts.Value;
         _inputHistory = inputHistory;
         _configLoader = new ConfigLoader(cfgService, agentStore);
         _cwd = Directory.GetCurrentDirectory();
     }
 
     public string AgentId { get; private set; } = string.Empty;
-    public string AgentName => _agentOpts.AgentName;
+    public string AgentName => AgentId;
     public AgentScope? CurrentScope => _currentScope;
-    public DeepSeekOptions DeepSeekOpts => _deepseek;
+
+    /// <summary>Load fresh DeepSeekOptions from config (hot-reloaded).</summary>
+    public async Task<DeepSeekOptions> GetDeepSeekOptsAsync()
+    {
+        if (_cachedDeepSeek is null)
+            _cachedDeepSeek = await _cfgService.GetOptionsAsync<DeepSeekOptions>(DeepSeekOptions.Section);
+        return _cachedDeepSeek;
+    }
+
+    /// <summary>Get the default model from config.</summary>
+    public async Task<string> GetDefaultModelAsync()
+    {
+        var opts = await GetDeepSeekOptsAsync();
+        return opts.Model;
+    }
 
     public ITurnProcessor TurnProcessor =>
         _currentScope?.TurnProcessor ?? throw new InvalidOperationException("Scope not initialized. SwitchScope() before use.");
@@ -64,6 +72,7 @@ public partial class SessionManager
     {
         _currentScope?.Dispose();
         _currentScope = _scopeFactory.CreateScope();
+        _cachedDeepSeek = null; // invalidate — will reload on next access
     }
 
     public async Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> ResetSessionStateAsync()
@@ -74,7 +83,6 @@ public partial class SessionManager
 
     /// <summary>
     /// Create or resume an agent session. Sets AgentId and switches scope.
-    /// Returns true if a session was created/resumed, false if user needs to pick.
     /// </summary>
     public async Task<CreateOrResumeResult> CreateOrResumeAgentAsync(string cwd)
     {
@@ -100,8 +108,8 @@ public partial class SessionManager
                 Console.ResetColor();
             }
 
-            AgentId = await _agentManager.CreateAgentAsync(firstName, _deepseek.Model, cwd);
-            _agentOpts.AgentName = firstName;
+            var defaultModel = await GetDefaultModelAsync();
+            AgentId = await _agentManager.CreateAgentAsync(firstName, defaultModel, cwd);
             SwitchScope();
             await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
             Console.ForegroundColor = ConsoleColor.Green;
@@ -120,11 +128,13 @@ public partial class SessionManager
         {
             // Resume directly
             AgentId = lastActive;
-            _agentOpts.AgentName = lastActive;
             SwitchScope();
             await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
             if (await BlockMemory.GetAgentModelAsync(AgentId) is null)
-                await BlockMemory.SetAgentModelAsync(AgentId, _deepseek.Model);
+            {
+                var defaultModel = await GetDefaultModelAsync();
+                await BlockMemory.SetAgentModelAsync(AgentId, defaultModel);
+            }
             return CreateOrResumeResult.Ready;
         }
 
@@ -193,10 +203,11 @@ public partial class SessionManager
                     systemPrompt = reader.ReadToEnd().Trim();
         }
 
+        var defaultModel = await GetDefaultModelAsync();
         var chatOptions = new ChatOptions
         {
             Instructions = systemPrompt,
-            ModelId = await BlockMemory.GetAgentModelAsync(AgentId) ?? _deepseek.Model,
+            ModelId = await BlockMemory.GetAgentModelAsync(AgentId) ?? defaultModel,
         };
 
         var agentHome = await _agentStore.GetAgentHomePathAsync(AgentId);
@@ -206,7 +217,7 @@ public partial class SessionManager
         var versionStr = version is not null ? $" v{version.Major}.{version.Minor}.{version.Build}" : "";
 
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine($"Glyphite CLI{versionStr} — {_agentOpts.AgentName}{homeIcon}");
+        Console.WriteLine($"Glyphite CLI{versionStr} — {AgentName}{homeIcon}");
         Console.ResetColor();
 
         return chatOptions;

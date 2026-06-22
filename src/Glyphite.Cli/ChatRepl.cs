@@ -4,7 +4,6 @@ using Glyphite.Cli.Services;
 using Glyphite.Host.DI;
 using Glyphite.Host.Services;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Options;
 using Serilog;
 
 namespace Glyphite.Cli;
@@ -17,8 +16,10 @@ public partial class ChatRepl
     private readonly SessionManager _session;
     private readonly InputHistory _inputHistory;
     private readonly ConsoleRenderer _renderer;
-    private readonly DeepSeekOptions _deepseek;
-    private readonly AgentOptions _agentOpts;
+
+    // DeepSeek config — refreshed each turn via UpdatePromptPrefixAsync
+    private int _contextWindow;
+    private DeepSeekModel[] _models = [];
 
     // Usage state — updated by streaming, read by prompt rendering
     private long _lastTurnHit;
@@ -39,9 +40,7 @@ public partial class ChatRepl
         IConfigService cfgService,
         SessionManager session,
         InputHistory inputHistory,
-        ConsoleRenderer renderer,
-        IOptions<DeepSeekOptions> deepseek,
-        IOptions<AgentOptions> agentOpts)
+        ConsoleRenderer renderer)
     {
         _agentStore = agentStore;
         _blockStore = blockStore;
@@ -49,8 +48,6 @@ public partial class ChatRepl
         _session = session;
         _inputHistory = inputHistory;
         _renderer = renderer;
-        _deepseek = deepseek.Value;
-        _agentOpts = agentOpts.Value;
     }
 
     public async Task RunAsync(CancellationToken ct)

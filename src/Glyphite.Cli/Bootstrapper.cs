@@ -57,10 +57,10 @@ public static class Bootstrapper
                 if (File.Exists(devJson))
                     cfg.AddJsonFile(devJson, optional: false, reloadOnChange: false);
 
-                // 4. Glyphite.json в рабочей директории
+                // 4. Glyphite.json в рабочей директории — hot-reload
                 var cwdJson = Path.Combine(Directory.GetCurrentDirectory(), "Glyphite.json");
                 if (File.Exists(cwdJson))
-                    cfg.AddJsonFile(cwdJson, optional: false, reloadOnChange: false);
+                    cfg.AddJsonFile(cwdJson, optional: false, reloadOnChange: true);
             })
             .ConfigureServices((ctx, services) =>
             {

@@ -97,7 +97,7 @@ public class TurnProcessor : ITurnProcessor
         {
             var peekMsg = TurnContext.BuildPeekCleanMessage(peekCleaned, peekStats);
             var cleanArgs = $"{{\"count\":{peekCleaned}}}";
-            yield return new AutoToolTurnEvent("peek_reasoning", cleanArgs, false, peekMsg);
+            yield return new AutoToolTurnEvent("peek_reasoning", cleanArgs, false, "");
 
             var autoBlock = MemoryBlock.AutoTool("peek_reasoning", cleanArgs, peekMsg, modelStr);
             autoBlock.Number = nextNum++;

@@ -41,8 +41,7 @@ public partial class SessionManager
             if (confirm is "y" or "yes")
             {
                 await _agentStore.DeleteSessionAsync(name);
-                AgentId = await _agentManager.CreateAgentAsync(name, _deepseek.Model, cwd);
-                _agentOpts.AgentName = name;
+                AgentId = await _agentManager.CreateAgentAsync(name, await GetDefaultModelAsync(), cwd);
                 SwitchScope();
                 await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
                 Console.ForegroundColor = ConsoleColor.Green;
@@ -58,8 +57,7 @@ public partial class SessionManager
             return true;
         }
 
-        AgentId = await _agentManager.CreateAgentAsync(name, _deepseek.Model, cwd);
-        _agentOpts.AgentName = name;
+        AgentId = await _agentManager.CreateAgentAsync(name, await GetDefaultModelAsync(), cwd);
         SwitchScope();
         await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
         Console.ForegroundColor = ConsoleColor.Green;
@@ -129,7 +127,6 @@ public partial class SessionManager
         if (name is not null && await _agentStore.AgentExistsAsync(name))
         {
             AgentId = name;
-            _agentOpts.AgentName = name;
             await _agentStore.RecordLaunchAsync(name, _cwd);
             SwitchScope();
             await _configLoader.LoadAgentConfigAsync(name, _cwd);
@@ -199,7 +196,6 @@ public partial class SessionManager
         }
 
         AgentId = targetName;
-        _agentOpts.AgentName = targetName;
         await _agentStore.RecordLaunchAsync(targetName, cwd);
         SwitchScope();
         await _configLoader.LoadAgentConfigAsync(targetName, cwd);
@@ -271,7 +267,8 @@ public partial class SessionManager
 
     public async Task ShowModelSelectionAsync()
     {
-        var models = _deepseek.Models.Select(m => m.Name).Distinct().ToArray();
+        var deepseek = await GetDeepSeekOptsAsync();
+        var models = deepseek.Models.Select(m => m.Name).Distinct().ToArray();
         if (models.Length == 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
@@ -281,7 +278,8 @@ public partial class SessionManager
             return;
         }
 
-        var currentModel = await BlockMemory.GetAgentModelAsync(AgentId!) ?? _deepseek.Model;
+        var defaultModel = await GetDefaultModelAsync();
+        var currentModel = await BlockMemory.GetAgentModelAsync(AgentId!) ?? defaultModel;
 
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("── Models ─────────────────────────────");
@@ -362,7 +360,6 @@ public partial class SessionManager
         var cwd = _cwd;
         await _agentStore.ForkSessionAsync(sourceName, defaultCloneName, cwd);
         AgentId = defaultCloneName;
-        _agentOpts.AgentName = defaultCloneName;
         SwitchScope();
         await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
 
@@ -435,8 +432,7 @@ public partial class SessionManager
         }
         if (await _agentStore.AgentExistsAsync(newName))
             newName = await GenerateUniqueNameAsync(newName);
-        AgentId = await _agentManager.CreateAgentAsync(newName, _deepseek.Model, cwd);
-        _agentOpts.AgentName = newName;
+        AgentId = await _agentManager.CreateAgentAsync(newName, await GetDefaultModelAsync(), cwd);
         SwitchScope();
         await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
         Console.ForegroundColor = ConsoleColor.Green;
@@ -466,11 +462,10 @@ public partial class SessionManager
             Console.WriteLine($"Agent '{pick}' not found, using '{AgentId}'.\n");
             Console.ResetColor();
         }
-        _agentOpts.AgentName = AgentId;
         SwitchScope();
         await _configLoader.LoadAgentConfigAsync(AgentId, _cwd);
         if (await BlockMemory.GetAgentModelAsync(AgentId) is null)
-            await BlockMemory.SetAgentModelAsync(AgentId, _deepseek.Model);
+            await BlockMemory.SetAgentModelAsync(AgentId, await GetDefaultModelAsync());
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Using agent '{AgentId}'.\n");
         Console.ResetColor();
@@ -511,7 +506,6 @@ public partial class SessionManager
             cloneName = await GenerateUniqueNameAsync(cloneName);
         await _agentStore.ForkSessionAsync(sourceName, cloneName, cwd);
         AgentId = cloneName;
-        _agentOpts.AgentName = cloneName;
         SwitchScope();
         await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
         Console.ForegroundColor = ConsoleColor.Green;

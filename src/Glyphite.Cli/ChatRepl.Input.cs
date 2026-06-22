@@ -22,6 +22,11 @@ public partial class ChatRepl
 
     private async Task UpdatePromptPrefixAsync()
     {
+        // Fresh config each turn (hot-reload)
+        var deepseek = await _cfgService.GetOptionsAsync<DeepSeekOptions>(DeepSeekOptions.Section);
+        _contextWindow = deepseek.ContextWindow;
+        _models = deepseek.Models;
+
         var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, AgentId);
 
         _promptSegments.Clear();
@@ -32,7 +37,7 @@ public partial class ChatRepl
         var lastTokens = _lastTurnLastHit + _lastTurnLastMiss;
         if (lastTokens > 0)
         {
-            var useYellow = lastTokens * 100.0 / _deepseek.ContextWindow >= compOpts.AutoThreshold;
+            var useYellow = lastTokens * 100.0 / _contextWindow >= compOpts.AutoThreshold;
             _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", useYellow ? yellow : white));
         }
 
@@ -79,7 +84,7 @@ public partial class ChatRepl
 
     private (double? MissPrice, double? HitPrice, double? OutputPrice) GetPricing(string model)
     {
-        foreach (var entry in _deepseek.Models)
+        foreach (var entry in _models)
             if (string.Equals(entry.Name, model, StringComparison.OrdinalIgnoreCase))
                 return (entry.Miss, entry.Hit, entry.Output);
         return (null, null, null);

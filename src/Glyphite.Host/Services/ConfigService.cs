@@ -35,7 +35,8 @@ public class ConfigService : IConfigService
         InvalidateCache(sessionId);
     }
 
-    /// <summary>Hydrate a typed options object from DB-stored flat config + in-memory overlay.</summary>
+    /// <summary>Hydrate a typed options object: global keys from IConfiguration (hot-reload),
+    /// session-scoped keys from DB + overlay.</summary>
     public async Task<T> GetOptionsAsync<T>(string sectionName, string? sessionId = null) where T : new()
     {
         var all = await GetConfigAsync(sessionId);
@@ -56,12 +57,8 @@ public class ConfigService : IConfigService
     }
 
     /// <summary>
-    /// Seed DB from appsettings.json on startup. For each flat key in IConfiguration:
-    ///   - if not in DB в†’ insert
-    ///   - if value differs в†’ update (log mismatch)
-    /// If <paramref name="replaceSections"/> is provided, also removes any DB keys
-    /// under those section prefixes that no longer exist in appsettings (prevents
-    /// stale config from accumulating, e.g. renamed MCP server entries).
+    /// Clean stale session-scoped DB keys that no longer exist in IConfiguration.
+    /// Global config is no longer seeded to DB — read directly from <see cref="_appConfig"/>.
     /// </summary>
     public async Task InitializeAsync(HashSet<string>? replaceSections = null)
     {
@@ -71,27 +68,9 @@ public class ConfigService : IConfigService
             .Select(s => s.EndsWith(':') ? s : s + ':')
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var (key, value) in appKeys)
-        {
-            var masked = MaskValue(key, value);
-            var existing = await _store.GetConfigAsync(key, "global");
-            if (existing is null)
-            {
-                await _store.UpsertConfigAsync(key, value, "global");
-                Log($"[config] seeded {key} = {masked}");
-            }
-            else if (existing != value)
-            {
-                var maskedExisting = MaskValue(key, existing);
-                Log($"[config] mismatch {key}: DB=\"{maskedExisting}\" appsettings=\"{masked}\"");
-                await _store.UpsertConfigAsync(key, value, "global");
-                Log($"[config] updated {key} = {masked}");
-            }
-        }
-
         if (managedPrefixes is not null && managedPrefixes.Count > 0)
         {
-            var allDb = await GetConfigAsync();
+            var allDb = await _store.GetMergedConfigAsync(null); // only global scope keys
             foreach (var (key, _) in allDb)
             {
                 var prefix = managedPrefixes.FirstOrDefault(mp =>
@@ -105,34 +84,57 @@ public class ConfigService : IConfigService
                 }
             }
         }
-
-        InvalidateCache(); // global cache after seeding
     }
 
     public void InvalidateCache(string? sessionId = null)
     {
         if (sessionId is null)
-            _configCache.Clear(); // global change — all session caches stale
+            _configCache.Clear();
         else
             _configCache.TryRemove(sessionId, out _);
     }
 
-    public async Task<Dictionary<string, string>> GetConfigAsync(string? sessionId = null)
+    public Task<Dictionary<string, string>> GetConfigAsync(string? sessionId = null)
     {
-        var cacheKey = sessionId ?? "";
-        if (_configCache.TryGetValue(cacheKey, out var cached))
-            return cached;
+        if (sessionId is null)
+        {
+            // Global config: read hot-reloaded IConfiguration directly (no DB round-trip)
+            return Task.FromResult(FlattenConfig(_appConfig));
+        }
 
-        var merged = await _store.GetMergedConfigAsync(sessionId);
+        // Session-scoped config: DB + overlay
+        if (_configCache.TryGetValue(sessionId, out var cached))
+            return Task.FromResult(cached);
 
-        // Apply in-memory overlay on top of DB config
-        if (sessionId is not null && _overlays.TryGetValue(sessionId, out var overlay))
+        return GetSessionConfigAsync(sessionId);
+    }
+
+    private async Task<Dictionary<string, string>> GetSessionConfigAsync(string sessionId)
+    {
+        // 1. Start with global config from IConfiguration (hot-reload)
+        var merged = FlattenConfig(_appConfig);
+
+        // 2. Get DB keys: GetMergedConfigAsync returns global + session.
+        //    We need only session-scoped keys (agent-specific overrides).
+        //    Stale global keys from DB must NOT override fresh IConfiguration.
+        var dbAll = await _store.GetMergedConfigAsync(sessionId);
+        var dbGlobal = await _store.GetMergedConfigAsync(null);
+
+        // Apply only session-scoped keys (those NOT in global scope)
+        foreach (var (key, value) in dbAll)
+        {
+            if (!dbGlobal.ContainsKey(key))
+                merged[key] = value;
+        }
+
+        // 3. Apply in-memory overlay (agent not at home, or from SubAgentConfigLoader)
+        if (_overlays.TryGetValue(sessionId, out var overlay))
         {
             foreach (var (key, value) in overlay)
                 merged[key] = value;
         }
 
-        _configCache[cacheKey] = merged;
+        _configCache[sessionId] = merged;
         return merged;
     }
 
@@ -238,7 +240,7 @@ public class ConfigService : IConfigService
             }
             else
             {
-                // nested section вЂ” recurse
+                // nested section — recurse
                 foreach (var (k, v) in FlattenConfig(section, key))
                     result[k] = v;
             }
