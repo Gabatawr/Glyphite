@@ -29,6 +29,7 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
 - **ToolMaxLength** — per-tool output length control. Set `0` to hide, `-1` for full output, or `N` for first N characters. Works for all tools including MCP.
 - **Content deduplication** — repeated lines compressed in bash, read, and search tool outputs
 - **Rich rendering** — syntax highlighting, diffs, color schemes. Color-coded tool rendering for subagent and memory actions.
+- **Markdown table formatting** — agent-generated markdown tables are automatically detected and rendered as formatted console tables with proportional column widths, centered headers, multi-line cell support, and word-wrap. Works in streaming, replay, and subagent results.
 - **Incremental saving** — conversation blocks are saved as they're generated
 - **Live streaming** — text/reasoning chunks rendered in real-time with color transitions and mode switches
 - **Peek tool calls** — LLM can mark tool calls as `peek=true` to see the result once before it's truncated to `(peek)`. File writes/patches always execute regardless of peek.

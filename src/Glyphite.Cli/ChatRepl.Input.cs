@@ -243,7 +243,8 @@ public partial class ChatRepl
             if ((_inputHistory[i][0] == '/') == false)
             {
                 _historyIndex = i;
-                buffer = [.. _inputHistory[i]];
+                buffer.Clear();
+                buffer.AddRange(_inputHistory[i]);
                 pos = buffer.Count;
                 Redraw(_inputHistory[i], pos);
                 break;
@@ -263,12 +264,14 @@ public partial class ChatRepl
             if (i == _inputHistory.Count)
             {
                 _historyIndex = _inputHistory.Count;
-                buffer = [.. (_pendingInput ?? "")];
+                buffer.Clear();
+                buffer.AddRange(_pendingInput ?? "");
             }
             else if ((_inputHistory[i][0] == '/') == false)
             {
                 _historyIndex = i;
-                buffer = [.. _inputHistory[i]];
+                buffer.Clear();
+                buffer.AddRange(_inputHistory[i]);
             }
             else
             {

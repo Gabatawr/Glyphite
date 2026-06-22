@@ -20,7 +20,30 @@ Settings are applied in this order (each overrides the previous):
 
 ## Session state (Jun 22)
 
-### Latest changes — Tech debt cleanup, compaction UI fix, TodoTool improvements (v0.7.47–0.7.77)
+### Latest changes — TableRenderer, history navigation fix (v0.8.7)
+
+**1. TableRenderer — markdown table formatting (new file + 3 files changed):**
+
+| Компонент | Фикс | Статус |
+|:---------:|:----|:------:|
+| New file | `TableRenderer.cs` — detects markdown tables in agent output and renders formatted console tables | 🆕 |
+| Proportional columns | Column widths calculated from content length, scaled to terminal width (min 10 chars per column) | ✅ |
+| Centered headers | Header row always centered within each column | ✅ |
+| Multi-line cells | Content that exceeds column width is wrapped to multiple rows | ✅ |
+| Word-wrap | Breaks at spaces (searches forward for next space before hard-breaking on long unbreakable tokens) | ✅ |
+| Streaming tables | `ChatRepl.Streaming.cs` — line-buffered streaming with real-time table detection via `RenderStreamingText` | ✅ |
+| Replay tables | `ConsoleRenderer.RenderBlock(agent_message)` runs text through `TableRenderer.RenderTables()` | ✅ |
+| Subagent tables | Tool results (both streaming and replay) pass through `TableRenderer.RenderTables()` — subagent tables formatted too | ✅ |
+| Mode switch | Fixed reasoning→text line break regression from streaming refactor | ✅ |
+| History nav | Fixed `IndexOutOfRangeException` — `HandleArrowUp`/`HandleArrowDown` now mutates the original buffer (`.Clear()` + `.AddRange()`) instead of creating a new `List<char>` via `[..]` | ✅ |
+
+**Files changed:**
+- `src/Glyphite.Cli/Services/TableRenderer.cs` 🆕 (453 lines)
+- `src/Glyphite.Cli/Services/ConsoleRenderer.cs` 📝 (TableRenderer call in RenderBlock)
+- `src/Glyphite.Cli/ChatRepl.Streaming.cs` 📝 (streaming buffer + table detection)
+- `src/Glyphite.Cli/ChatRepl.Input.cs` 📝 (history navigation fix)
+
+### Previous — Tech debt cleanup, compaction UI fix, TodoTool improvements (v0.7.47–0.7.77)
 
 **1. Batch tech debt fixes (11 items) — 30 files changed:**
 
