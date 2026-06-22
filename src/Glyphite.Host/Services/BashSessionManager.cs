@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Serilog;
 
 namespace Glyphite.Host.Services;
 
@@ -69,7 +70,7 @@ public class BashSession : IDisposable
         }
         catch (Exception ex)
         {
-            try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { Console.Error.WriteLine($"[BashSessionManager] Error killing process on listener failure: {killEx.Message}"); }
+            try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { Log.Warning(killEx, "Error killing process on listener failure"); }
             lock (_gate)
             {
                 _pendingTcs?.TrySetException(ex);
@@ -193,7 +194,7 @@ public class BashSession : IDisposable
 
             using (linkedCts.Token.Register(() =>
             {
-                try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { Console.Error.WriteLine($"[BashSessionManager] Error killing process on timeout: {killEx.Message}"); }
+                try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { Log.Warning(killEx, "Error killing process on timeout"); }
                 tcs.TrySetCanceled();
             }))
             {

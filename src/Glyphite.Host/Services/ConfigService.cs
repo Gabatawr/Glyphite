@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
@@ -9,15 +10,17 @@ public class ConfigService : IConfigService
 {
     private readonly IConfigStore _store;
     private readonly IConfiguration _appConfig;
+    private readonly ILogger<ConfigService> _logger;
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _overlays = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _configCache = new(StringComparer.OrdinalIgnoreCase);
 
     public Action<string>? LogAction { get; set; }
 
-    public ConfigService(IConfigStore store, IConfiguration appConfig)
+    public ConfigService(IConfigStore store, IConfiguration appConfig, ILogger<ConfigService>? logger = null)
     {
         _store = store;
         _appConfig = appConfig;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConfigService>.Instance;
     }
 
     public void SetSessionOverlay(string sessionId, Dictionary<string, string> config)
@@ -204,7 +207,7 @@ public class ConfigService : IConfigService
 
     private void Log(string message)
     {
-        Console.WriteLine(message);
+        _logger.LogInformation("{ConfigMessage}", message);
         LogAction?.Invoke(message);
     }
 

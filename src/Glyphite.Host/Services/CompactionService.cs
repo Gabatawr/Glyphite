@@ -1,7 +1,9 @@
 using System.Text;
+using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
@@ -18,17 +20,20 @@ namespace Glyphite.Host.Services;
         private readonly IAgentStore _agentStore;
         private readonly IConfigService _cfgService;
         private readonly IChatClient _chatClient;
+        private readonly ILogger _logger;
 
         public CompactionService(
             IBlockStore blockStore,
             IAgentStore agentStore,
             IConfigService cfgService,
-            IChatClient chatClient)
+            IChatClient chatClient,
+            ILogger<CompactionService> logger)
         {
             _blockStore = blockStore;
             _agentStore = agentStore;
             _cfgService = cfgService;
             _chatClient = chatClient;
+            _logger = logger;
         }
 
         public async Task<bool> TryCompactAsync(string sessionId, int contextWindow)
@@ -94,20 +99,29 @@ namespace Glyphite.Host.Services;
                 zoneProtectedBlocks.Add(keepInZone);
             }
 
-            // 4. Summarize each old zone via LLM (using only protected blocks)
+            // Log compaction start
+            var totalBlocks = blocks.Count;
+            _logger.LogInformation("Compacting session {SessionId}: {TotalBlocks} blocks, {ZoneCount} old zones to summarize, threshold {Threshold}% of {ContextWindow}",
+                sessionId, totalBlocks, summarizeCount, compOpts.AutoThreshold, contextWindow);
+
+            // 4. Summarize all old zones via LLM in parallel — each zone is independent.
             //    Run BEFORE deletion — if summarization fails, no data is lost.
+            var zoneTasks = new List<(List<MemoryBlock> zone, Task<string?> task)>();
+            foreach (var zone in zoneProtectedBlocks)
+            {
+                if (zone.Count == 0) continue;
+                zoneTasks.Add((zone, SummarizeSingleZoneAsync(sessionId, zone, model)));
+            }
+
             var summaries = new List<string>();
             var summarizedFallback = new List<MemoryBlock>(); // protected blocks from zones whose summarization failed
-            for (var i = 0; i < zoneProtectedBlocks.Count; i++)
+            foreach (var (zone, task) in zoneTasks)
             {
-                if (zoneProtectedBlocks[i].Count == 0)
-                    continue;
-
-                var summary = await SummarizeSingleZoneAsync(zoneProtectedBlocks[i], model);
+                var summary = await task;
                 if (summary is not null)
                     summaries.Add(summary);
                 else
-                    summarizedFallback.AddRange(zoneProtectedBlocks[i]);
+                    summarizedFallback.AddRange(zone);
             }
 
             // 5. Collect preserved blocks from the two newest zones (completely intact)
@@ -154,6 +168,8 @@ namespace Glyphite.Host.Services;
                 nextNumber,
                 softDeleteNums: allUnprotectedNums.Count > 0 ? allUnprotectedNums : null);
 
+            _logger.LogInformation("Compacted session {SessionId}: {SummaryCount} summaries, {FallbackCount} fallback blocks, {PreservedCount} preserved, {SoftDeletedCount} soft-deleted",
+                sessionId, summaries.Count, summarizedFallback.Count, preserved.Count, allUnprotectedNums.Count);
             return true;
         }
 
@@ -246,7 +262,7 @@ namespace Glyphite.Host.Services;
     }
 
 
-    private async Task<string?> SummarizeSingleZoneAsync(List<MemoryBlock> blocks, string? model)
+    private async Task<string?> SummarizeSingleZoneAsync(string sessionId, List<MemoryBlock> blocks, string? model)
     {
         var sb = new StringBuilder();
         sb.AppendLine("Summarize this conversation zone concisely in 2-4 sentences, preserving key decisions, findings, code changes, and important context.");
@@ -273,6 +289,43 @@ namespace Glyphite.Host.Services;
             var response = await _chatClient.GetResponseAsync(messages, chatOpts);
             var assistantMsg = response.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
             var text = assistantMsg?.Text?.Trim();
+
+            // Extract usage from response and record to main session immediately
+            if (response.RawRepresentation is not null)
+            {
+                try
+                {
+                    var raw = response.RawRepresentation;
+                    var doc = raw switch
+                    {
+                        JsonDocument jd => JsonDocument.Parse(jd.RootElement.GetRawText()),
+                        JsonElement je => JsonDocument.Parse(je.GetRawText()),
+                        _ => JsonDocument.Parse(JsonSerializer.Serialize(raw))
+                    };
+
+                    if (doc.RootElement.TryGetProperty("Usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+                    {
+                        var inputTotal = usage.TryGetProperty("InputTokenCount", out var itc) && itc.ValueKind == System.Text.Json.JsonValueKind.Number
+                            ? itc.GetInt64() : 0L;
+                        var cached = 0L;
+                        if (usage.TryGetProperty("InputTokenDetails", out var details) && details.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            if (details.TryGetProperty("CachedTokenCount", out var ctc) && ctc.ValueKind == System.Text.Json.JsonValueKind.Number)
+                                cached = ctc.GetInt64();
+                        }
+
+                        var hit = cached > 0 ? cached : 0L;
+                        var miss = cached > 0 ? inputTotal - cached : inputTotal;
+                        var output = usage.TryGetProperty("OutputTokenCount", out var otc) && otc.ValueKind == System.Text.Json.JsonValueKind.Number
+                            ? otc.GetInt64() : 0L;
+
+                        if (hit > 0 || miss > 0 || output > 0)
+                            await _agentStore.RecordUsageAsync(sessionId, hit, miss, output, model: model);
+                    }
+                }
+                catch { _logger.LogWarning("Failed to parse usage from summarization response"); }
+            }
+
             return string.IsNullOrEmpty(text) ? null : text;
         }
         catch

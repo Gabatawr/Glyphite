@@ -3,6 +3,7 @@ using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 
 namespace Glyphite.Host.Services;
@@ -26,11 +27,13 @@ public class McpService : IAsyncDisposable
     private readonly ConcurrentDictionary<string, IReadOnlyList<AITool>> _toolCache = new();
     private readonly ConcurrentDictionary<string, string> _serverConfigHashes = new();
     private readonly IConfigService _cfg;
+    private readonly ILogger _logger;
     private string? _configHash;
 
-    public McpService(IConfigService cfg)
+    public McpService(IConfigService cfg, ILogger<McpService> logger)
     {
         _cfg = cfg;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<AITool>> GetToolsAsync(string? sessionId = null, CancellationToken ct = default)
@@ -62,13 +65,13 @@ public class McpService : IAsyncDisposable
                 {
                     _statuses[name] = McpServerStatus.Failed;
                     _errors[name] = $"Timed out listing tools";
-                    Console.Error.WriteLine($"[MCP] Timed out listing tools from '{name}'");
+                    _logger.LogWarning("Timed out listing tools from '{Name}'", name);
                 }
                 catch (Exception ex)
                 {
                     _statuses[name] = McpServerStatus.Failed;
                     _errors[name] = ex.Message;
-                    Console.Error.WriteLine($"[MCP] Failed to list tools from '{name}': {ex.Message}");
+                    _logger.LogWarning(ex, "Failed to list tools from '{Name}'", name);
                 }
             }
         }
@@ -107,7 +110,7 @@ public class McpService : IAsyncDisposable
         foreach (var (name, client) in _clients)
         {
             try { await client.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception ex) { Console.Error.WriteLine($"[McpService] Error disposing client '{name}': {ex.Message}"); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Error disposing client '{Name}'", name); }
         }
         _clients.Clear();
         _statuses.Clear();
@@ -221,7 +224,7 @@ public class McpService : IAsyncDisposable
             {
                 await oldClient.DisposeAsync().ConfigureAwait(false);
                 _toolCache.TryRemove(name, out _);
-                Console.WriteLine($"[MCP] Reconnecting '{name}' (config changed)");
+                _logger.LogInformation("Reconnecting '{Name}' (config changed)", name);
             }
 
             _statuses[name] = McpServerStatus.Connecting;
@@ -237,13 +240,13 @@ public class McpService : IAsyncDisposable
             {
                 _statuses[name] = McpServerStatus.Failed;
                 _errors[name] = "Timed out";
-                Console.Error.WriteLine($"[MCP] Timed out connecting '{name}'");
+                _logger.LogWarning("Timed out connecting '{Name}'", name);
             }
             catch (Exception ex)
             {
                 _statuses[name] = McpServerStatus.Failed;
                 _errors[name] = ex.Message;
-                Console.Error.WriteLine($"[MCP] Failed to connect '{name}': {ex.Message}");
+                _logger.LogWarning(ex, "Failed to connect '{Name}'", name);
             }
         }
     }
@@ -324,7 +327,7 @@ public class McpService : IAsyncDisposable
         foreach (var client in _clients.Values)
         {
             try { await client.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception ex) { Console.Error.WriteLine($"[McpService] Error disposing client on shutdown: {ex.Message}"); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Error disposing client on shutdown"); }
         }
         _clients.Clear();
         _toolCache.Clear();

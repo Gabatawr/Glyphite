@@ -6,6 +6,7 @@ using Glyphite.Abstractions.Models;
 using Glyphite.Host.Tools;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Glyphite.Host.Services;
@@ -21,6 +22,7 @@ public class TurnProcessor : ITurnProcessor
     private readonly SubAgentManager _subAgentManager;
     private readonly CompactionService _compactionService;
     private readonly AgentOptions _agentOpts;
+    private readonly ILogger _logger;
 
     private readonly ISubAgentConfigLoader _configLoader;
 
@@ -41,7 +43,8 @@ public class TurnProcessor : ITurnProcessor
         SubAgentManager subAgentManager,
         CompactionService compactionService,
         ISubAgentConfigLoader configLoader,
-        IOptions<AgentOptions> agentOpts)
+        IOptions<AgentOptions> agentOpts,
+        ILogger<TurnProcessor> logger)
     {
         _agentStore = agentStore;
         _blockStore = blockStore;
@@ -53,6 +56,7 @@ public class TurnProcessor : ITurnProcessor
         _compactionService = compactionService;
         _configLoader = configLoader;
         _agentOpts = agentOpts.Value;
+        _logger = logger;
     }
 
     public async IAsyncEnumerable<TurnEvent> ProcessAsync(
@@ -73,10 +77,26 @@ public class TurnProcessor : ITurnProcessor
         var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>("Agent", sessionId);
 
         var modelStr = chatOptions.ModelId ?? deepseekOpts.Model;
+        _logger.LogInformation("Turn start session {SessionId}, model {Model}", sessionId, modelStr);
+
+        var nextNum = await _agentStore.GetNextNumberAsync(sessionId);
+        if (nextNum <= 0) nextNum = 1;
 
         // Auto-compaction: if context exceeds threshold, compact history via LLM summarization
         // Runs BEFORE context building so the LLM sees compacted history.
-        await _compactionService.TryCompactAsync(sessionId, deepseekOpts.ContextWindow);
+        var compacted = await _compactionService.TryCompactAsync(sessionId, deepseekOpts.ContextWindow);
+
+        // Auto-tool: compression notification — only when compaction actually triggered
+        if (compacted)
+        {
+            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", sessionId);
+            var compactArgs = $"{{\"AutoCompress\":true,\"AutoThreshold\":{compOpts.AutoThreshold}}}";
+            yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
+
+            var compactBlock = MemoryBlock.AutoTool("compression", compactArgs, "", modelStr);
+            compactBlock.Number = nextNum++;
+            await _blockStore.AppendBlocksAsync(sessionId, [compactBlock], nextNum);
+        }
 
         var includeMemory = chatOptions.AdditionalProperties?.ContainsKey("saveMemory") == true;
         chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(sessionId, includeMemory)).ToList();
@@ -88,17 +108,14 @@ public class TurnProcessor : ITurnProcessor
         var contextMessages = await _blockMemory.BuildContextAsync(
             sessionId, modelStr, deepseekOpts.ContextWindow);
 
-        var nextNum = await _agentStore.GetNextNumberAsync(sessionId);
-        if (nextNum <= 0) nextNum = 1;
-
-        // Auto-tool: peek cleanup — visible to user AND model
+        // Auto-tool: peek reasoning — visible to user AND model
         if (peekCleaned > 0)
         {
             var peekMsg = BuildPeekCleanMessage(peekCleaned, peekStats);
             var cleanArgs = $"{{\"count\":{peekCleaned}}}";
-            yield return new AutoToolTurnEvent("peek_clean", cleanArgs, false, peekMsg);
+            yield return new AutoToolTurnEvent("peek_reasoning", cleanArgs, false, peekMsg);
 
-            var autoBlock = MemoryBlock.AutoTool("peek_clean", cleanArgs, peekMsg, modelStr);
+            var autoBlock = MemoryBlock.AutoTool("peek_reasoning", cleanArgs, peekMsg, modelStr);
             autoBlock.Number = nextNum++;
             await _blockStore.AppendBlocksAsync(sessionId, [autoBlock], nextNum);
 
@@ -112,7 +129,7 @@ public class TurnProcessor : ITurnProcessor
         // Wrap with session-aware client so DeepSeek gets `user` = sessionId for cache isolation
         var sessionClient = new SessionChatClient(_chatClient, sessionId);
         var failSafeClient = new FailSafeChatClient(
-            sessionClient, agentOpts.MaxToolIterations);
+            sessionClient, agentOpts.MaxToolIterations, _logger);
 
         // No OnBatchComplete needed — subagent tasks run synchronously within their group's Task.WhenAll
 
@@ -191,7 +208,7 @@ public class TurnProcessor : ITurnProcessor
                             if (doc.RootElement.TryGetProperty("path", out var p))
                                 fPath = p.GetString();
                         }
-                        catch { Console.Error.WriteLine("[TurnProcessor] Failed to parse args for path"); }
+                        catch { _logger.LogWarning("Failed to parse args for path"); }
 
                         if (fPath is not null)
                         {
@@ -199,7 +216,7 @@ public class TurnProcessor : ITurnProcessor
                             if (name == "write_file")
                             {
                                 try { fileContent = await File.ReadAllTextAsync(fPath); }
-                                catch { Console.Error.WriteLine("[TurnProcessor] Failed to read written file"); fileContent = output; /* fallback to raw output */ }
+                                catch { _logger.LogWarning("Failed to read written file"); fileContent = output; /* fallback to raw output */ }
                             }
                             else
                             {
@@ -243,7 +260,7 @@ public class TurnProcessor : ITurnProcessor
                             if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == JsonValueKind.Array)
                                 ToolCallHelper.RemoveBlocksFromMessageList(contextMessages, blk.EnumerateArray().Select(e => e.GetDouble()));
                         }
-                        catch { Console.Error.WriteLine("[TurnProcessor] Failed to parse args for memory clean"); }
+                        catch { _logger.LogWarning("Failed to parse args for memory clean"); }
                     }
                     // Peek tools: replace ChatMessage with cleaned block render (ToContextString)
                     // Only tool blocks — reasoning peek blocks persist for the current turn
@@ -321,6 +338,10 @@ public class TurnProcessor : ITurnProcessor
 
         await FlushAll();
 
+        _logger.LogInformation("Turn end session {SessionId}: hit={Hit} miss={Miss} out={Output} lastHit={LastHit} lastMiss={LastMiss}",
+            sessionId, failSafeClient.TotalCacheHitTokens, failSafeClient.TotalCacheMissTokens, failSafeClient.TotalOutputTokens,
+            failSafeClient.LastHitTokens, failSafeClient.LastMissTokens);
+
         // End-of-turn: clean peek markers on non-reasoning blocks (tool, auto_tool)
         // Keeps the block in DB, removes $.peek flag + tool_result.
         // Reasoning peek blocks are deleted at start of next turn via RemovePeekBlocksAsync.
@@ -352,7 +373,7 @@ public class TurnProcessor : ITurnProcessor
         return string.Join('\n', lines);
     }
 
-    private static string? CleanToolArgs(string argsJson, params string[] keys)
+    private string? CleanToolArgs(string argsJson, params string[] keys)
     {
         try
         {
@@ -372,7 +393,7 @@ public class TurnProcessor : ITurnProcessor
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[TurnProcessor] CleanToolArgs failed: {ex.Message}");
+            _logger.LogWarning(ex, "CleanToolArgs failed");
             return null;
         }
     }

@@ -3,12 +3,14 @@ using System.Text.Json;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
 public sealed class FailSafeChatClient : DelegatingChatClient
 {
     private readonly int _maxIterations;
+    private readonly ILogger _logger;
 
     public HashSet<string> ExecutedCallIds { get; } = [];
 
@@ -31,9 +33,10 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     public long LastHitTokens { get; private set; }
     public long LastMissTokens { get; private set; }
 
-    public FailSafeChatClient(IChatClient inner, int maxIterations) : base(inner)
+    public FailSafeChatClient(IChatClient inner, int maxIterations, ILogger logger) : base(inner)
     {
         _maxIterations = maxIterations;
+        _logger = logger;
     }
 
     // ── Parallel-safe tool names (can be grouped for concurrent execution) ──
@@ -138,7 +141,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[FailSafeChatClient] Failed to track memory clean blocks: {ex.Message}");
+                _logger.LogWarning(ex, "Failed to track memory clean blocks");
             }
         }
     }
@@ -271,6 +274,9 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     LastMissTokens = cacheMiss;
                     OnUsage?.Invoke(cacheHit, cacheMiss, cacheOutput);
                 }
+
+                _logger.LogInformation("Completed in {Iteration} iteration(s): hit={Hit} miss={Miss} out={Output}",
+                    iteration + 1, TotalCacheHitTokens, TotalCacheMissTokens, TotalOutputTokens);
                 var finalAssistant = chatResponse.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
                 if (finalAssistant is not null)
                 {

@@ -17,7 +17,9 @@ public static class Bootstrapper
 {
     public static IHost BuildHost(string[] args)
     {
-        var logsDir = Path.Combine(AppContext.BaseDirectory, "logs");
+        var glyphiteDataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".glyphite");
+        var logsDir = Path.Combine(glyphiteDataDir, "logs");
         Directory.CreateDirectory(logsDir);
         var dateStr = DateTime.Now.ToString("dd-MM-yyyy");
         var existingLogs = Directory.GetFiles(logsDir, $"{dateStr}-*.log").Length;
@@ -30,6 +32,7 @@ public static class Bootstrapper
             .CreateLogger();
 
         var host = global::Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder(args)
+            .UseSerilog()
             .ConfigureAppConfiguration((ctx, cfg) =>
             {
                 // 1. Встроенный appsettings.json из ресурсов

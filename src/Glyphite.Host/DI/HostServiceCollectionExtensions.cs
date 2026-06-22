@@ -11,6 +11,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenAI;
 
@@ -69,7 +70,8 @@ public static class HostServiceCollectionExtensions
         services.AddSingleton<IConfigService>(sp =>
         {
             var store = sp.GetRequiredService<IConfigStore>();
-            return new ConfigService(store, configuration.GetSection("Glyphite"));
+            var logger = sp.GetRequiredService<ILogger<ConfigService>>();
+            return new ConfigService(store, configuration.GetSection("Glyphite"), logger);
         });
 
         services.AddSingleton<IAgentManager>(sp =>
