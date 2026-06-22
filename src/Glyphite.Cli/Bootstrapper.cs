@@ -78,6 +78,8 @@ public static class Bootstrapper
                     var cfgService = sp.GetRequiredService<IConfigService>();
                     return new ConsoleRenderer(cfgService);
                 });
+                services.AddSingleton<InputHistory>();
+                services.AddSingleton<SessionManager>();
                 services.AddSingleton<ChatRepl>();
             })
             .Build();

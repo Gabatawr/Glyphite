@@ -8,7 +8,6 @@ public partial class ChatRepl
     private static readonly string[] _knownCommands =
         ["/new", "/clone", "/use", "/delete", "/stats", "/version", "/models", "/exit"];
 
-    private readonly List<string> _inputHistory = [];
     private int _historyIndex = -1;
     private string? _pendingInput;
     private int _lastBufferLen;
@@ -23,7 +22,7 @@ public partial class ChatRepl
 
     private async Task UpdatePromptPrefixAsync()
     {
-        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", _agentId);
+        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", AgentId);
 
         _promptSegments.Clear();
         var def = ConsoleColor.DarkGray;
@@ -89,7 +88,7 @@ public partial class ChatRepl
     /// <summary>Calculate total cumulative cost ($) from all usage rows, using per-model pricing.</summary>
     private async Task<double> GetCurrentCumulativeCostAsync()
     {
-        var usageByModel = await _agentStore.GetUsageByModelAsync(_agentId);
+        var usageByModel = await _agentStore.GetUsageByModelAsync(AgentId);
         var total = 0.0;
         foreach (var (modelName, hit, miss, output) in usageByModel)
         {

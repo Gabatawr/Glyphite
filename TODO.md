@@ -47,10 +47,15 @@
 - **Итог:** `400 → 447 строк` (+47 на boilerplate класса), оба файла <300 строк, `-231` из TurnProcessor.cs.
 - **TODO #10 ChatRepl** остаётся последним крупным пунктом.
 
-### 10. ChatRepl — слишком много ответственности
-- **Файлы:** 6 partial-файлов (Input, Commands, Config, Startup, Streaming, ChatRepl.cs)
-- **Проблема:** REPL + rendering + управление агентами + конфиги — всё в одном классе
-- **Решение:** разделить на отдельные сервисы (CommandHandler, SessionManager, ConfigManager)
+### ~~10. ChatRepl — слишком много ответственности~~ ✅
+- **Выполнено:** `ChatRepl` разгружен — 2 partial-файла удалены (Config.cs, Startup.cs), их логика в `SessionManager`.
+- **SessionManager** (850 строк) — владеет `_agentId`, `_currentScope`, `SwitchScope()`, startup/resume, все `/команды` (new/clone/use/delete), config loading.
+- **ChatRepl.cs** (96 строк) — только основное поле + RunAsync loop.
+- **ChatRepl.Commands.cs** (120 строк) — диспетчер команд, делегирует в `SessionManager`.
+- **ChatRepl.Input.cs** (459 строк) — без изменений (отвечает только за ввод).
+- **ChatRepl.Streaming.cs** (154 строк) — без изменений (отвечает только за рендеринг стрима).
+- **Итог:** `−2 partial-файла`, `−393 строк` из ChatRepl partials, логика в двух отдельных тестируемых сервисах (`SessionManager` + `InputHistory`).
+- **TODO полностью очищен!** 🎉
 
 ## 🧹 Чистка
 

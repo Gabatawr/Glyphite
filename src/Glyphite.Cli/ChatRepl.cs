@@ -13,16 +13,14 @@ public partial class ChatRepl
 {
     private readonly IAgentStore _agentStore;
     private readonly IBlockStore _blockStore;
-    private ITurnProcessor _turnProcessor => _currentScope?.TurnProcessor ?? throw new InvalidOperationException("Scope not initialized. SwitchScope() before use.");
-    private IBlockMemoryProvider _blockMemory => _currentScope?.BlockMemoryProvider ?? throw new InvalidOperationException("Scope not initialized. SwitchScope() before use.");
     private readonly IConfigService _cfgService;
-    private readonly IAgentManager _agentManager;
-    private readonly IAgentScopeFactory _scopeFactory;
+    private readonly SessionManager _session;
+    private readonly InputHistory _inputHistory;
     private readonly ConsoleRenderer _renderer;
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
-    private AgentScope? _currentScope;
-    private string _agentId = string.Empty;
+
+    // Usage state — updated by streaming, read by prompt rendering
     private long _lastTurnHit;
     private long _lastTurnMiss;
     private long _lastTurnOutput;
@@ -30,12 +28,17 @@ public partial class ChatRepl
     private long _lastTurnLastMiss;
     private double _prevCumulativeCost = -1;
 
+    // Convenience accessors
+    private ITurnProcessor TurnProcessor => _session.TurnProcessor;
+    private IBlockMemoryProvider BlockMemory => _session.BlockMemory;
+    private string AgentId => _session.AgentId;
+
     public ChatRepl(
         IAgentStore agentStore,
         IBlockStore blockStore,
         IConfigService cfgService,
-        IAgentManager agentManager,
-        IAgentScopeFactory scopeFactory,
+        SessionManager session,
+        InputHistory inputHistory,
         ConsoleRenderer renderer,
         IOptions<DeepSeekOptions> deepseek,
         IOptions<AgentOptions> agentOpts)
@@ -43,25 +46,26 @@ public partial class ChatRepl
         _agentStore = agentStore;
         _blockStore = blockStore;
         _cfgService = cfgService;
-        _agentManager = agentManager;
-        _scopeFactory = scopeFactory;
+        _session = session;
+        _inputHistory = inputHistory;
         _renderer = renderer;
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
     }
 
-    /// <summary>Switch to a new agent scope. Call when creating/switching/cloning agents.</summary>
-    private void SwitchScope()
-    {
-        _currentScope?.Dispose();
-        _currentScope = _scopeFactory.CreateScope();
-    }
-
     public async Task RunAsync(CancellationToken ct)
     {
         var cwd = Directory.GetCurrentDirectory();
-        await CreateOrResumeAgentAsync(cwd);
-        var chatOptions = await InitializeAfterAgentAsync(cwd);
+        var result = await _session.CreateOrResumeAgentAsync(cwd);
+
+        if (result == CreateOrResumeResult.NeedsUserChoice)
+            await _session.HandleUserChoiceAsync(cwd);
+
+        var usage = await _session.ResetSessionStateAsync();
+        (_lastTurnHit, _lastTurnMiss, _lastTurnOutput, _lastTurnLastHit, _lastTurnLastMiss) = usage;
+        await UpdatePromptPrefixAsync();
+
+        var chatOptions = await _session.InitializeAfterAgentAsync(cwd);
 
         while (!ct.IsCancellationRequested)
         {

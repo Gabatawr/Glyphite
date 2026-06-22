@@ -4,10 +4,9 @@ using System.Text.Json;
 using Glyphite.Cli.Services;
 using Glyphite.Host.Data;
 using Glyphite.Abstractions.Models;
-using Glyphite.Host.Memory;
 using Glyphite.Host.Services;
-using Glyphite.Host.Tools;
 using Microsoft.Extensions.AI;
+
 namespace Glyphite.Cli;
 
 public partial class ChatRepl
@@ -24,13 +23,24 @@ public partial class ChatRepl
 
         switch (cmd)
         {
-            case "/new":    return await HandleNewCommandAsync(arg);
-            case "/clone":  return await HandleCloneCommandAsync(arg);
-            case "/use":    return await HandleUseCommandAsync(arg);
-            case "/delete": return await HandleDeleteCommandAsync(arg);
+            case "/new":
+                var r = await _session.HandleNewCommandAsync(arg);
+                var usage = await _session.ResetSessionStateAsync();
+                (_lastTurnHit, _lastTurnMiss, _lastTurnOutput, _lastTurnLastHit, _lastTurnLastMiss) = usage;
+                await UpdatePromptPrefixAsync();
+                return r;
+
+            case "/clone":
+                return await _session.HandleCloneCommandAsync(arg);
+
+            case "/use":
+                return await _session.HandleUseCommandAsync(arg);
+
+            case "/delete":
+                return await _session.HandleDeleteCommandAsync(arg);
 
             case "/stats":
-                var (totalBlocks, _, typeStats) = await _blockMemory.ComputeStatsAsync(_agentId!);
+                var (totalBlocks, _, typeStats) = await BlockMemory.ComputeStatsAsync(AgentId!);
                 if (totalBlocks == 0)
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -40,13 +50,13 @@ public partial class ChatRepl
                     return true;
                 }
 
-                var statsModel = await _blockMemory.GetAgentModelAsync(_agentId!);
-                var (cumHit, cumMiss, cumOutput) = await _agentStore.GetUsageAsync(_agentId!);
+                var statsModel = await BlockMemory.GetAgentModelAsync(AgentId!);
+                var (cumHit, cumMiss, cumOutput) = await _agentStore.GetUsageAsync(AgentId!);
 
                 var totalCost = 0.0;
                 if (cumHit + cumMiss + cumOutput > 0)
                 {
-                    var usageByModel = await _agentStore.GetUsageByModelAsync(_agentId!);
+                    var usageByModel = await _agentStore.GetUsageByModelAsync(AgentId!);
                     foreach (var (modelName, hit, miss, output) in usageByModel)
                     {
                         var (mPrice, hPrice, oPrice) = GetPricing(modelName);
@@ -76,432 +86,14 @@ public partial class ChatRepl
                 return true;
 
             case "/models":
-                await ShowModelSelectionAsync();
+                await _session.ShowModelSelectionAsync();
                 return true;
         }
 
         return false;
     }
-    private async Task<bool> HandleNewCommandAsync(string? name = null)
-    {
-        if (name is null)
-        {
-            Console.ForegroundColor = ConsoleColor.DarkYellow;
-            Console.Write("Enter new agent name: ");
-            Console.ResetColor();
-            name = Console.ReadLine()?.Trim();
-            if (string.IsNullOrEmpty(name))
-            {
-                Console.ForegroundColor = ConsoleColor.White;
-                Console.WriteLine("Cancelled.\n");
-                Console.ResetColor();
-                return true;
-            }
-        }
 
-        if (!AgentManager.IsValidAgentName(name))
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Invalid agent name '{name}'. Use letters, digits, hyphens, underscores (max 100 chars).\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        var cwd = Directory.GetCurrentDirectory();
-
-        if (await _agentStore.AgentExistsAsync(name))
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.Write($"Agent '{name}' already exists. Delete and recreate? (y/N): ");
-            Console.ResetColor();
-            var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
-            if (confirm is "y" or "yes")
-            {
-                await _agentStore.DeleteSessionAsync(name);
-                _agentId = await _agentManager.CreateAgentAsync(name, _deepseek.Model, cwd);
-                _agentOpts.AgentName = name;
-                SwitchScope();
-                await LoadAgentConfigAsync(_agentId, cwd);
-                await ResetSessionStateAsync();
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"Agent '{name}' recreated.\n");
-                Console.ResetColor();
-            }
-            else
-            {
-                Console.ForegroundColor = ConsoleColor.White;
-                Console.WriteLine("Cancelled.\n");
-                Console.ResetColor();
-            }
-            return true;
-        }
-
-        _agentId = await _agentManager.CreateAgentAsync(name, _deepseek.Model, cwd);
-        _agentOpts.AgentName = name;
-        SwitchScope();
-        await LoadAgentConfigAsync(_agentId, cwd);
-        await ResetSessionStateAsync();
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"Agent '{name}' created.\n");
-        Console.ResetColor();
-        return true;
-    }
-
-    private async Task<bool> HandleCloneCommandAsync(string? name = null)
-    {
-        var sessions = await _agentStore.ListAgentsAsync();
-        if (sessions.Count == 0)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("No agents found. Create one with /new first.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        // If name provided and agent exists, prompt for clone name directly
-        if (name is not null && sessions.Contains(name))
-            return await PromptAndCloneAsync(name);
-
-        // Name provided but doesn't exist → show source list, use name as clone name
-        if (name is not null)
-            Console.WriteLine($"Clone name: {name}\n");
-
-        Console.ForegroundColor = ConsoleColor.DarkYellow;
-        Console.WriteLine("Clone copies an agent's history to a new name.\n");
-
-        Console.WriteLine("Pick source agent to copy from:");
-        for (int i = 0; i < sessions.Count; i++)
-        {
-            var isCurrent = string.Equals(sessions[i], _agentId, StringComparison.Ordinal);
-            var blockCount = await _blockStore.GetBlockCountAsync(sessions[i]);
-            var marker = isCurrent ? " ← current" : "";
-            Console.ForegroundColor = isCurrent ? ConsoleColor.Green : ConsoleColor.Gray;
-            Console.WriteLine($"  [{i + 1}] {sessions[i]} ({blockCount} blocks){marker}");
-        }
-
-        Console.ResetColor();
-        Console.Write($"\nSelect source [1-{sessions.Count}, Enter=cancel]: ");
-        var selection = Console.ReadLine()?.Trim();
-
-        if (string.IsNullOrEmpty(selection))
-        {
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine("Cancelled.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        string sourceName;
-        if (int.TryParse(selection, out var idx) && idx >= 1 && idx <= sessions.Count)
-        {
-            sourceName = sessions[idx - 1];
-        }
-        else
-        {
-            if (!sessions.Contains(selection))
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"Agent '{selection}' not found.\n");
-                Console.ResetColor();
-                return true;
-            }
-            sourceName = selection;
-        }
-
-        return await PromptAndCloneAsync(sourceName, name);
-    }
-
-    private async Task<bool> PromptAndCloneAsync(string sourceName, string? defaultCloneName = null)
-    {
-        if (defaultCloneName is null)
-        {
-            Console.ForegroundColor = ConsoleColor.DarkYellow;
-            Console.Write($"Enter new agent name (clone of '{sourceName}'): ");
-            Console.ResetColor();
-            var input = Console.ReadLine()?.Trim();
-
-            if (string.IsNullOrEmpty(input))
-            {
-                Console.ForegroundColor = ConsoleColor.White;
-                Console.WriteLine("Cancelled.\n");
-                Console.ResetColor();
-                return true;
-            }
-
-            defaultCloneName = input;
-        }
-
-        if (!AgentManager.IsValidAgentName(defaultCloneName))
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Invalid agent name '{defaultCloneName}'. Use letters, digits, hyphens, underscores (max 100 chars).\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        if (await _agentStore.AgentExistsAsync(defaultCloneName))
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Agent '{defaultCloneName}' already exists. Choose a different name.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        var cwd = Directory.GetCurrentDirectory();
-        await _agentStore.ForkSessionAsync(sourceName, defaultCloneName, cwd);
-        _agentId = defaultCloneName;
-        _agentOpts.AgentName = defaultCloneName;
-        SwitchScope();
-        await LoadAgentConfigAsync(_agentId, cwd);
-        await ResetSessionStateAsync();
-
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"Agent '{defaultCloneName}' cloned from '{sourceName}'.\n");
-        Console.ResetColor();
-        return true;
-    }
-
-    private async Task<bool> HandleUseCommandAsync(string? name = null)
-    {
-        if (name is not null && await _agentStore.AgentExistsAsync(name))
-        {
-            var cwd = Directory.GetCurrentDirectory();
-            _agentId = name;
-            _agentOpts.AgentName = name;
-            await _agentStore.RecordLaunchAsync(name, cwd);
-            SwitchScope();
-            await LoadAgentConfigAsync(name, cwd);
-            await ResetSessionStateAsync();
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"Switched to agent '{name}'.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        var sessions = await _agentStore.ListAgentsAsync();
-        if (sessions.Count == 0)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("No agents found. Create one with /new first.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        if (name is not null)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Agent '{name}' not found.\n");
-            Console.ResetColor();
-        }
-
-        Console.ForegroundColor = ConsoleColor.DarkYellow;
-        Console.WriteLine("Select agent to use:\n");
-        Console.ResetColor();
-
-        var cwd2 = Directory.GetCurrentDirectory();
-        for (int i = 0; i < sessions.Count; i++)
-        {
-            var isCurrent = string.Equals(sessions[i], _agentId, StringComparison.Ordinal);
-            var agentHome = await _agentStore.GetAgentHomePathAsync(sessions[i]) ?? "";
-            var createdAt = await _agentStore.GetAgentCreatedAtAsync(sessions[i]) ?? "";
-            var blockCount = await _blockStore.GetBlockCountAsync(sessions[i]);
-            var lastLaunch = await _agentStore.GetLastLaunchPathAsync(sessions[i]);
-
-            var marker = isCurrent ? " ← current" : "";
-            var atHome = (string.Equals(agentHome, cwd2, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(agentHome)) ? " [🏠 home]" : "";
-            var createdDate = createdAt.Length >= 10 ? createdAt[..10] : "";
-            var lastStr = lastLaunch is not null ? $" last: {lastLaunch}" : "";
-
-            Console.ForegroundColor = isCurrent ? ConsoleColor.Green : ConsoleColor.Gray;
-            Console.WriteLine($"  [{i + 1}] {sessions[i]} ({blockCount} blocks, {createdDate}){atHome}{lastStr}{marker}");
-        }
-
-        Console.ResetColor();
-        Console.Write($"\nSelect agent [1-{sessions.Count}, Enter=cancel]: ");
-        var pick = Console.ReadLine()?.Trim();
-
-        if (string.IsNullOrEmpty(pick))
-        {
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine("Cancelled.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        string targetName;
-        if (int.TryParse(pick, out var idx) && idx >= 1 && idx <= sessions.Count)
-        {
-            targetName = sessions[idx - 1];
-        }
-        else if (sessions.Contains(pick))
-        {
-            targetName = pick;
-        }
-        else
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Agent '{pick}' not found.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        _agentId = targetName;
-        _agentOpts.AgentName = targetName;
-        await _agentStore.RecordLaunchAsync(targetName, cwd2);
-        SwitchScope();
-        await LoadAgentConfigAsync(targetName, cwd2);
-        await ResetSessionStateAsync();
-
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"Switched to agent '{targetName}'.\n");
-        Console.ResetColor();
-        return true;
-    }
-
-    private async Task<bool> HandleDeleteCommandAsync(string? name = null)
-    {
-        var sessions = await _agentStore.ListAgentsAsync();
-        var others = sessions.Where(s => !string.Equals(s, _agentId, StringComparison.Ordinal)).ToList();
-
-        if (others.Count == 0)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("No other agents to delete.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        // If name provided and agent exists, confirm deletion directly
-        if (name is not null && others.Contains(name))
-            return await ConfirmAndDeleteAsync(name);
-
-        if (name is not null)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Agent '{name}' not found.\n");
-            Console.ResetColor();
-        }
-
-        Console.ForegroundColor = ConsoleColor.DarkYellow;
-        Console.WriteLine("Select agent to delete:\n");
-        Console.ResetColor();
-
-        for (int i = 0; i < others.Count; i++)
-        {
-            var blockCount = await _blockStore.GetBlockCountAsync(others[i]);
-            var createdAt = await _agentStore.GetAgentCreatedAtAsync(others[i]) ?? "";
-            var createdDate = createdAt.Length >= 10 ? createdAt[..10] : "";
-            Console.ForegroundColor = ConsoleColor.Gray;
-            Console.WriteLine($"  [{i + 1}] {others[i]} ({blockCount} blocks, {createdDate})");
-        }
-
-        Console.ResetColor();
-        Console.Write($"\nSelect agent [1-{others.Count}, Enter=cancel]: ");
-        var pick = Console.ReadLine()?.Trim();
-
-        if (string.IsNullOrEmpty(pick))
-        {
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine("Cancelled.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        string targetName;
-        if (int.TryParse(pick, out var idx) && idx >= 1 && idx <= others.Count)
-        {
-            targetName = others[idx - 1];
-        }
-        else if (others.Contains(pick))
-        {
-            targetName = pick;
-        }
-        else
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Agent '{pick}' not found.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        return await ConfirmAndDeleteAsync(targetName);
-    }
-
-    private async Task<bool> ConfirmAndDeleteAsync(string targetName)
-    {
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.Write($"Delete agent '{targetName}'? This cannot be undone. (y/N): ");
-        Console.ResetColor();
-        var confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
-        if (confirm is not "y" and not "yes")
-        {
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine("Cancelled.\n");
-            Console.ResetColor();
-            return true;
-        }
-
-        await _agentStore.DeleteSessionAsync(targetName);
-
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine($"Agent '{targetName}' deleted.\n");
-        Console.ResetColor();
-        return true;
-    }
-
-    private async Task ShowModelSelectionAsync()
-    {
-        var models = _deepseek.Models.Select(m => m.Name).Distinct().ToArray();
-        if (models.Length == 0)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("No models configured.");
-            Console.ResetColor();
-            Console.WriteLine();
-            return;
-        }
-
-        var currentModel = await _blockMemory.GetAgentModelAsync(_agentId!) ?? _deepseek.Model;
-
-        Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("── Models ─────────────────────────────");
-        Console.ResetColor();
-        for (var i = 0; i < models.Length; i++)
-        {
-            var marker = models[i] == currentModel ? " ←" : "";
-            Console.ForegroundColor = models[i] == currentModel ? ConsoleColor.White : ConsoleColor.Gray;
-            Console.WriteLine($"  {i + 1}. {models[i]}{marker}");
-        }
-        Console.ResetColor();
-
-        while (true)
-        {
-            Console.ForegroundColor = ConsoleColor.DarkYellow;
-            Console.Write("Select model (1-{0}) or Enter to cancel: ", models.Length);
-            Console.ResetColor();
-            var choice = Console.ReadLine()?.Trim();
-            if (string.IsNullOrEmpty(choice))
-            {
-                Console.WriteLine();
-                break;
-            }
-            if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= models.Length)
-            {
-                var selected = models[idx - 1];
-                await _blockMemory.SetAgentModelAsync(_agentId!, selected);
-                Console.ForegroundColor = ConsoleColor.Gray;
-                Console.WriteLine($"Model changed to {selected}.");
-                Console.ResetColor();
-                Console.WriteLine();
-                break;
-            }
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Invalid input. Enter 1-{models.Length} or press Enter to cancel.");
-            Console.ResetColor();
-        }
-    }
-
-
+    /// <summary>Monitor for Escape key to cancel a running turn.</summary>
     private static async Task MonitorEscapeAsync(CancellationTokenSource cts)
     {
         while (!cts.IsCancellationRequested)
@@ -525,5 +117,4 @@ public partial class ChatRepl
             }
         }
     }
-
 }

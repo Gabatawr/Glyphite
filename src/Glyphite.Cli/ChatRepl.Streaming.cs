@@ -47,17 +47,13 @@ public partial class ChatRepl
 
         try
         {
-            // Manual async enumerator: first MoveNextAsync triggers TurnProcessor.ProcessAsync
-            // which calls LoadConfigAsync (reads Glyphite.json from disk, writes to DB).
-            // After that, we refresh renderer with the just-loaded config.
-            var enumerable = _turnProcessor.ProcessAsync(_agentId!, input, chatOptions, ct);
+            var enumerable = TurnProcessor.ProcessAsync(AgentId!, input, chatOptions, ct);
             await using var enumerator = enumerable.GetAsyncEnumerator();
 
-            // First MoveNextAsync: runs everything up to first yield return, including LoadConfigAsync
             var hasNext = await enumerator.MoveNextAsync();
 
             // Config is now loaded from disk — refresh renderer with fresh ToolStreamingOptions
-            await _renderer.RefreshAsync(_agentId!);
+            await _renderer.RefreshAsync(AgentId!);
 
             while (hasNext)
             {
