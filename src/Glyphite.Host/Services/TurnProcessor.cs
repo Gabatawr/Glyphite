@@ -19,6 +19,7 @@ public class TurnProcessor : ITurnProcessor
     private readonly IToolRegistry _toolRegistry;
     private readonly IConfigService _cfgService;
     private readonly SubAgentManager _subAgentManager;
+    private readonly CompactionService _compactionService;
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
 
@@ -39,6 +40,7 @@ public class TurnProcessor : ITurnProcessor
         IToolRegistry toolRegistry,
         IConfigService cfgService,
         SubAgentManager subAgentManager,
+        CompactionService compactionService,
         ISubAgentConfigLoader configLoader,
         IOptions<DeepSeekOptions> deepseek,
         IOptions<AgentOptions> agentOpts)
@@ -50,6 +52,7 @@ public class TurnProcessor : ITurnProcessor
         _toolRegistry = toolRegistry;
         _cfgService = cfgService;
         _subAgentManager = subAgentManager;
+        _compactionService = compactionService;
         _configLoader = configLoader;
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
@@ -327,6 +330,10 @@ public class TurnProcessor : ITurnProcessor
             $"{{\"hit\":{failSafeClient.TotalCacheHitTokens},\"miss\":{failSafeClient.TotalCacheMissTokens},\"out\":{failSafeClient.TotalOutputTokens}}}");
         turnBlock.Number = nextNum++;
         await _blockStore.AppendBlocksAsync(sessionId, [turnBlock], nextNum);
+
+        // Auto-compaction: if context exceeds threshold, compact history via LLM summarization
+        await _compactionService.TryCompactAsync(sessionId, _deepseek.ContextWindow);
+
         yield return new TurnCompleteEvent();
     }
 
