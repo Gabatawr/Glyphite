@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Glyphite.Abstractions.Interfaces;
@@ -56,23 +55,22 @@ public static class TodoTool
     }
 
     public static async Task<string> TodoUpdate(
-        double block,
         TodoAction[] actions,
         IAgentStore agentStore,
         IBlockStore blockStore,
         string sessionId,
         TodoOptions opts)
     {
-        var existing = await blockStore.GetBlockAsync(sessionId, block);
-        if (existing is null)
-            return FormattableString.Invariant($"Block {block:F1} not found");
+        // Auto-find the latest todo block
+        var todos = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo, 1, true);
+        if (todos.Count == 0)
+            return "No todo list found. Create one with todo_write first.";
 
-        if (existing.Type is not BlockType.todo and not BlockType.todo_update)
-            return FormattableString.Invariant($"Block {block:F1} is not a todo or todo_update block");
+        var existing = todos[0];
 
-        // Follow chain forward from the passed block to find the latest todo_update
+        // Follow chain forward from the found block to find the latest todo_update
         var snapshots = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo_update, null, true);
-        MemoryBlock? latestSnapshot = existing.Type == BlockType.todo_update ? existing : null;
+        MemoryBlock? latestSnapshot = null;
         double? chainCursor = existing.Number;
         while (chainCursor.HasValue)
         {
@@ -101,7 +99,7 @@ public static class TodoTool
         }
         else
         {
-            return FormattableString.Invariant($"Block {block:F1} has no items");
+            return "Latest todo list has no items";
         }
 
         if (items is null)
@@ -285,13 +283,12 @@ public static class TodoTool
             return await TodoWrite(title, items, agentStore, blockStore, sessionId, opts);
         }
 
-        [Description("Modify a todo list block. Action types: set_status (change item status by index), update (change text/status/priority by index), add (insert new item), remove (delete item by index). Creates a snapshot block to track progress history.")]
+        [Description("Modify the latest todo list block. Action types: set_status (change item status by index), update (change text/status/priority by index), add (insert new item), remove (delete item by index). Creates a snapshot block to track progress history.")]
         public async Task<string> Update(
-            [Description("Block number of the todo list to modify")] double block,
             [Description("Array of action objects: {type: 'set_status'|'update'|'add'|'remove', index?: number, text?: string, status?: string, priority?: string}")] TodoAction[] actions)
         {
             var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
-            return await TodoUpdate(block, actions, agentStore, blockStore, sessionId, opts);
+            return await TodoUpdate(actions, agentStore, blockStore, sessionId, opts);
         }
     }
 

@@ -1,6 +1,4 @@
 using System.IO;
-using System.Text.Encodings.Web;
-using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Extensions.AI;
@@ -16,7 +14,6 @@ public partial class BlockMemoryProvider
 
         // Fresh options this turn — IOptions<T> DI values may be stale
         var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
-        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", sessionId);
 
         var blocks = await _blockStore.LoadBlocksAsync(sessionId);
         if (blocks.Count == 0)
@@ -76,28 +73,6 @@ public partial class BlockMemoryProvider
 
         var messages = blocks.Select(b =>
             new ChatMessage(ChatRole.System, b.ToContextString())).ToList();
-
-        if (_encoding is not null && messages.Count > 0)
-        {
-            var totalTokens = 0;
-            foreach (var msg in messages)
-                totalTokens += _encoding.Encode(msg.Text ?? "").Count;
-
-            if (compOpts is not null && contextWindow.HasValue && totalTokens >= (int)(compOpts.AutoThreshold / 100.0 * contextWindow.Value))
-            {
-                if (compOpts.AutoCompress)
-                {
-                    var protectedSet = new HashSet<string>(memOpts.ProtectedBlockTypes, StringComparer.OrdinalIgnoreCase);
-                    var deletable = blocks.Any(b => !protectedSet.Contains(b.Type.ToString()));
-                    if (deletable)
-                    {
-                        var protectedTypes = string.Join(", ", memOpts.ProtectedBlockTypes);
-                        messages.Add(new ChatMessage(ChatRole.System,
-                            $"AUTO-COMPRESSION: Context is at {totalTokens} tokens — clean old blocks now. Use `list` to inspect memory, then `clean` old tool calls, tool results, and reasoning blocks. PROTECTED (keep): {protectedTypes}."));
-                    }
-                }
-            }
-        }
 
         return messages;
     }

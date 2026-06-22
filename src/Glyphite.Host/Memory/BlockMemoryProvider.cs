@@ -4,7 +4,6 @@ using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using SharpToken;
 
 namespace Glyphite.Host.Memory;
 
@@ -27,20 +26,6 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
     private readonly AgentOptions _agentOpts;
     private readonly CompressionOptions? _compOpts;
     private string? _defaultSessionId;
-
-    private static readonly GptEncoding? _encoding = GetEncoding();
-
-    private static GptEncoding? GetEncoding()
-    {
-        try { return GptEncoding.GetEncoding("cl100k_base"); }
-        catch { return null; }
-    }
-
-    public static int EstimateTokens(string text)
-    {
-        if (_encoding is null || string.IsNullOrEmpty(text)) return 0;
-        return _encoding.Encode(text).Count;
-    }
 
     public AsyncLocal<HashSet<string>?> CurrentExecutedIds { get; } = new();
 

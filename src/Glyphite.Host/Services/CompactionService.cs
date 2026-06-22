@@ -1,8 +1,6 @@
 using System.Text;
-using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
-using Glyphite.Host.Memory;
 using Microsoft.Extensions.AI;
 
 namespace Glyphite.Host.Services;
@@ -41,9 +39,11 @@ public class CompactionService
         if (blocks.Count <= 1) // Only agent_data
             return false;
 
-        var totalTokens = blocks.Sum(b => BlockMemoryProvider.EstimateTokens(b.ToContextString()));
+        // Use real tokens from the last API request (lastHit + lastMiss from the last turn)
+        var lastUsage = await _agentStore.GetLastUsageAsync(sessionId);
+        var lastRequestTokens = lastUsage.LastHit + lastUsage.LastMiss;
         var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
-        if (totalTokens < threshold)
+        if (lastRequestTokens < threshold)
             return false;
 
         // 1. Remove all non-protected blocks (tool, auto_tool, agent_reasoning, system*, todo, etc.)
@@ -65,28 +65,37 @@ public class CompactionService
         // 4. Distribute turn groups into Fibonacci zones (from newest backwards)
         var zones = DistributeFibonacci(turnGroups);
 
-        // 5. Build summarization prompt with all zones
+        // 5. Keep the first two zones (newest, 1+1 turns) as-is, summarize the rest
         var model = await _agentStore.GetAgentModelAsync(sessionId);
-        var summaries = await SummarizeZonesAsync(zones, model);
+        var (summaries, preservedBlocks) = await CompactZonesAsync(zones, model);
 
-        if (summaries.Count == 0)
+        if (summaries.Count == 0 && preservedBlocks.Count == 0)
             return false;
 
-        // 6. Find agent_data block, delete everything after it, insert summaries
+        // 6. Find agent_data block, delete everything after it, insert compacted history
         var agentBlock = blocks.First(b => b.Type == BlockType.agent_data);
         await _blockStore.DeleteBlocksSinceAsync(sessionId, agentBlock.Number + 1);
 
         var nextNumber = agentBlock.Number + 1;
-        var summaryBlocks = new List<MemoryBlock>();
-        for (var i = 0; i < summaries.Count; i++)
+        var newBlocks = new List<MemoryBlock>();
+
+        // First insert summaries (old zones, oldest-first)
+        foreach (var summary in summaries)
         {
-            var block = MemoryBlock.AgentMessage(summaries[i], model: model);
+            var block = MemoryBlock.AgentMessage(summary, model: model);
             block.Number = nextNumber++;
-            summaryBlocks.Add(block);
+            newBlocks.Add(block);
         }
 
-        if (summaryBlocks.Count > 0)
-            await _blockStore.AppendBlocksAsync(sessionId, summaryBlocks, nextNumber);
+        // Then insert preserved original blocks (newest, from the two most recent zones)
+        foreach (var block in preservedBlocks)
+        {
+            block.Number = nextNumber++;
+            newBlocks.Add(block);
+        }
+
+        if (newBlocks.Count > 0)
+            await _blockStore.AppendBlocksAsync(sessionId, newBlocks, nextNumber);
 
         return true;
     }
@@ -180,39 +189,54 @@ public class CompactionService
     }
 
     /// <summary>
-    /// Summarize all zones in a single LLM call.
-    /// Returns one summary string per zone.
+    /// Compact zones: the last two zones (newest, 1+1 turns) are preserved as-is.
+    /// All older zones are summarized individually via LLM.
+    /// Zones are in oldest-first order.
+    /// Returns (summaries oldest-first, preserved blocks from the two newest zones in order).
     /// </summary>
-    private async Task<List<string>> SummarizeZonesAsync(List<List<MemoryBlock>> zones, string? model)
+    private async Task<(List<string> Summaries, List<MemoryBlock> PreservedBlocks)> CompactZonesAsync(
+        List<List<MemoryBlock>> zones, string? model)
     {
         if (zones.Count == 0)
-            return [];
+            return ([], []);
 
-        var sb = new StringBuilder();
-        sb.AppendLine("Below are Zones from a coding session. Each Zone represents one or more conversation turns (user questions and agent responses).");
-        sb.AppendLine("For EACH Zone, provide a concise 2-4 sentence summary preserving key decisions, findings, code changes, and important context.");
-        sb.AppendLine("Be precise — focus on what was done, decided, or changed.");
-        sb.AppendLine();
+        // Last two zones (newest) — preserve original blocks
+        // All preceding zones — summarize
+        var preserveCount = Math.Min(zones.Count, 2);
+        var summarizeCount = zones.Count - preserveCount;
 
-        for (var i = 0; i < zones.Count; i++)
+        var summaries = new List<string>();
+        for (var i = 0; i < summarizeCount; i++)
         {
-            sb.AppendLine($"=== ZONE {i + 1} ===");
-            foreach (var block in zones[i])
-            {
-                var text = block.ToContextString();
-                // Strip the block header line for brevity, keep content
-                sb.AppendLine(text);
-            }
-            sb.AppendLine();
+            var summary = await SummarizeSingleZoneAsync(zones[i], model);
+            if (summary is not null)
+                summaries.Add(summary);
         }
 
-        sb.AppendLine("Now respond with exactly one summary per zone, numbered:");
-        for (var i = 1; i <= zones.Count; i++)
-            sb.AppendLine($"SUMMARY {i}: ...");
+        // Collect preserved blocks from the two newest zones (last two in oldest-first list)
+        var preserved = new List<MemoryBlock>();
+        for (var i = summarizeCount; i < zones.Count; i++)
+        {
+            preserved.AddRange(zones[i]);
+        }
+
+        return (summaries, preserved);
+    }
+
+    private async Task<string?> SummarizeSingleZoneAsync(List<MemoryBlock> blocks, string? model)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Summarize this conversation zone concisely in 2-4 sentences, preserving key decisions, findings, code changes, and important context.");
+        sb.AppendLine();
+
+        foreach (var block in blocks)
+        {
+            sb.AppendLine(block.ToContextString());
+        }
 
         var messages = new List<ChatMessage>
         {
-            new(ChatRole.System, "You are a precise summarizer for a coding assistant conversation. Summarize each zone concisely, preserving key technical decisions, findings, and context."),
+            new(ChatRole.System, "You are a precise summarizer for a coding assistant conversation. Provide a concise summary of the given conversation zone."),
             new(ChatRole.User, sb.ToString())
         };
 
@@ -220,54 +244,19 @@ public class CompactionService
         {
             ModelId = model,
             Temperature = 0.3f,
-            MaxOutputTokens = zones.Count * 256
+            MaxOutputTokens = 512
         };
 
-        ChatResponse response;
         try
         {
-            response = await _chatClient.GetResponseAsync(messages, chatOpts);
+            var response = await _chatClient.GetResponseAsync(messages, chatOpts);
+            var assistantMsg = response.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
+            var text = assistantMsg?.Text?.Trim();
+            return string.IsNullOrEmpty(text) ? null : text;
         }
         catch
         {
-            return [];
+            return null;
         }
-
-        var assistantMsg = response.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
-        var responseText = assistantMsg?.Text ?? "";
-
-        // Parse numbered summaries: "SUMMARY 1: ..."
-        var summaries = new List<string>();
-        StringBuilder? current = null;
-
-        foreach (var line in responseText.Split('\n'))
-        {
-            var trimmed = line.TrimEnd('\r');
-            var match = System.Text.RegularExpressions.Regex.Match(
-                trimmed, @"^SUMMARY\s+(\d+)[:\-.]\s*(.*)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-            if (match.Success)
-            {
-                if (current is not null)
-                    summaries.Add(current.ToString().Trim());
-
-                current = new StringBuilder(match.Groups[2].Value);
-            }
-            else if (current is not null)
-            {
-                if (current.Length > 0)
-                    current.Append(' ');
-                current.Append(trimmed);
-            }
-        }
-
-        if (current is not null)
-            summaries.Add(current.ToString().Trim());
-
-        // Fallback: if parsing gave wrong count, return whole text as single summary
-        if (summaries.Count == 0 && !string.IsNullOrEmpty(responseText))
-            summaries.Add(responseText.Trim());
-
-        return summaries;
     }
 }
