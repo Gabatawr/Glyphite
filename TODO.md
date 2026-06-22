@@ -40,11 +40,12 @@
   - **FailSafeChatClient** (310 строк) — оркестратор, стриминг/не-стриминг циклы, делегирует ToolExecutor и UsageTracker
 - **Итог:** `−239 строк` из FailSafeChatClient, логика изолирована, каждый класс можно тестировать отдельно
 
-### 9. TurnProcessor — async iterator с критической логикой
-- **Файл:** `src/Glyphite.Host/Services/TurnProcessor.cs`
-- **Проблема:** вся логика turn-а (очистка пика, компакция, стриминг, сохранение usage, flush блоков) — в одном методе с `yield return`
-- **Важно:** эту логику долго отлаживали, менять с осторожностью
-- **Решение:** выносить шаги по одному, с тестами
+### ~~9. TurnProcessor — async iterator с критической логикой~~ ✅
+- **Выполнено:** локальные функции (`ProcessUpdate`, `FlushReasoning`, `FlushText`, `FlushAll`) и вспомогательные методы (`CleanToolArgs`, `BuildPeekCleanMessage`) вынесены в `TurnContext` (файл `TurnProcessor.Streaming.cs`).
+- **TurnProcessor.cs** (169 строк) — только оркестрация: подготовка → стриминг → финиш. Три чёткие фазы, `yield return` только в ProcessAsync.
+- **TurnProcessor.Streaming.cs** (278 строк) — `TurnContext` с полным состоянием потока. Логика не менялась — только перемещение кода.
+- **Итог:** `400 → 447 строк` (+47 на boilerplate класса), оба файла <300 строк, `-231` из TurnProcessor.cs.
+- **TODO #10 ChatRepl** остаётся последним крупным пунктом.
 
 ### 10. ChatRepl — слишком много ответственности
 - **Файлы:** 6 partial-файлов (Input, Commands, Config, Startup, Streaming, ChatRepl.cs)
