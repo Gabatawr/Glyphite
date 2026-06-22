@@ -34,8 +34,10 @@ public static class TodoTool
                 return await Create(title, items, agentStore, blockStore, sessionId, opts);
             case "update":
                 return await Update(title, items, agentStore, blockStore, sessionId, opts);
+            case "list":
+                return await List(title, blockStore, sessionId);
             default:
-                return $"Unknown action '{action}'. Use 'create' or 'update'.";
+                return $"Unknown action '{action}'. Use 'create', 'list', or 'update'.";
         }
     }
 
@@ -53,7 +55,7 @@ public static class TodoTool
 
         items ??= [];
 
-        var dictItems = items.Select(i => (object)new Dictionary<string, object>
+        var dictItems = items.Select(i => new Dictionary<string, object?>
         {
             ["text"] = i.Text ?? "",
             ["status"] = opts.ValidStatuses.Contains(i.Status ?? opts.DefaultStatus) ? i.Status! : opts.DefaultStatus,
@@ -77,26 +79,19 @@ public static class TodoTool
         string sessionId,
         TodoOptions opts)
     {
-        // Auto-find the latest todo block
-        var todos = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo, 1, true);
-        if (todos.Count == 0)
-            return "No todo list found. Create one with action='create' first.";
-
-        var existing = todos[0];
-
-        List<Dictionary<string, object?>> currentItems;
-        if (existing.Data?.TryGetValue("items", out var itemsObj) == true)
+        // Find by title (ID), fall back to latest if title is null
+        var existing = await FindTodoByTitle(title, blockStore, sessionId);
+        if (existing is null)
         {
-            currentItems = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(
-                ((JsonElement)itemsObj!).GetRawText()) ?? [];
-        }
-        else
-        {
-            return "Latest todo list has no items";
+            if (!string.IsNullOrEmpty(title))
+                return $"Todo list '{title}' not found. Create one with action='create' first.";
+            var todos = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo, 1, true);
+            if (todos.Count == 0)
+                return "No todo list found. Create one with action='create' first.";
+            existing = todos[0];
         }
 
-        if (currentItems is null)
-            return "Cannot parse items";
+        var currentItems = DeserializeItems(existing);
 
         items ??= [];
         var results = new List<string>();
@@ -105,7 +100,6 @@ public static class TodoTool
         {
             if (item.Remove == true)
             {
-                // Remove by index
                 if (item.Index is null)
                 {
                     results.Add("remove: missing index");
@@ -122,7 +116,6 @@ public static class TodoTool
             }
             else if (item.Index is not null)
             {
-                // Update existing item by index
                 if (item.Index < 0 || item.Index >= currentItems.Count)
                 {
                     results.Add($"update: index {item.Index} out of range");
@@ -163,7 +156,6 @@ public static class TodoTool
             }
             else
             {
-                // No index — add new item
                 if (string.IsNullOrWhiteSpace(item.Text))
                 {
                     results.Add("add: missing text");
@@ -180,30 +172,67 @@ public static class TodoTool
             }
         }
 
-        // Update the existing todo block in-place
-        var updatedData = new Dictionary<string, object>
-        {
-            ["items"] = JsonSerializer.Deserialize<object>(JsonSerializer.Serialize(currentItems))!
-        };
+        // Update in-place — serialize items as JsonElement (avoids round-trip through object)
+        var itemsElement = JsonSerializer.SerializeToElement(currentItems);
+        var updatedData = new Dictionary<string, object> { ["items"] = itemsElement };
         await blockStore.UpdateBlockDataAsync(sessionId, existing.Number, updatedData);
 
-        // Update title if provided
-        if (!string.IsNullOrWhiteSpace(title) && title != existing.Content)
-        {
-            await blockStore.UpdateBlockAsync(sessionId, existing.Number, content: title);
-        }
-
-        var displayTitle = !string.IsNullOrWhiteSpace(title) ? title : existing.Content ?? "Updated";
+        var displayTitle = existing.Content ?? "Updated";
         return displayTitle + "\n" + FormatItems(currentItems);
     }
 
-    private static string FormatItems(IEnumerable<object> dictItems)
+    private static async Task<string> List(
+        string? title,
+        IBlockStore blockStore,
+        string sessionId)
+    {
+        // Show specific list by title
+        if (!string.IsNullOrEmpty(title))
+        {
+            var existing = await FindTodoByTitle(title, blockStore, sessionId);
+            if (existing is null)
+                return $"Todo list '{title}' not found. Create one with action='create' first.";
+            var items = DeserializeItems(existing);
+            return title + "\n" + FormatItems(items);
+        }
+
+        // No title — show all lists
+        var all = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo, null, false);
+        if (all.Count == 0)
+            return "No todo lists found. Create one with action='create' first.";
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"── Todo Lists ({all.Count}) ──────────────────");
+        foreach (var b in all)
+        {
+            var items = DeserializeItems(b);
+            var done = items.Count(i => i.GetValueOrDefault("status")?.ToString() == "done");
+            sb.AppendLine($"  {b.Content}  ({done}/{items.Count} done)");
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Find a todo block by its title (Content field). Case-insensitive.</summary>
+    private static async Task<MemoryBlock?> FindTodoByTitle(string? title, IBlockStore blockStore, string sessionId)
+    {
+        if (string.IsNullOrEmpty(title)) return null;
+        var all = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo, null, false);
+        return all.FirstOrDefault(b => string.Equals(b.Content, title, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Deserialize items from a todo block's Data["items"]. Returns empty list on failure.</summary>
+    private static List<Dictionary<string, object?>> DeserializeItems(MemoryBlock block)
+    {
+        if (block.Data?.TryGetValue("items", out var itemsObj) == true && itemsObj is JsonElement je)
+            return JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(je.GetRawText()) ?? [];
+        return [];
+    }
+
+    private static string FormatItems(List<Dictionary<string, object?>> dictItems)
     {
         var sb = new System.Text.StringBuilder();
-        foreach (var item in dictItems)
+        foreach (var dict in dictItems)
         {
-            if (item is not Dictionary<string, object> dict)
-                continue;
             var text = dict.GetValueOrDefault("text")?.ToString() ?? "";
             var status = dict.GetValueOrDefault("status")?.ToString() ?? "?";
             var priority = dict.GetValueOrDefault("priority")?.ToString() ?? "";
@@ -225,11 +254,11 @@ public static class TodoTool
 
     private sealed class TodoInvoker(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService cfg)
     {
-        [Description("Create or update a todo list block to plan and track task progress. Only ONE todo list is active at a time — 'update' always modifies the latest created list. Statuses: pending, in_progress, done, cancelled, blocked. Priority: low, medium, high.")]
+        [Description("Create, update, or list a todo list to plan and track task progress. Each todo list is identified by its title (ID). 'create' makes a new list; 'update' modifies a specific list by title; 'list' shows a list by title (or all lists if title omitted). Statuses: pending, in_progress, done, cancelled, blocked. Priority: low, medium, high.")]
         public async Task<string> Invoke(
-            [Description("Action: 'create' to create a new todo list, 'update' to modify the latest todo list (there is only one active list — update always targets the most recently created one)")] string action,
-            [Description("Title/description (required for create, optional for update — updates the title of the LATEST todo list; does NOT search by title, only renames the latest list)")] string? title = null,
-            [Description("Items for the todo. For create: {text: string, status?: string, priority?: string}. For update: {index?: number, text?: string, status?: string, priority?: string, remove?: boolean}. Items without index are added; items with index are updated; items with remove=true are deleted.")] TodoItem[]? items = null)
+            [Description("Action: 'create' to create a new todo list (title as ID), 'update' to modify an existing list by title, 'list' to show a list by title (or all if omitted)")] string action,
+            [Description("Title (ID) for the todo list. Required for create. For update: finds the list to modify. For list: which list to show. Omit for update/list to affect the latest list or show all.")] string? title = null,
+            [Description("Items for the todo. For create: {text: string, status?: string, priority?: string}. For update: {index?: number, text?: string, status?: string, priority?: string, remove?: boolean}. Items without index are added; items with index are updated; items with remove=true are deleted. Not needed for 'list'.")] TodoItem[]? items = null)
         {
             var opts = await cfg.GetOptionsAsync<TodoOptions>(TodoOptions.Section, sessionId);
             return await Execute(action, title, items, agentStore, blockStore, sessionId, opts);

@@ -37,49 +37,55 @@ namespace Glyphite.Host.Services;
             _logger = logger;
         }
 
-        public async Task<bool> TryCompactAsync(string sessionId, int contextWindow)
+        /// <summary>Fast check — no LLM calls. Determines if compaction is likely needed.</summary>
+        public async Task<bool> ShouldCompactAsync(string sessionId, int contextWindow)
         {
             var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, sessionId);
             if (!compOpts.AutoCompress)
                 return false;
 
             var blocks = await _blockStore.LoadBlocksAsync(sessionId);
-            if (blocks.Count <= 1) // Only agent_data
+            if (blocks.Count <= 1)
                 return false;
 
-            // Use real tokens from the last API request (lastHit + lastMiss from the last turn)
             var lastUsage = await _agentStore.GetLastUsageAsync(sessionId);
             var lastRequestTokens = lastUsage.LastHit + lastUsage.LastMiss;
             var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
             if (lastRequestTokens < threshold)
                 return false;
 
-            // 1. Group ALL blocks into turns (including tool, auto_tool, reasoning, todo, etc.)
+            // Group + zone check (still fast — in-memory)
             var turnGroups = GroupByTurns(blocks);
-            if (turnGroups.Count <= 1) // Just agent_data + nothing
+            return turnGroups.Count > 1 && DistributeFibonacci(turnGroups).Count > 2;
+        }
+
+        public async Task<bool> CompactAsync(string sessionId, int contextWindow)
+        {
+            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, sessionId);
+            var blocks = await _blockStore.LoadBlocksAsync(sessionId);
+            if (blocks.Count <= 1)
                 return false;
 
-            // 2. Distribute turn groups into Fibonacci zones (from newest backwards)
+            // 1. Group ALL blocks into turns
+            var turnGroups = GroupByTurns(blocks);
+            if (turnGroups.Count <= 1)
+                return false;
+
+            // 2. Distribute turn groups into Fibonacci zones
             var zones = DistributeFibonacci(turnGroups);
-            if (zones.Count <= 2) // Two or fewer zones — nothing old enough to compact
+            if (zones.Count <= 2)
                 return false;
-
-            // zones are in oldest-first order:
-            //   zones[0..^3] = old zones (zone 3+) → strip unprotected + summarize
-            //   zones[^2..]   = two newest zones (zone 1-2) → keep intact (all blocks preserved)
 
             var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId);
             var protectedTypes = new HashSet<BlockType>(
                 memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
 
-            // Also keep subagent tool results — they get included in summarization
             var isSubagentTool = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                 { "subagent_run", "subagent_use" };
 
             var model = await _agentStore.GetAgentModelAsync(sessionId);
-            var summarizeCount = zones.Count - 2; // all zones except the last two (newest)
+            var summarizeCount = zones.Count - 2;
 
-            // 3. Strip unprotected blocks from old zones, collect protected + subagent blocks for summarization
             var allUnprotectedNums = new HashSet<double>();
             var zoneProtectedBlocks = new List<List<MemoryBlock>>();
 
