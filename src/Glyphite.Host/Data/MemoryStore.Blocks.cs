@@ -390,6 +390,47 @@ public partial class MemoryStore
         finally { _writeLock.Release(); }
     }
 
+    public async Task ReplaceBlocksSinceAsync(string agentId, double fromNumber, List<MemoryBlock> newBlocks, double nextNumber, HashSet<double>? softDeleteNums = null)
+    {
+        await _writeLock.WaitAsync();
+        try
+        {
+            await using var tx = await _conn.BeginTransactionAsync();
+
+            // 1. Soft-delete individual blocks (old zone unprotected blocks)
+            if (softDeleteNums is not null && softDeleteNums.Count > 0)
+            {
+                foreach (var num in softDeleteNums)
+                    await _conn.ExecuteAsync(
+                        "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num",
+                        new { sid = agentId, num });
+            }
+
+            // 2. Hard-delete everything from the cutoff point
+            await _conn.ExecuteAsync(
+                "DELETE FROM blocks WHERE agent_id = @sid AND number >= @num",
+                new { sid = agentId, num = fromNumber });
+
+            // 3. Insert new blocks (summaries + preserved newest zones)
+            foreach (var block in newBlocks)
+            {
+                block.UpdatedAt = DateTime.UtcNow;
+                await _conn.ExecuteAsync("""
+                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, parent_number, is_deleted)
+                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, @parent_number, 0)
+                    """, MapFromBlock(agentId, block));
+            }
+
+            // 4. Update next_number
+            await _conn.ExecuteAsync(
+                "UPDATE sessions SET next_number = @Next WHERE id = @Id",
+                new { Id = agentId, Next = nextNumber });
+
+            await tx.CommitAsync();
+        }
+        finally { _writeLock.Release(); }
+    }
+
     public async Task<List<string>> ListAgentsAsync()
     {
         using var conn = CreateReadConnection();

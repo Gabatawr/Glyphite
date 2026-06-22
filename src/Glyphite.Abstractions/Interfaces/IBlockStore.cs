@@ -21,6 +21,7 @@ public interface IBlockStore
     Task<int> DeleteBlocksByFilterAsync(string agentId, string[]? types, TimeSpan? recent, HashSet<BlockType>? protectedTypes = null);
     Task ClearAgentBlocksAsync(string agentId);
     Task DeleteBlocksSinceAsync(string agentId, double fromNumber);
+    Task ReplaceBlocksSinceAsync(string agentId, double fromNumber, List<MemoryBlock> newBlocks, double nextNumber, HashSet<double>? softDeleteNums = null);
     Task<int> GetBlockCountAsync(string agentId);
     Task<Dictionary<string, int>> GetBlockTypeStatsAsync(string agentId);
 }

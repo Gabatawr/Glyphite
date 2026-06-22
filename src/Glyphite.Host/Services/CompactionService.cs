@@ -115,19 +115,13 @@ namespace Glyphite.Host.Services;
             if (summaries.Count == 0 && preserved.Count == 0)
                 return false;
 
-            // Remove all unprotected blocks from old zones in one batch
-            // Done AFTER successful summarization — if LLM failed, data stays intact.
-            if (allUnprotectedNums.Count > 0)
-                await _blockStore.RemoveBlocksAsync(sessionId, b => allUnprotectedNums.Contains(b.Number));
-
-            // 6. Find agent_data block, delete everything after it, insert compacted history
+            // 6. Find agent_data block
             var agentBlock = blocks.First(b => b.Type == BlockType.agent_data);
-            await _blockStore.DeleteBlocksSinceAsync(sessionId, agentBlock.Number + 1);
 
+            // Build compacted history: summaries (old zones) + preserved original blocks (newest zones)
             var nextNumber = agentBlock.Number + 1;
             var newBlocks = new List<MemoryBlock>();
 
-            // First insert summaries (old zones, oldest-first)
             foreach (var summary in summaries)
             {
                 var block = MemoryBlock.AgentMessage(summary, model: model);
@@ -135,15 +129,21 @@ namespace Glyphite.Host.Services;
                 newBlocks.Add(block);
             }
 
-            // Then insert preserved original blocks (newest zones, completely intact)
             foreach (var block in preserved)
             {
                 block.Number = nextNumber++;
                 newBlocks.Add(block);
             }
 
-            if (newBlocks.Count > 0)
-                await _blockStore.AppendBlocksAsync(sessionId, newBlocks, nextNumber);
+            // 7. Atomically replace history: soft-delete unprotected old-zone blocks,
+            //    hard-delete everything after agent_data, insert compacted history.
+            //    All in one transaction — if anything fails, nothing is lost.
+            await _blockStore.ReplaceBlocksSinceAsync(
+                sessionId,
+                fromNumber: agentBlock.Number + 1,
+                newBlocks,
+                nextNumber,
+                softDeleteNums: allUnprotectedNums.Count > 0 ? allUnprotectedNums : null);
 
             return true;
         }
