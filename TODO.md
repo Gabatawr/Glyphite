@@ -22,13 +22,14 @@
 - **Проблема:** паттерн `await _writeLock.WaitAsync(); try { ... } finally { _writeLock.Release(); }` повторяется ~48 раз
 - **Решение:** сделать helper-метод `async Task<T> WithLockAsync<T>(Func<Task<T>> action)` или декоратор
 
-### 5. Пустые `catch { }` — нужно проработать flow ошибок
-- **Файлы:**
-  - `MemoryBlock.cs:124` — ошибка парсинга JSON в `ToContextString()`
-  - `FailSafeChatClient.cs:139` — ошибка трекинга memory clean
-  - `BashSessionManager.cs:72, 196` — ошибка `Kill()` процесса
-  - `McpService.cs:108, 322` — ошибка `DisposeAsync()`
-- **Решение:** логгировать ошибки через Serilog, а не проглатывать
+### ~~5. Пустые `catch { }` — нужно проработать flow ошибок~~ ✅
+- **Исправлено:** все 6 пустых `catch` заменены на `Console.Error.WriteLine` с контекстным сообщением
+  - `MemoryBlock.cs:124` — `"Failed to parse items in ToContextString"`
+  - `FailSafeChatClient.cs:139` — `"Failed to track memory clean blocks"`
+  - `BashSessionManager.cs:72` — `"Error killing process on listener failure"`
+  - `BashSessionManager.cs:196` — `"Error killing process on timeout"`
+  - `McpService.cs:108` — `"Error disposing client '{name}'"`
+  - `McpService.cs:322` — `"Error disposing client on shutdown"`
 
 ### 6. `null!` для scoped-сервисов в ChatRepl
 - **Файл:** `ChatRepl.cs:16-17`

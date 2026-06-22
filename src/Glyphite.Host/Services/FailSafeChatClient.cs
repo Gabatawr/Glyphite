@@ -136,7 +136,10 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                         _pendingMemoryCleanBlocks.Add(num);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[FailSafeChatClient] Failed to track memory clean blocks: {ex.Message}");
+            }
         }
     }
 

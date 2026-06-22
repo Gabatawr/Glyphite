@@ -105,7 +105,10 @@ public class McpService : IAsyncDisposable
     public async Task ReconnectAllAsync(string? sessionId = null, CancellationToken ct = default)
     {
         foreach (var (name, client) in _clients)
-            try { await client.DisposeAsync().ConfigureAwait(false); } catch { }
+        {
+            try { await client.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { Console.Error.WriteLine($"[McpService] Error disposing client '{name}': {ex.Message}"); }
+        }
         _clients.Clear();
         _statuses.Clear();
         _errors.Clear();
@@ -319,7 +322,10 @@ public class McpService : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         foreach (var client in _clients.Values)
-            try { await client.DisposeAsync().ConfigureAwait(false); } catch { }
+        {
+            try { await client.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { Console.Error.WriteLine($"[McpService] Error disposing client on shutdown: {ex.Message}"); }
+        }
         _clients.Clear();
         _toolCache.Clear();
         _serverConfigHashes.Clear();

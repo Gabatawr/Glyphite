@@ -121,7 +121,10 @@ public class MemoryBlock
                     extra += $"\nItems: {summary}";
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[MemoryBlock] Failed to parse items in ToContextString: {ex.Message}");
+            }
         }
 
         var body = Content;

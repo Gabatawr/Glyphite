@@ -69,7 +69,7 @@ public class BashSession : IDisposable
         }
         catch (Exception ex)
         {
-            try { _process.Kill(entireProcessTree: true); _killed = true; } catch { }
+            try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { Console.Error.WriteLine($"[BashSessionManager] Error killing process on listener failure: {killEx.Message}"); }
             lock (_gate)
             {
                 _pendingTcs?.TrySetException(ex);
@@ -193,7 +193,7 @@ public class BashSession : IDisposable
 
             using (linkedCts.Token.Register(() =>
             {
-                try { _process.Kill(entireProcessTree: true); _killed = true; } catch { }
+                try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { Console.Error.WriteLine($"[BashSessionManager] Error killing process on timeout: {killEx.Message}"); }
                 tcs.TrySetCanceled();
             }))
             {
