@@ -20,7 +20,60 @@ Settings are applied in this order (each overrides the previous):
 
 ## Session state (Jun 22)
 
-### Latest changes — ChatRepl refactoring into SessionManager, MemoryStore split, TurnContext extraction (v0.7.7–0.7.47)
+### Latest changes — Tech debt cleanup, compaction UI fix, TodoTool improvements (v0.7.47–0.7.77)
+
+**1. Batch tech debt fixes (11 items) — 30 files changed:**
+
+| # | Problem | Fix |
+|---|---------|-----|
+| #1 | Dead code in `TurnProcessor.Streaming` (ContextMessages modifications) | Removed — never reached LLM (FailSafeClient uses own copy) |
+| #2 | 75 lines boilerplate duplicated across 3 repositories | Extracted `RepositoryBase` with `WithLockAsync`, `CreateReadConnection`, `Dispose` |
+| #3 | Hardcoded `"deepseek-v4-flash"` in SubAgentTool | Uses `_deepseek.Model` from config |
+| #4 | SessionManager 850 lines mixing config loading + agent selection + lifecycle | Extracted `ConfigLoader` + `AgentPicker` → 743 lines, clear separation |
+| #5 | Duplicated usage parsing in CompactionService + UsageTracker (triple switch) | Shared `UsageParser.Normalize()` + `UsageParser.Parse()` |
+| #6 | Icon map (`blockType → emoji`) duplicated in 3 files | `BlockTypeIcon.Get(type)` with `FrozenDictionary` |
+| #7 | `Directory.GetCurrentDirectory()` called 5 times | Cached in `_cwd` field |
+| #8 | Empty `catch { }` in SearchTools (5 occurrences) | `logger?.LogWarning(...)` with ILogger injected via ToolRegistry |
+| #9 | `cfg!` null-forgiving in TodoTool | `IConfigService cfg` non-nullable |
+| #10 | Magic string section names in 22 files | All using `*Options.Section` constants |
+| #11 | `BlockEntity`/`ConfigRow` in SessionRepository, used by BlockRepository | Moved to `Data/Models.cs` |
+
+**2. Round 2 — cfg!, Task.Run, ReadLineWithHistoryAsync, SessionManager partial:**
+
+| # | Problem | Fix |
+|---|---------|-----|
+| #12 | `cfg!` in 4 more files (BashTool, WebFetchTool, FileReadTool, SearchTools) | All `IConfigService?` → `IConfigService` |
+| #13 | `Task.Run` wrapping async in SubAgentManager | Removed — semaphore already serializes |
+| #15 | ReadLineWithHistoryAsync: 207-line switch for 20 keyboard handlers | Extracted each case into named method (HandleEnter, HandleEscape, HandleUpArrow, etc.) — main loop now 42 lines |
+| #16 | SessionManager still 743 lines | Split into `SessionManager.Commands.cs` (529 lines commands) + `SessionManager.cs` (221 lines core) |
+
+**3. Compaction UI freeze fix:**
+
+Before: `TryCompactAsync` ran the full LLM summarization **before** yielding to the UI — screen froze for seconds.
+
+After: split into two methods:
+- `ShouldCompactAsync()` — fast check (DB, no LLM) — runs first
+- `CompactAsync()` — slow LLM summarization — runs **after** `[AutoTool: compression]` notification is yielded to the UI
+
+```csharp
+// TurnProcessor now:
+var shouldCompact = await _compactionService.ShouldCompactAsync(...); // fast
+if (shouldCompact)
+{
+    yield return new AutoToolTurnEvent("compression", ...); // UI shows immediately
+    var compacted = await _compactionService.CompactAsync(...); // slow — user sees progress
+}
+```
+
+**4. TodoTool improvements:**
+
+- **`list` action** — view a specific list by title or all lists
+- **Title as immutable ID** — each `create(title)` creates a fixed-ID list. `update(title)` finds by ID, not the latest. Multiple independent lists possible.
+- **Serialization fix** — replaced `Deserialize<object>(Serialize(...))!` with `SerializeToElement(currentItems)` — clean `JsonElement`, no roundtrip
+- **Type-safe FormatItems** — `List<Dictionary<string, object?>>` instead of `IEnumerable<object>` with casts
+- **Config keys fixed** — `todo_write`/`todo_update` → `todo` in ToolMaxLength/ToolHiddenArgs (they never matched the actual tool name)
+
+### Previous — Session state (Jun 22) — ChatRepl refactoring into SessionManager, MemoryStore split, TurnContext extraction (v0.7.7–0.7.47)
 
 **1. MemoryStore→ 3 repositories — ISP split:**
 
@@ -309,13 +362,13 @@ Two independent cleanup mechanisms, both running **after LLM consumes the result
 | **TurnProcessor** (DB) | `tool_result` in SQLite (skips saving for peek), deletes `is_deleted=1` | During tool execution (after FunctionResultContent) |
 | **FailSafeClient** (messageList) | `ChatRole.Tool` messages with peek results → truncate to `"(peek)"`; deleted block messages → remove from list | After LLM consumes the result (next iteration start) |
 
-**Important:** The `contextMessages` modifications in `TurnProcessor.cs:228–271` (memory clean + peek replace) are now **dead code** — `contextMessages` is never read after being copied to `initialMessages` at line 81. All actual cleanup happens in `FailSafeClient` on `messageList`.
+**Note:** The `ContextMessages` modifications that were once dead code in `TurnProcessor.Streaming` have been **removed** (cleanup happens in `FailSafeClient` on `messageList`).
 
 ### Architecture
 - **Abstractions** — interfaces, models, no deps (except `Microsoft.Extensions.AI`)
   - Includes `ISubAgentConfigLoader`, `IAgentManager`, `IAgentStore`, `IBlockStore`, `IConfigStore`, etc.
-- **Host** — service implementations (TurnProcessor, FailSafeChatClient, ToolExecutor, UsageTracker, SessionRepository, BlockRepository, ConfigRepository, BlockMemoryProvider, SubAgentConfigLoader, SubAgentManager), tools (SubAgentTool, ToolRegistry, etc.), MCP, DI wiring
-- **Cli** — UI only (ChatRepl + 3 partials, SessionManager, InputHistory, ConsoleRenderer). No persistence logic.
+- **Host** — service implementations (TurnProcessor, FailSafeChatClient, ToolExecutor, UsageTracker, SessionRepository, BlockRepository, ConfigRepository, BlockMemoryProvider, SubAgentConfigLoader, SubAgentManager, RepositoryBase), tools (SubAgentTool, TodoTool, ToolRegistry, etc.), utils (UsageParser, BlockTypeIcon, ToolCallHelper), MCP, DI wiring
+- **Cli** — UI only (ChatRepl + 4 partials, SessionManager + Commands partial, InputHistory, ConsoleRenderer, ConfigLoader, AgentPicker). No persistence logic.
 
 ### Peek flow
 Two levels of peek cleanup, both in `BlockRepository.cs`:
@@ -339,4 +392,4 @@ CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_delet
 See `BlockRepository.cs` `InitializeAsync()` for full DDL.
 
 ### Version
-`Version.txt`: `0.7.47`, published up to v0.7.47
+`Version.txt`: `0.7.77`, published up to v0.7.77

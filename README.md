@@ -15,7 +15,7 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
   - `read_file` / `write_file` / `patch_file` — file operations with diff highlighting
   - `fetch_web` — HTTP requests
   - `search_glob` / `search_grep` — file and content search
-  - `todo_write` / `todo_update` — task management within the conversation
+   - `todo` — task management with create/update/list, title-based multi-list support
   - `memory` — context and memory management (stats, delete, recover blocks)
   - `subagent_run` / `subagent_use` / `subagent_list` — delegate tasks to worker agents
 - **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`). Every agent (main + subagents) can have its own MCP servers via `Glyphite.{agentName}.json`
@@ -24,6 +24,7 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
   - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
 - **Atomic auto-compaction** — when context exceeds threshold, groups old turns into Fibonacci zones, summarizes them via LLM in **parallel**, and atomically replaces history in a single SQLite transaction. Protected blocks (agent_data, user_message, agent_message, turn) are preserved; if summarization fails, blocks fall back intact.
+  - **No UI freeze:** fast pre-check (`ShouldCompactAsync`) runs first, `[AutoTool: compression]` notification appears immediately, then slow summarization (`CompactAsync`) runs in background — user sees progress.
 - **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
 - **ToolMaxLength** — per-tool output length control. Set `0` to hide, `-1` for full output, or `N` for first N characters. Works for all tools including MCP.
 - **Content deduplication** — repeated lines compressed in bash, read, and search tool outputs
@@ -106,8 +107,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `search_glob` | Find files by glob pattern |
 | `search_grep` | Search text inside files (with content dedup) |
 | `fetch_web` | HTTP request (GET/POST) with text extraction |
-| `todo_write` | Create a structured todo list (only one active list at a time) |
-| `todo_update` | Update the latest todo list (status, priority, title, add/remove items) — always targets the most recently created list; `title` renames the latest list, does not search; creates a snapshot chain |
+| `todo` | Create, update, or list todo lists — title as immutable ID for multi-list support. `create(title, items)`, `update(title, items)`, `list(title?)` — list all or by title. Statuses: pending, in_progress, done, cancelled, blocked. |
 | `memory` | Memory management: `stats` (type breakdown), `clean` (soft-delete with optional `cascade`; also removes from messageList), `recover` (restore with optional `cascade`), `list` (view blocks) |
 | `subagent_run` | One-shot task execution. Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Supports `mode="parallel"` |
 | `subagent_use` | Execute a task on a named subagent (auto-creates if not found). Memory and context **accumulate** across calls — the agent persists. `memory` tool is available. Supports `mode="parallel"` |
@@ -313,13 +313,13 @@ Key log events:
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
 
 ```bash
-glyphite -v       # → 0.7.47
-/version          # → Glyphite v0.7.47
+glyphite -v       # → 0.7.77
+/version          # → Glyphite v0.7.77
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.7.47 — MainAgent 🏠
+Glyphite CLI v0.7.77 — MainAgent 🏠
 ```
 
 ## Publishing and backups
@@ -337,7 +337,7 @@ Use `./publish.sh` to publish:
 
 Rollback:
 ```bash
-cp ~/.glyphite/backup/glyphite.v0.7.47 ~/.glyphite/glyphite
+cp ~/.glyphite/backup/glyphite.v0.7.77 ~/.glyphite/glyphite
 ```
 
 ## Testing
