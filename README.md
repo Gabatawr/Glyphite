@@ -2,7 +2,7 @@
 
 **AI agent with tools — right in your terminal.**
 
-Glyphite is a .NET console-based AI agent that runs commands, works with files, searches for information, manages todos, and interacts with external services — all from the command line. Built for agentic workflows with block-based memory, cascading context, and MCP support.
+Glyphite is a .NET console-based AI agent that runs commands, works with files, searches for information, manages todos, and interacts with external services — all from the command line. Built for agentic workflows with block-based memory, cascading context, MCP support, and subagent delegation.
 
 ## Features
 
@@ -21,6 +21,7 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
   - **`ParentNumber` + cascade** — blocks carry parent references; `memory delete` and `recover` cascade through `Data["parentNumber"]` chains
   - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
+- **Atomic auto-compaction** — when context exceeds threshold, groups old turns into Fibonacci zones, summarizes them via LLM in **parallel**, and atomically replaces history in a single SQLite transaction. Protected blocks (agent_data, user_message, agent_message, turn) are preserved; if summarization fails, blocks fall back intact.
 - **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
 - **ToolMaxLength** — per-tool output length control. Set `0` to hide, `-1` for full output, or `N` for first N characters. Works for all tools including MCP.
 - **Content deduplication** — repeated lines compressed in bash, read, and search tool outputs
@@ -29,8 +30,9 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
 - **Live streaming** — text/reasoning chunks rendered in real-time with color transitions and mode switches
 - **Peek tool calls** — LLM can mark tool calls as `peek=true` to see the result once before it's truncated to `(peek)`. File writes/patches always execute regardless of peek.
 - **Memory clean from messageList** — `memory clean` removes blocks from both SQLite and the in-memory message list, preventing stale data from reaching the LLM.
+- **Auto-tool events** — compaction and peek-reasoning notifications shown as compact auto-tool blocks
+- **Structured file logging** — all host service logs written to `~/.glyphite/logs/{date}-{run}.log` via Serilog + `ILogger<T>`. No console noise from subagents.
 - **Prompt prefix** — colored segments: DarkGray default, DarkYellow (good cache rate), White (bad rate / significant cost)
-- **Auto-tool events** — peek cleanup notifications shown as compact auto-tool blocks
 - **Tab completion** — `/*` commands with tab completion
 - **Inline args** — `/new MyAgent`, `/use OtherAgent`, `/delete OldAgent`
 - **Versioning** — auto-increment patch on every debug build, rollover at >99, version shown in greeting and via `-v`
@@ -157,6 +159,29 @@ When a subagent is created (via `subagent_run` or `subagent_use`), its configura
 
 Config is loaded by `SubAgentConfigLoader` every turn — changes to config files are reflected immediately.
 
+## Auto-compaction
+
+When enabled, Glyphite automatically compresses old conversation history via LLM summarization:
+
+```json
+{
+  "Compression": {
+    "AutoCompress": true,
+    "AutoThreshold": 75
+  }
+}
+```
+
+- **Trigger:** when last request tokens exceed `AutoThreshold`% of the context window (e.g., 75% of 160K = 120K tokens)
+- **Fibonacci zones:** history is grouped into Fibonacci-sized zones (1, 1, 2, 3, 5, 8... turns). The two newest zones (1-2) are always preserved intact.
+- **Parallel summarization:** old zones are summarized via LLM **in parallel** — all zones at once, reducing latency
+- **Protected blocks:** `agent_data`, `user_message`, `agent_message`, `turn` — preserved in summarization prompt
+- **Subagent results:** `subagent_run`/`subagent_use` tool blocks are also included in summarization
+- **Fail-safe:** if summarization fails for a zone, its protected blocks are kept intact (no data loss)
+- **Atomic replacement:** summaries + preserved blocks are inserted atomically via `ReplaceBlocksSinceAsync` in a single SQLite transaction. On crash — rollback, nothing lost.
+- **Usage tracking:** compaction LLM calls record hit/miss/output tokens to session stats (parsed from `response.RawRepresentation`)
+- **Notification:** when compaction triggers, `[AutoTool: compression | {"AutoCompress":true,"AutoThreshold":75}]` is shown before the LLM call
+
 ## MCP (Model Context Protocol)
 
 Glyphite supports MCP servers via `stdio`, `streamablehttp`, and `sse` transports. Configure servers in `Glyphite.json`:
@@ -198,7 +223,7 @@ All configuration is reloaded from disk every turn — no `/reload` command need
 | `Todo.*` | Todo valid statuses | per-call via `TodoTool` |
 | `WebFetch.*` | HTTP timeouts | per-call via `WebFetchTool` |
 | `Memory.*` | Protected block types, reload agent file | per-turn via `BlockMemoryProvider` |
-| `Compression.*` | Compression thresholds | per-turn via `BlockMemoryProvider` |
+| `Compression.*` | Compression thresholds | per-turn via `TurnProcessor` |
 
 Changes are reflected immediately on the next user turn — no restart required.
 
@@ -230,6 +255,7 @@ The LLM can pass `"peek": true` to any tool to mark the result as transient:
 - After the LLM generates a response, the result is **truncated to `(peek)`** in the message list
 - In the database, the block's `tool_result` is never saved (skipped by `TurnProcessor`)
 - Reasoning blocks with `peek=true` are cleaned at the start of the next turn via `RemovePeekBlocksAsync`
+- The auto-tool `[AutoTool: peek_reasoning | {"count":N}]` notifies when reasoning peek blocks are cleaned
 
 **How it works:** `FailSafeChatClient` tracks `_pendingPeekCallIds` during tool execution. After the LLM consumes the results (reads them and generates a response), it replaces the real data with `(peek)` in `messageList`. The LLM sees the data once, then sees only `(peek)` on subsequent iterations.
 
@@ -258,18 +284,40 @@ Supported:
 - **OpenAI** — via Microsoft.Extensions.AI
 - Any models compatible with Microsoft.Extensions.AI
 
+## Logging
+
+All host service logs are written to structured files via Serilog:
+
+```
+~/.glyphite/logs/22-06-2026-1.log
+~/.glyphite/logs/22-06-2026-2.log
+```
+
+- **Path:** `~/.glyphite/logs/{dd-MM-yyyy}-{run}.log` (auto-rotated per run)
+- **Format:** `2026-06-22 12:34:56.789 +00:00 [INF] Turn start session Agent0605, model deepseek-v4-flash`
+- **Level:** Information and above (errors, warnings, info)
+- **Scope:** All host services via `ILogger<T>` (TurnProcessor, CompactionService, McpService, FailSafeChatClient, ConfigService, BashSessionManager)
+- **Subagent isolation:** subagent logs go to the same file, but never to console — no UI pollution
+
+Key log events:
+- Turn start/end with session ID and usage stats (hit/miss/output)
+- Compaction start/end with zone and summary counts
+- Tool iteration count and accumulated tokens per turn
+- MCP connection/disconnection/reconnection events
+- Error conditions (parsing failures, process kill errors, etc.)
+
 ## Versioning
 
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
 
 ```bash
-glyphite -v       # → 0.6.6
-/version          # → Glyphite v0.6.6
+glyphite -v       # → 0.7.6
+/version          # → Glyphite v0.7.6
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.6.6 — MainAgent 🏠
+Glyphite CLI v0.7.6 — MainAgent 🏠
 ```
 
 ## Publishing and backups
@@ -287,7 +335,7 @@ Use `./publish.sh` to publish:
 
 Rollback:
 ```bash
-cp ~/.glyphite/backup/glyphite.v0.6.5 ~/.glyphite/glyphite
+cp ~/.glyphite/backup/glyphite.v0.7.5 ~/.glyphite/glyphite
 ```
 
 ## Testing
