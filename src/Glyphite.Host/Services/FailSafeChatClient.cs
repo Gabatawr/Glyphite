@@ -154,7 +154,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
             if (hasError)
             {
-                results.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, $"Skipped вЂ” previous tool errored"), new TextContent("Skipped вЂ” previous tool errored")]));
+                results.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, $"Skipped — previous tool errored"), new TextContent("Skipped — previous tool errored")]));
                 continue;
             }
 

@@ -2,10 +2,8 @@
 
 ## 🐛 Баги
 
-### 1. Испорченная Unicode-строка в FailSafeChatClient
-- **Файл:** `src/Glyphite.Host/Services/FailSafeChatClient.cs:157`
-- **Проблема:** `"Skipped вЂ” previous tool errored"` — em dash `—` превратился в кракозябры из-за битой UTF-8 кодировки файла
-- **Решение:** заменить на `"Skipped — previous tool errored"` (или `" — "`)
+### ~~1. Испорченная Unicode-строка в FailSafeChatClient~~ ✅
+- **Исправлено:** `Skipped — previous tool errored` — em dash восстановлен
 
 ## 🔧 Рефакторинг
 
@@ -62,10 +60,8 @@
 ### 11. Нет юнит-тестов
 - **Решение:** не требуется на данном этапе (сознательное решение)
 
-### 12. FormattableString.Invariant в TodoTool
-- **Файл:** `src/Glyphite.Host/Tools/TodoTool.cs`
-- **Проблема:** остались 3 вызова `FormattableString.Invariant($"...")`, хотя возвращаемая строка уже упрощена (без номера блока)
-- **Решение:** заменить на обычную интерполяцию строк
+### ~~12. FormattableString.Invariant в TodoTool~~ ✅
+- **Исправлено:** все `FormattableString.Invariant` убраны при рефакторинге туду-тула
 
 ### 13. _compressionOpts в ChatRepl — хот-релоад конфига
 - **Файл:** `ChatRepl.cs:24`
