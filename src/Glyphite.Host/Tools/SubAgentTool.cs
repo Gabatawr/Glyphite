@@ -23,8 +23,6 @@ public static class SubAgentTool
         var chatOptions = new ChatOptions
         {
             ModelId = resolvedModel,
-            Temperature = 0.7f,
-            MaxOutputTokens = 8192,
         };
         if (saveMemory)
         {

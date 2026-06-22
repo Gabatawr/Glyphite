@@ -97,6 +97,7 @@ namespace Glyphite.Host.Services;
             // 4. Summarize each old zone via LLM (using only protected blocks)
             //    Run BEFORE deletion — if summarization fails, no data is lost.
             var summaries = new List<string>();
+            var summarizedFallback = new List<MemoryBlock>(); // protected blocks from zones whose summarization failed
             for (var i = 0; i < zoneProtectedBlocks.Count; i++)
             {
                 if (zoneProtectedBlocks[i].Count == 0)
@@ -105,6 +106,8 @@ namespace Glyphite.Host.Services;
                 var summary = await SummarizeSingleZoneAsync(zoneProtectedBlocks[i], model);
                 if (summary is not null)
                     summaries.Add(summary);
+                else
+                    summarizedFallback.AddRange(zoneProtectedBlocks[i]);
             }
 
             // 5. Collect preserved blocks from the two newest zones (completely intact)
@@ -112,19 +115,25 @@ namespace Glyphite.Host.Services;
             for (var i = summarizeCount; i < zones.Count; i++)
                 preserved.AddRange(zones[i]);
 
-            if (summaries.Count == 0 && preserved.Count == 0)
+            if (summaries.Count == 0 && preserved.Count == 0 && summarizedFallback.Count == 0)
                 return false;
 
             // 6. Find agent_data block
             var agentBlock = blocks.First(b => b.Type == BlockType.agent_data);
 
-            // Build compacted history: summaries (old zones) + preserved original blocks (newest zones)
+            // Build compacted history: summaries (old zones) + summary failure fallback + preserved original blocks
             var nextNumber = agentBlock.Number + 1;
             var newBlocks = new List<MemoryBlock>();
 
             foreach (var summary in summaries)
             {
                 var block = MemoryBlock.AgentMessage(summary, model: model);
+                block.Number = nextNumber++;
+                newBlocks.Add(block);
+            }
+
+            foreach (var block in summarizedFallback)
+            {
                 block.Number = nextNumber++;
                 newBlocks.Add(block);
             }
@@ -256,9 +265,7 @@ namespace Glyphite.Host.Services;
 
         var chatOpts = new ChatOptions
         {
-            ModelId = model,
-            Temperature = 0.3f,
-            MaxOutputTokens = 512
+            ModelId = model
         };
 
         try
