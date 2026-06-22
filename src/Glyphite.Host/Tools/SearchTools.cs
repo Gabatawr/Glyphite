@@ -269,13 +269,13 @@ public static class SearchTools
         }
     }
 
-    public static AIFunction AsGlobFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null, ILogger? logger = null)
+    public static AIFunction AsGlobFunction(IConfigService cfg, string? defaultDirectory = null, string? sessionId = null, ILogger? logger = null)
         => AIFunctionFactory.Create(
-            new SearchInvoker(cfg!, defaultDirectory, sessionId, logger ?? NullLogger.Instance).Glob,
+            new SearchInvoker(cfg, defaultDirectory, sessionId, logger ?? NullLogger.Instance).Glob,
             "search_glob");
 
-    public static AIFunction AsGrepFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null, ILogger? logger = null)
+    public static AIFunction AsGrepFunction(IConfigService cfg, string? defaultDirectory = null, string? sessionId = null, ILogger? logger = null)
         => AIFunctionFactory.Create(
-            new SearchInvoker(cfg!, defaultDirectory, sessionId, logger ?? NullLogger.Instance).Grep,
+            new SearchInvoker(cfg, defaultDirectory, sessionId, logger ?? NullLogger.Instance).Grep,
             "search_grep");
 }

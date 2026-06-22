@@ -101,6 +101,8 @@ public partial class ChatRepl
 
     private static bool IsCommand(List<char> buffer) => buffer.Count > 0 && buffer[0] == '/';
 
+    // ── Input loop ──
+
     private async Task<string?> ReadLineWithHistoryAsync()
     {
         var buffer = new List<char>();
@@ -121,192 +123,236 @@ public partial class ChatRepl
             var ctrl = key.Modifiers.HasFlag(ConsoleModifiers.Control);
 
             if (ctrl && key.Key == ConsoleKey.C)
-            {
-                var text = new string(buffer.ToArray());
-                if (text.Length > 0 && OperatingSystem.IsWindows())
-                {
-                    try
-                    {
-                        var psi = new ProcessStartInfo("clip")
-                        {
-                            RedirectStandardInput = true,
-                            UseShellExecute = false
-                        };
-                        var proc = Process.Start(psi);
-                        if (proc is not null)
-                        {
-                            await proc.StandardInput.WriteAsync(text);
-                            proc.StandardInput.Close();
-                        }
-                    }
-                    catch { /* wl-copy not available */ }
-                }
-                Console.WriteLine();
-                return "";
-            }
+                return await HandleCtrlCAsync(buffer);
 
             if (ctrl && key.Key == ConsoleKey.Z)
                 return null;
 
-            if ((ctrl && key.Key == ConsoleKey.W) ||
-                (ctrl && key.Key == ConsoleKey.H) ||
-                (ctrl && key.Key == ConsoleKey.Backspace))
+            if (ctrl && (key.Key == ConsoleKey.W || key.Key == ConsoleKey.H || key.Key == ConsoleKey.Backspace))
             {
-                DeleteWordBefore(buffer, ref pos);
-                Redraw(new string(buffer.ToArray()), pos);
+                HandleDeleteWord(buffer, ref pos);
                 continue;
             }
 
-            switch (key.Key)
+            var result = HandleKey(buffer, ref pos, key);
+            if (result is not null)
+                return result;
+        }
+    }
+
+    /// <summary>Handle a non-control key press. Returns the input string to return, or null to continue the loop.</summary>
+    private string? HandleKey(List<char> buffer, ref int pos, ConsoleKeyInfo key)
+    {
+        switch (key.Key)
+        {
+            case ConsoleKey.Enter: return HandleEnter(buffer);
+            case ConsoleKey.Escape: HandleEscape(buffer, ref pos); return null;
+            case ConsoleKey.UpArrow: HandleArrowUp(buffer, ref pos); return null;
+            case ConsoleKey.DownArrow: HandleArrowDown(buffer, ref pos); return null;
+            case ConsoleKey.LeftArrow when key.Modifiers.HasFlag(ConsoleModifiers.Control): HandleWordJumpLeft(buffer, ref pos); return null;
+            case ConsoleKey.LeftArrow: HandleCursorLeft(ref pos); return null;
+            case ConsoleKey.RightArrow when key.Modifiers.HasFlag(ConsoleModifiers.Control): HandleWordJumpRight(buffer, ref pos); return null;
+            case ConsoleKey.RightArrow: HandleCursorRight(buffer, ref pos); return null;
+            case ConsoleKey.Home: HandleHome(ref pos); return null;
+            case ConsoleKey.End: HandleEnd(buffer, ref pos); return null;
+            case ConsoleKey.Backspace: HandleBackspace(buffer, ref pos); return null;
+            case ConsoleKey.Delete: HandleDelete(buffer, ref pos); return null;
+            case ConsoleKey.Tab: HandleTab(buffer, ref pos); return null;
+            default: HandleInsertChar(buffer, ref pos, key); return null;
+        }
+    }
+
+    // ── Key handlers ──
+
+    private async Task<string?> HandleCtrlCAsync(List<char> buffer)
+    {
+        var text = new string(buffer.ToArray());
+        if (text.Length > 0 && OperatingSystem.IsWindows())
+        {
+            try
             {
-                case ConsoleKey.Enter:
-                    var input = new string(buffer.ToArray());
-                    Console.WriteLine();
-                    if (!string.IsNullOrWhiteSpace(input))
-                    {
-                        _inputHistory.Add(input);
-                        _historyIndex = _inputHistory.Count;
-                        _pendingInput = null;
-                    }
-                    return input;
-
-                case ConsoleKey.Escape:
-                    _tabCompletionPrefix = null;
-                    if (pos < buffer.Count)
-                    {
-                        pos = buffer.Count;
-                        MoveCursor(pos);
-                    }
-                    else
-                    {
-                        buffer.Clear();
-                        pos = 0;
-                        _historyIndex = _inputHistory.Count;
-                        _pendingInput = null;
-                        ClearFromPromptToBottom();
-                        Console.SetCursorPosition(0, _promptLine);
-                        WriteColoredPrompt();
-                        Console.ResetColor();
-                        _lastBufferLen = 0;
-                    }
-                    break;
-
-                case ConsoleKey.UpArrow:
+                var psi = new ProcessStartInfo("clip")
                 {
-                    if (IsCommand(buffer))
-                    {
-                        CompleteCommand(buffer, ref pos, forward: true);
-                        break;
-                    }
-                    if (_historyIndex == _inputHistory.Count)
-                        _pendingInput = new string(buffer.ToArray());
-                    for (var i = _historyIndex - 1; i >= 0; i--)
-                    {
-                        if ((_inputHistory[i][0] == '/') == false)
-                        {
-                            _historyIndex = i;
-                            buffer = [.. _inputHistory[i]];
-                            pos = buffer.Count;
-                            Redraw(_inputHistory[i], pos);
-                            break;
-                        }
-                    }
-                    break;
-                }
-
-                case ConsoleKey.DownArrow:
+                    RedirectStandardInput = true,
+                    UseShellExecute = false
+                };
+                var proc = Process.Start(psi);
+                if (proc is not null)
                 {
-                    if (IsCommand(buffer))
-                    {
-                        CompleteCommand(buffer, ref pos, forward: false);
-                        break;
-                    }
-                    for (var i = _historyIndex + 1; i <= _inputHistory.Count; i++)
-                    {
-                        if (i == _inputHistory.Count)
-                        {
-                            _historyIndex = _inputHistory.Count;
-                            buffer = [.. (_pendingInput ?? "")];
-                        }
-                        else if ((_inputHistory[i][0] == '/') == false)
-                        {
-                            _historyIndex = i;
-                            buffer = [.. _inputHistory[i]];
-                        }
-                        else
-                        {
-                            continue;
-                        }
-                        pos = buffer.Count;
-                        Redraw(new string(buffer.ToArray()), pos);
-                        break;
-                    }
-                    break;
+                    await proc.StandardInput.WriteAsync(text);
+                    proc.StandardInput.Close();
                 }
+            }
+            catch { /* clip not available */ }
+        }
+        Console.WriteLine();
+        return "";
+    }
 
-                case ConsoleKey.LeftArrow when ctrl:
-                    WordJumpLeft(buffer, ref pos);
-                    MoveCursor(pos);
-                    break;
+    private string? HandleEnter(List<char> buffer)
+    {
+        var input = new string(buffer.ToArray());
+        Console.WriteLine();
+        if (!string.IsNullOrWhiteSpace(input))
+        {
+            _inputHistory.Add(input);
+            _historyIndex = _inputHistory.Count;
+            _pendingInput = null;
+        }
+        return input;
+    }
 
-                case ConsoleKey.LeftArrow:
-                    if (pos > 0) { pos--; MoveCursor(pos); }
-                    break;
+    private void HandleEscape(List<char> buffer, ref int pos)
+    {
+        _tabCompletionPrefix = null;
+        if (pos < buffer.Count)
+        {
+            pos = buffer.Count;
+            MoveCursor(pos);
+        }
+        else
+        {
+            buffer.Clear();
+            pos = 0;
+            _historyIndex = _inputHistory.Count;
+            _pendingInput = null;
+            ClearFromPromptToBottom();
+            Console.SetCursorPosition(0, _promptLine);
+            WriteColoredPrompt();
+            Console.ResetColor();
+            _lastBufferLen = 0;
+        }
+    }
 
-                case ConsoleKey.RightArrow when ctrl:
-                    WordJumpRight(buffer, ref pos);
-                    MoveCursor(pos);
-                    break;
-
-                case ConsoleKey.RightArrow:
-                    if (pos < buffer.Count) { pos++; MoveCursor(pos); }
-                    break;
-
-                case ConsoleKey.Home:
-                    pos = 0;
-                    MoveCursor(pos);
-                    break;
-
-                case ConsoleKey.End:
-                    pos = buffer.Count;
-                    MoveCursor(pos);
-                    break;
-
-                case ConsoleKey.Backspace:
-                    _tabCompletionPrefix = null;
-                    if (pos > 0)
-                    {
-                        buffer.RemoveAt(pos - 1);
-                        pos--;
-                        Redraw(new string(buffer.ToArray()), pos);
-                    }
-                    break;
-
-                case ConsoleKey.Delete:
-                    _tabCompletionPrefix = null;
-                    if (pos < buffer.Count)
-                    {
-                        buffer.RemoveAt(pos);
-                        Redraw(new string(buffer.ToArray()), pos);
-                    }
-                    break;
-
-                case ConsoleKey.Tab:
-                    CompleteCommand(buffer, ref pos);
-                    break;
-
-                default:
-                    if (key.KeyChar >= 32 && !char.IsControl(key.KeyChar))
-                    {
-                        _tabCompletionPrefix = null;
-                        buffer.Insert(pos, key.KeyChar);
-                        pos++;
-                        Redraw(new string(buffer.ToArray()), pos);
-                    }
-                    break;
+    private void HandleArrowUp(List<char> buffer, ref int pos)
+    {
+        if (IsCommand(buffer))
+        {
+            CompleteCommand(buffer, ref pos, forward: true);
+            return;
+        }
+        if (_historyIndex == _inputHistory.Count)
+            _pendingInput = new string(buffer.ToArray());
+        for (var i = _historyIndex - 1; i >= 0; i--)
+        {
+            if ((_inputHistory[i][0] == '/') == false)
+            {
+                _historyIndex = i;
+                buffer = [.. _inputHistory[i]];
+                pos = buffer.Count;
+                Redraw(_inputHistory[i], pos);
+                break;
             }
         }
     }
+
+    private void HandleArrowDown(List<char> buffer, ref int pos)
+    {
+        if (IsCommand(buffer))
+        {
+            CompleteCommand(buffer, ref pos, forward: false);
+            return;
+        }
+        for (var i = _historyIndex + 1; i <= _inputHistory.Count; i++)
+        {
+            if (i == _inputHistory.Count)
+            {
+                _historyIndex = _inputHistory.Count;
+                buffer = [.. (_pendingInput ?? "")];
+            }
+            else if ((_inputHistory[i][0] == '/') == false)
+            {
+                _historyIndex = i;
+                buffer = [.. _inputHistory[i]];
+            }
+            else
+            {
+                continue;
+            }
+            pos = buffer.Count;
+            Redraw(new string(buffer.ToArray()), pos);
+            break;
+        }
+    }
+
+    private void HandleWordJumpLeft(List<char> buffer, ref int pos)
+    {
+        WordJumpLeft(buffer, ref pos);
+        MoveCursor(pos);
+    }
+
+    private void HandleCursorLeft(ref int pos)
+    {
+        if (pos > 0) { pos--; MoveCursor(pos); }
+    }
+
+    private void HandleWordJumpRight(List<char> buffer, ref int pos)
+    {
+        WordJumpRight(buffer, ref pos);
+        MoveCursor(pos);
+    }
+
+    private void HandleCursorRight(List<char> buffer, ref int pos)
+    {
+        if (pos < buffer.Count) { pos++; MoveCursor(pos); }
+    }
+
+    private void HandleHome(ref int pos)
+    {
+        pos = 0;
+        MoveCursor(pos);
+    }
+
+    private void HandleEnd(List<char> buffer, ref int pos)
+    {
+        pos = buffer.Count;
+        MoveCursor(pos);
+    }
+
+    private void HandleBackspace(List<char> buffer, ref int pos)
+    {
+        _tabCompletionPrefix = null;
+        if (pos > 0)
+        {
+            buffer.RemoveAt(pos - 1);
+            pos--;
+            Redraw(new string(buffer.ToArray()), pos);
+        }
+    }
+
+    private void HandleDelete(List<char> buffer, ref int pos)
+    {
+        _tabCompletionPrefix = null;
+        if (pos < buffer.Count)
+        {
+            buffer.RemoveAt(pos);
+            Redraw(new string(buffer.ToArray()), pos);
+        }
+    }
+
+    private void HandleTab(List<char> buffer, ref int pos)
+    {
+        CompleteCommand(buffer, ref pos);
+    }
+
+    private void HandleInsertChar(List<char> buffer, ref int pos, ConsoleKeyInfo key)
+    {
+        if (key.KeyChar >= 32 && !char.IsControl(key.KeyChar))
+        {
+            _tabCompletionPrefix = null;
+            buffer.Insert(pos, key.KeyChar);
+            pos++;
+            Redraw(new string(buffer.ToArray()), pos);
+        }
+    }
+
+    private void HandleDeleteWord(List<char> buffer, ref int pos)
+    {
+        DeleteWordBefore(buffer, ref pos);
+        Redraw(new string(buffer.ToArray()), pos);
+    }
+
+    // ── Tab completion ──
 
     private void CompleteCommand(List<char> buffer, ref int pos, bool forward = true)
     {
@@ -345,6 +391,8 @@ public partial class ChatRepl
         Redraw(completed, pos);
     }
 
+    // ── Word navigation ──
+
     private static void DeleteWordBefore(List<char> buffer, ref int pos)
     {
         if (pos == 0) return;
@@ -369,6 +417,8 @@ public partial class ChatRepl
         while (pos < buffer.Count && buffer[pos] != ' ') pos++;
         while (pos < buffer.Count && buffer[pos] == ' ') pos++;
     }
+
+    // ── Display ──
 
     private void Redraw(string text, int pos = -1)
     {

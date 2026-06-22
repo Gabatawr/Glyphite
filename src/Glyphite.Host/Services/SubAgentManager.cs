@@ -37,7 +37,7 @@ public sealed class SubAgentManager
         await entry.Semaphore.WaitAsync();
         try
         {
-            return await Task.Run(async () => await runFunc(entry.Scope));
+            return await runFunc(entry.Scope);
         }
         finally
         {

@@ -90,8 +90,8 @@ public static class BashTool
         }
     }
 
-    public static AIFunction AsAIFunction(IBashSessionManager manager, string sessionId, IConfigService? cfg)
+    public static AIFunction AsAIFunction(IBashSessionManager manager, string sessionId, IConfigService cfg)
         => AIFunctionFactory.Create(
-            new BashInvoker(manager, sessionId, cfg!).Execute,
+            new BashInvoker(manager, sessionId, cfg).Execute,
             "execute_bash");
 }

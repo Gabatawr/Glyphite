@@ -27,9 +27,9 @@ public static partial class WebFetchTool
         }
     }
 
-    public static AIFunction AsFetchFunction(IConfigService? cfg, string? sessionId = null)
+    public static AIFunction AsFetchFunction(IConfigService cfg, string? sessionId = null)
         => AIFunctionFactory.Create(
-            new FetchInvoker(cfg!, sessionId).Execute,
+            new FetchInvoker(cfg, sessionId).Execute,
             "fetch_web");
 
     internal static async Task<string> FetchUrl(

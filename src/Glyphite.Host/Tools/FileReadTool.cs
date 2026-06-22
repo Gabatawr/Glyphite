@@ -79,8 +79,8 @@ public static class FileReadTool
         }
     }
 
-    public static AIFunction AsAIFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null)
+    public static AIFunction AsAIFunction(IConfigService cfg, string? defaultDirectory = null, string? sessionId = null)
         => AIFunctionFactory.Create(
-            new ReadInvoker(cfg!, defaultDirectory, sessionId).Execute,
+            new ReadInvoker(cfg, defaultDirectory, sessionId).Execute,
             "read_file");
 }
