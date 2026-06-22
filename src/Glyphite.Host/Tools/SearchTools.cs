@@ -6,6 +6,8 @@ using Glyphite.Abstractions.Models;
 using Glyphite.Host.Services;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Glyphite.Host.Tools;
 
@@ -17,7 +19,8 @@ public static class SearchTools
         SearchOptions? opts = null,
         string? defaultDirectory = null,
         bool? peek = null,
-        ContentDedupOptions? dedupOpts = null)
+        ContentDedupOptions? dedupOpts = null,
+        ILogger? logger = null)
     {
         var searchDir = path ?? defaultDirectory ?? Directory.GetCurrentDirectory();
         searchDir = OSHelper.NormalizePath(searchDir);
@@ -29,7 +32,7 @@ public static class SearchTools
         var regex = GlobToRegex(pattern);
 
         var matches = await Task.Run(() =>
-            EnumerateFiles(searchDir, excluded, opts.MaxEnumerationFiles)
+            EnumerateFiles(searchDir, excluded, opts.MaxEnumerationFiles, logger)
                 .Select(f => new { Info = new FileInfo(f), Relative = Path.GetRelativePath(searchDir, f).Replace('\\', '/') })
                 .Where(f => regex.IsMatch(f.Relative))
                 .OrderByDescending(f => f.Info.LastWriteTimeUtc)
@@ -58,7 +61,8 @@ public static class SearchTools
         SearchOptions? opts = null,
         string? defaultDirectory = null,
         bool? peek = null,
-        ContentDedupOptions? dedupOpts = null)
+        ContentDedupOptions? dedupOpts = null,
+        ILogger? logger = null)
     {
         if (string.IsNullOrEmpty(pattern))
             return "Error: Pattern is required";
@@ -101,12 +105,12 @@ public static class SearchTools
                 fi = new FileInfo(filePath);
                 if (!fi.Exists || fi.Length > opts.MaxTextFileSize) continue;
             }
-            catch { continue; }
+            catch { logger?.LogWarning("Failed to stat file: {Path}", filePath); continue; }
 
             // Skip empty files (no matches possible) and FIFOs (Length==0, block on open)
             if (fi.Length == 0) continue;
 
-            if (!await IsTextFileAsync(filePath, binaryExts, opts))
+            if (!await IsTextFileAsync(filePath, binaryExts, opts, logger))
                 continue;
 
             try
@@ -123,7 +127,7 @@ public static class SearchTools
                     results.Add((fi.FullName, i + 1, lineText, fi.LastWriteTimeUtc));
                 }
             }
-            catch { /* skip unreadable files */ }
+            catch { logger?.LogWarning("Failed to read file: {Path}", filePath); /* skip unreadable files */ }
         }
 
         // Sort by modification time (most recent first), matching the documented behaviour
@@ -157,7 +161,7 @@ public static class SearchTools
         return dedupOpts is not null ? ContentDedup.Compress(result, dedupOpts) : result;
     }
 
-    private static IEnumerable<string> EnumerateFiles(string root, HashSet<string> excludedDirs, int maxFiles = int.MaxValue)
+    private static IEnumerable<string> EnumerateFiles(string root, HashSet<string> excludedDirs, int maxFiles = int.MaxValue, ILogger? logger = null)
     {
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var queue = new Queue<string>();
@@ -175,7 +179,7 @@ public static class SearchTools
             {
                 files.AddRange(Directory.EnumerateFiles(dir));
             }
-            catch { /* skip inaccessible dirs */ }
+            catch { logger?.LogWarning("Failed to enumerate files: {Dir}", dir); /* skip inaccessible dirs */ }
 
             if (files.Count >= maxFiles) break;
 
@@ -187,13 +191,13 @@ public static class SearchTools
                         queue.Enqueue(subDir);
                 }
             }
-            catch { /* skip inaccessible dirs */ }
+            catch { logger?.LogWarning("Failed to enumerate directories: {Dir}", dir); /* skip inaccessible dirs */ }
         }
 
         return files;
     }
 
-    private static async Task<bool> IsTextFileAsync(string path, HashSet<string> binaryExts, SearchOptions opts)
+    private static async Task<bool> IsTextFileAsync(string path, HashSet<string> binaryExts, SearchOptions opts, ILogger? logger = null)
     {
         var ext = Path.GetExtension(path);
         if (binaryExts.Contains(ext)) return false;
@@ -218,7 +222,7 @@ public static class SearchTools
 
             return !buffer.Contains((byte)0);
         }
-        catch { return false; }
+        catch { logger?.LogWarning("Failed to check text file: {Path}", path); return false; }
     }
 
     private static Regex GlobToRegex(string pattern)
@@ -239,7 +243,7 @@ public static class SearchTools
         return new Regex($"^{escaped}$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     }
 
-    private sealed class SearchInvoker(IConfigService cfg, string? defaultDirectory, string? sessionId)
+    private sealed class SearchInvoker(IConfigService cfg, string? defaultDirectory, string? sessionId, ILogger logger)
     {
         [Description("Fast file pattern matching using glob patterns. Returns absolute paths sorted by last modified time (most recent first). Supports ** (recursive), * (single segment), and ? (single char). Faster than `bash find` for this purpose.")]
         public async Task<string> Glob(
@@ -247,9 +251,9 @@ public static class SearchTools
             string? path = null,
             bool? peek = null)
         {
-            var opts = await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId);
-            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);
-            return await SearchTools.Glob(pattern, path, opts, defaultDirectory, peek, dedupOpts);
+            var opts = await cfg.GetOptionsAsync<SearchOptions>(SearchOptions.Section, sessionId);
+            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
+            return await SearchTools.Glob(pattern, path, opts, defaultDirectory, peek, dedupOpts, logger);
         }
 
         [Description("Search file contents using a regex pattern. Returns file paths with line numbers and matching lines, sorted by file modification time (most recent first). Supports full .NET regex syntax. Use `include` to filter by file pattern (e.g. \"*.cs\", \"*.{ts,tsx}\"). Ideal for finding code references, imports, function definitions, error messages.")]
@@ -259,19 +263,19 @@ public static class SearchTools
             [Description("File pattern to filter results, e.g. \"*.cs\", \"*.{ts,tsx}\", \"*.py\"")] string? include = null,
             bool? peek = null)
         {
-            var opts = await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId);
-            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);
-            return await SearchTools.Grep(pattern, path, include, opts, defaultDirectory, peek, dedupOpts);
+            var opts = await cfg.GetOptionsAsync<SearchOptions>(SearchOptions.Section, sessionId);
+            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
+            return await SearchTools.Grep(pattern, path, include, opts, defaultDirectory, peek, dedupOpts, logger);
         }
     }
 
-    public static AIFunction AsGlobFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null)
+    public static AIFunction AsGlobFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null, ILogger? logger = null)
         => AIFunctionFactory.Create(
-            new SearchInvoker(cfg!, defaultDirectory, sessionId).Glob,
+            new SearchInvoker(cfg!, defaultDirectory, sessionId, logger ?? NullLogger.Instance).Glob,
             "search_glob");
 
-    public static AIFunction AsGrepFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null)
+    public static AIFunction AsGrepFunction(IConfigService? cfg = null, string? defaultDirectory = null, string? sessionId = null, ILogger? logger = null)
         => AIFunctionFactory.Create(
-            new SearchInvoker(cfg!, defaultDirectory, sessionId).Grep,
+            new SearchInvoker(cfg!, defaultDirectory, sessionId, logger ?? NullLogger.Instance).Grep,
             "search_grep");
 }

@@ -1,0 +1,112 @@
+using System.Text.Json;
+using Glyphite.Abstractions.Interfaces;
+
+namespace Glyphite.Cli.Services;
+
+/// <summary>Loads and merges per-agent config files (Glyphite.json, Glyphite.&lt;agent&gt;.json).</summary>
+public sealed class ConfigLoader
+{
+    private readonly IConfigService _cfgService;
+    private readonly IAgentStore _agentStore;
+
+    public ConfigLoader(IConfigService cfgService, IAgentStore agentStore)
+    {
+        _cfgService = cfgService;
+        _agentStore = agentStore;
+    }
+
+    public async Task LoadAgentConfigAsync(string agentId, string cwd)
+    {
+        var merge = await ReadAgentConfigFilesAsync(agentId, cwd);
+        if (merge.Count == 0) return;
+
+        var homePath = await _agentStore.GetAgentHomePathAsync(agentId);
+        if (string.Equals(homePath, cwd, StringComparison.OrdinalIgnoreCase))
+            await _cfgService.UpdateConfigAsync(merge, scope: "session", sessionId: agentId);
+        else
+            _cfgService.SetSessionOverlay(agentId, merge);
+    }
+
+    public async Task LoadAllAgentConfigsAsync(string cwd)
+    {
+        var agents = await _agentStore.ListAgentsAsync();
+        var agentSet = new HashSet<string>(agents, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var file in Directory.EnumerateFiles(cwd, "Glyphite.*.json"))
+        {
+            var fileName = Path.GetFileName(file);
+            if (!fileName.StartsWith("Glyphite.", StringComparison.OrdinalIgnoreCase) ||
+                !fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var agentName = fileName["Glyphite.".Length..^".json".Length];
+            if (string.IsNullOrEmpty(agentName) || !agentSet.Contains(agentName))
+                continue;
+
+            var merge = await ReadAgentConfigFilesAsync(agentName, cwd);
+            if (merge.Count > 0)
+            {
+                var homePath = await _agentStore.GetAgentHomePathAsync(agentName);
+                if (string.Equals(homePath, cwd, StringComparison.OrdinalIgnoreCase))
+                    await _cfgService.UpdateConfigAsync(merge, scope: "session", sessionId: agentName);
+                else
+                    _cfgService.SetSessionOverlay(agentName, merge);
+            }
+        }
+    }
+
+    private static async Task<Dictionary<string, string>> ReadAgentConfigFilesAsync(string agentId, string cwd)
+    {
+        var merge = new Dictionary<string, string>();
+        var glPath = Path.Combine(cwd, "Glyphite.json");
+        if (File.Exists(glPath))
+        {
+            var glJson = await File.ReadAllTextAsync(glPath);
+            var glConfig = JsonSerializer.Deserialize<Dictionary<string, object>>(glJson);
+            if (glConfig is not null && glConfig.TryGetValue("Glyphite", out var gl) && gl is JsonElement el)
+                FlattenJsonElement("", el, merge);
+        }
+
+        var agentPath = Path.Combine(cwd, $"Glyphite.{agentId}.json");
+        if (File.Exists(agentPath))
+        {
+            var agentJson = await File.ReadAllTextAsync(agentPath);
+            var agentConfig = JsonSerializer.Deserialize<Dictionary<string, object>>(agentJson);
+            if (agentConfig is not null && agentConfig.TryGetValue("Glyphite", out var ac) && ac is JsonElement ael)
+                FlattenJsonElement("", ael, merge);
+        }
+
+        return merge;
+    }
+
+    private static void FlattenJsonElement(string prefix, JsonElement el, Dictionary<string, string> result)
+    {
+        switch (el.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var prop in el.EnumerateObject())
+                {
+                    var newPrefix = string.IsNullOrEmpty(prefix) ? prop.Name : $"{prefix}:{prop.Name}";
+                    FlattenJsonElement(newPrefix, prop.Value, result);
+                }
+                break;
+            case JsonValueKind.Array:
+                var i = 0;
+                foreach (var item in el.EnumerateArray())
+                    FlattenJsonElement($"{prefix}:{i++}", item, result);
+                break;
+            case JsonValueKind.String:
+                result[prefix] = el.GetString() ?? "";
+                break;
+            case JsonValueKind.Number:
+                result[prefix] = el.GetRawText();
+                break;
+            case JsonValueKind.True:
+                result[prefix] = "True";
+                break;
+            case JsonValueKind.False:
+                result[prefix] = "False";
+                break;
+        }
+    }
+}

@@ -22,7 +22,7 @@ public partial class ChatRepl
 
     private async Task UpdatePromptPrefixAsync()
     {
-        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", AgentId);
+        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, AgentId);
 
         _promptSegments.Clear();
         var def = ConsoleColor.DarkGray;

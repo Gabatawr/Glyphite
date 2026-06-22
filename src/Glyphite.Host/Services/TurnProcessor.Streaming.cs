@@ -147,8 +147,6 @@ internal sealed class TurnContext
                     await EmitToolResult(output, cleanKeys);
                 }
 
-                // ── After tool execution: update in-turn context ──
-
                 async Task EmitToolResult(string emitOutput, string[]? cleanKeys)
                 {
                     if (!string.IsNullOrEmpty(emitOutput))
@@ -162,36 +160,6 @@ internal sealed class TurnContext
                     }
 
                     events.Add(new ToolResultTurnEvent(name, emitOutput));
-                }
-                // Memory clean: remove matching ChatMessages from context (by block numbers in args)
-                if (name == "memory" && output.StartsWith("Deleted "))
-                {
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(args);
-                        if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == JsonValueKind.Array)
-                            ToolCallHelper.RemoveBlocksFromMessageList(ContextMessages, blk.EnumerateArray().Select(e => e.GetDouble()));
-                    }
-                    catch { _logger.LogWarning("Failed to parse args for memory clean"); }
-                }
-                // Peek tools: replace ChatMessage with cleaned block render (ToContextString)
-                // Only tool blocks — reasoning peek blocks persist for the current turn
-                else if (isPeek)
-                {
-                    var updatedBlock = await _blockStore.GetBlockAsync(SessionId, callBlockNumber);
-                    if (updatedBlock?.Type == BlockType.tool)
-                    {
-                        var newText = updatedBlock.ToContextString();
-                        var pat = $"[Block: {callBlockNumber:F1},";
-                        for (var i = 0; i < ContextMessages.Count; i++)
-                        {
-                            if (ContextMessages[i].Text?.StartsWith(pat) == true)
-                            {
-                                ContextMessages[i] = new ChatMessage(ChatRole.System, newText);
-                                break;
-                            }
-                        }
-                    }
                 }
             }
             else
@@ -261,16 +229,10 @@ internal sealed class TurnContext
 
     public static string BuildPeekCleanMessage(int total, Dictionary<string, int> stats)
     {
-        var iconMap = new Dictionary<string, string>
-        {
-            ["user_message"] = "👤", ["agent_message"] = "💬", ["agent_reasoning"] = "🧠",
-            ["tool"] = "🔧", ["todo"] = "📋", ["todo_update"] = "🔄",
-            ["auto_tool"] = "🤖"
-        };
         var lines = new List<string> { $"── Cleaned {total} peek blocks ─────────────────" };
         foreach (var kv in stats.OrderByDescending(kv => kv.Value))
         {
-            var icon = iconMap.GetValueOrDefault(kv.Key, "  ");
+            var icon = BlockTypeIcon.Get(kv.Key);
             lines.Add($"  {icon} {kv.Key,-20}: {kv.Value,4}");
         }
         return string.Join('\n', lines);

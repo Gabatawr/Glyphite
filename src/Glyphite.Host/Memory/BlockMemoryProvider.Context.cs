@@ -13,7 +13,7 @@ public partial class BlockMemoryProvider
         model ??= await _agentStore.GetAgentModelAsync(sessionId);
 
         // Fresh options this turn — IOptions<T> DI values may be stale
-        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
+        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId);
 
         var blocks = await _blockStore.LoadBlocksAsync(sessionId);
         if (blocks.Count == 0)

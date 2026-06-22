@@ -5,51 +5,11 @@ using Microsoft.Data.Sqlite;
 
 namespace Glyphite.Host.Data;
 
-public class SessionRepository : IAgentStore, IDisposable
+public class SessionRepository : RepositoryBase, IAgentStore
 {
-    private readonly SqliteConnection _conn;
-    private readonly string _connectionString;
-    private readonly SemaphoreSlim _writeLock = new(1, 1);
-
-    public SessionRepository(string connectionString)
+    public SessionRepository(string connectionString) : base(connectionString)
     {
-        _connectionString = connectionString;
-        _conn = new SqliteConnection(connectionString);
-        _conn.Open();
         Initialize();
-    }
-
-    static SessionRepository()
-    {
-        Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
-    }
-
-    public void Dispose()
-    {
-        _writeLock.Dispose();
-        _conn?.Close();
-        _conn?.Dispose();
-    }
-
-    private async Task WithLockAsync(Func<Task> action)
-    {
-        await _writeLock.WaitAsync();
-        try { await action(); }
-        finally { _writeLock.Release(); }
-    }
-
-    private async Task<T> WithLockAsync<T>(Func<Task<T>> func)
-    {
-        await _writeLock.WaitAsync();
-        try { return await func(); }
-        finally { _writeLock.Release(); }
-    }
-
-    private SqliteConnection CreateReadConnection()
-    {
-        var conn = new SqliteConnection(_connectionString);
-        conn.Open();
-        return conn;
     }
 
     private void Initialize()
@@ -361,23 +321,4 @@ public class SessionRepository : IAgentStore, IDisposable
             await _conn.ExecuteAsync("DELETE FROM session_usage WHERE agent_id = @sid", new { sid = agentId });
         });
     }
-
-    // ── Shared records (referenced by BlockRepository/ConfigRepository) ──
-
-    internal sealed record BlockEntity
-    {
-        public int Id { get; set; }
-        public double Number { get; set; }
-        public string Type { get; set; } = "";
-        public string CreatedAt { get; set; } = "";
-        public string? UpdatedAt { get; set; }
-        public string Content { get; set; } = "";
-        public string? ToolName { get; set; }
-        public string? Data { get; set; }
-        public string? Model { get; set; }
-        public double? ParentNumber { get; set; }
-        public string? ToolResult { get; set; }
-    }
-
-    internal sealed record ConfigRow(string Key, string Value, string Scope, string AgentId, string UpdatedAt);
 }

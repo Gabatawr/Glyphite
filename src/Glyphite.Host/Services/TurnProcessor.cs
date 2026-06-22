@@ -52,8 +52,8 @@ public class TurnProcessor : ITurnProcessor
         var agentCwd = await _agentStore.GetAgentHomePathAsync(sessionId) ?? parentCwd;
         await _configLoader.LoadConfigAsync(sessionId, agentCwd, parentCwd);
 
-        var deepseekOpts = await _cfgService.GetOptionsAsync<DeepSeekOptions>("DeepSeek", sessionId);
-        var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>("Agent", sessionId);
+        var deepseekOpts = await _cfgService.GetOptionsAsync<DeepSeekOptions>(DeepSeekOptions.Section, sessionId);
+        var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>(AgentOptions.Section, sessionId);
 
         var modelStr = chatOptions.ModelId ?? deepseekOpts.Model;
         _logger.LogInformation("Turn start session {SessionId}, model {Model}", sessionId, modelStr);
@@ -66,7 +66,7 @@ public class TurnProcessor : ITurnProcessor
 
         if (compacted)
         {
-            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", sessionId);
+            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, sessionId);
             var compactArgs = $"{{\"AutoCompress\":true,\"AutoThreshold\":{compOpts.AutoThreshold}}}";
             yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
 

@@ -17,7 +17,7 @@ public static partial class WebFetchTool
             bool? peek = null,
             CancellationToken ct = default)
         {
-            var opts = await cfg.GetOptionsAsync<WebFetchOptions>("WebFetch", sessionId);
+            var opts = await cfg.GetOptionsAsync<WebFetchOptions>(WebFetchOptions.Section, sessionId);
             using var http = new HttpClient();
             http.Timeout = TimeSpan.FromSeconds(opts.TimeoutSeconds);
             http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", opts.UserAgent);

@@ -231,13 +231,13 @@ public static class TodoTool
             [Description("Title/description (required for create, optional for update — updates the title of the LATEST todo list; does NOT search by title, only renames the latest list)")] string? title = null,
             [Description("Items for the todo. For create: {text: string, status?: string, priority?: string}. For update: {index?: number, text?: string, status?: string, priority?: string, remove?: boolean}. Items without index are added; items with index are updated; items with remove=true are deleted.")] TodoItem[]? items = null)
         {
-            var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
+            var opts = await cfg.GetOptionsAsync<TodoOptions>(TodoOptions.Section, sessionId);
             return await Execute(action, title, items, agentStore, blockStore, sessionId, opts);
         }
     }
 
-    public static AIFunction AsTodoFunction(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService? cfg)
+    public static AIFunction AsTodoFunction(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService cfg)
         => AIFunctionFactory.Create(
-            new TodoInvoker(agentStore, blockStore, sessionId, cfg!).Invoke,
+            new TodoInvoker(agentStore, blockStore, sessionId, cfg).Invoke,
             "todo");
 }

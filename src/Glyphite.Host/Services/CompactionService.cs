@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
@@ -38,7 +39,7 @@ namespace Glyphite.Host.Services;
 
         public async Task<bool> TryCompactAsync(string sessionId, int contextWindow)
         {
-            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", sessionId);
+            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, sessionId);
             if (!compOpts.AutoCompress)
                 return false;
 
@@ -67,7 +68,7 @@ namespace Glyphite.Host.Services;
             //   zones[0..^3] = old zones (zone 3+) → strip unprotected + summarize
             //   zones[^2..]   = two newest zones (zone 1-2) → keep intact (all blocks preserved)
 
-            var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
+            var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId);
             var protectedTypes = new HashSet<BlockType>(
                 memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
 
@@ -295,30 +296,10 @@ namespace Glyphite.Host.Services;
             {
                 try
                 {
-                    var raw = response.RawRepresentation;
-                    var doc = raw switch
+                    using var doc = UsageParser.Normalize(response.RawRepresentation);
+                    if (doc is not null)
                     {
-                        JsonDocument jd => JsonDocument.Parse(jd.RootElement.GetRawText()),
-                        JsonElement je => JsonDocument.Parse(je.GetRawText()),
-                        _ => JsonDocument.Parse(JsonSerializer.Serialize(raw))
-                    };
-
-                    if (doc.RootElement.TryGetProperty("Usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
-                    {
-                        var inputTotal = usage.TryGetProperty("InputTokenCount", out var itc) && itc.ValueKind == System.Text.Json.JsonValueKind.Number
-                            ? itc.GetInt64() : 0L;
-                        var cached = 0L;
-                        if (usage.TryGetProperty("InputTokenDetails", out var details) && details.ValueKind == System.Text.Json.JsonValueKind.Object)
-                        {
-                            if (details.TryGetProperty("CachedTokenCount", out var ctc) && ctc.ValueKind == System.Text.Json.JsonValueKind.Number)
-                                cached = ctc.GetInt64();
-                        }
-
-                        var hit = cached > 0 ? cached : 0L;
-                        var miss = cached > 0 ? inputTotal - cached : inputTotal;
-                        var output = usage.TryGetProperty("OutputTokenCount", out var otc) && otc.ValueKind == System.Text.Json.JsonValueKind.Number
-                            ? otc.GetInt64() : 0L;
-
+                        var (hit, miss, output) = UsageParser.Parse(doc);
                         if (hit > 0 || miss > 0 || output > 0)
                             await _agentStore.RecordUsageAsync(sessionId, hit, miss, output, model: model);
                     }

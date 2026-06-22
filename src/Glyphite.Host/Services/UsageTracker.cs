@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 
 namespace Glyphite.Host.Services;
@@ -44,32 +45,16 @@ public sealed class UsageTracker
 
             try
             {
-                using var doc = GetUsageDocument(update.RawRepresentation);
+                using var doc = UsageParser.Normalize(update.RawRepresentation);
                 if (doc is null) continue;
-                if (!doc.RootElement.TryGetProperty("Usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
-                    continue;
 
-                var inputTotal = usage.TryGetProperty("InputTokenCount", out var itc) && itc.ValueKind == JsonValueKind.Number
-                    ? itc.GetInt64() : 0L;
-                var cached = 0L;
-                if (usage.TryGetProperty("InputTokenDetails", out var details) && details.ValueKind == JsonValueKind.Object)
-                {
-                    if (details.TryGetProperty("CachedTokenCount", out var ctc) && ctc.ValueKind == JsonValueKind.Number)
-                        cached = ctc.GetInt64();
-                }
+                var (uHit, uMiss, uOutput) = UsageParser.Parse(doc);
+                if (uHit + uMiss + uOutput == 0) continue;
 
-                if (cached > 0)
-                {
-                    hit = Math.Max(hit, cached);
-                    miss = Math.Max(miss, inputTotal - cached);
-                }
-                else if (inputTotal > 0)
-                {
-                    miss = Math.Max(miss, inputTotal);
-                }
-
-                if (usage.TryGetProperty("OutputTokenCount", out var otc) && otc.ValueKind == JsonValueKind.Number)
-                    output = Math.Max(output, otc.GetInt64());
+                // Use Math.Max across updates — each streaming chunk may repeat totals
+                if (uHit > 0) hit = Math.Max(hit, uHit);
+                if (uMiss > 0) miss = Math.Max(miss, uMiss);
+                if (uOutput > 0) output = Math.Max(output, uOutput);
             }
             catch
             {
@@ -77,16 +62,5 @@ public sealed class UsageTracker
         }
 
         return (hit, miss, output);
-    }
-
-    /// <summary>Parse RawRepresentation into a JsonDocument without double-serialization.</summary>
-    private static JsonDocument? GetUsageDocument(object raw)
-    {
-        return raw switch
-        {
-            JsonDocument jd => JsonDocument.Parse(jd.RootElement.GetRawText()),
-            JsonElement je => JsonDocument.Parse(je.GetRawText()),
-            _ => JsonDocument.Parse(JsonSerializer.Serialize(raw))
-        };
     }
 }

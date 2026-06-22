@@ -74,7 +74,7 @@ public static class FileReadTool
             [Description("Deduplicate repeated lines (auto-enabled for .log files, set false to disable).")] bool? compress = null,
             bool? peek = null)
         {
-            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);
+            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
             return await ReadFile(path, dedupOpts, offset, limit, compress, peek, dedupOpts.AutoDedupExtensions, defaultDirectory);
         }
     }

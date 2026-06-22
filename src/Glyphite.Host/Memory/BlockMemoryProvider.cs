@@ -69,7 +69,7 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
         if (!await _agentStore.AgentExistsAsync(sessionId))
             return $"Session '{sessionId}' not found";
 
-        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
+        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId);
         var protectedTypes = new HashSet<BlockType>(
             memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
         var (removed, protectedNums) = await _blockStore.DeleteBlocksAsync(sessionId, numbers, protectedTypes, cascade);
@@ -103,7 +103,7 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
             };
         }
 
-        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
+        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId);
         var protectedTypes = new HashSet<BlockType>(
             memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
         var removed = await _blockStore.DeleteBlocksByFilterAsync(sessionId, types, ts, protectedTypes);

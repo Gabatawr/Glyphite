@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.DI;
@@ -20,8 +19,10 @@ public class SessionManager
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
     private readonly InputHistory _inputHistory;
+    private readonly ConfigLoader _configLoader;
 
     private AgentScope? _currentScope;
+    private readonly string _cwd;
 
     public SessionManager(
         IAgentStore agentStore,
@@ -43,6 +44,8 @@ public class SessionManager
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
         _inputHistory = inputHistory;
+        _configLoader = new ConfigLoader(cfgService, agentStore);
+        _cwd = Directory.GetCurrentDirectory();
     }
 
     public string AgentId { get; private set; } = string.Empty;
@@ -100,7 +103,7 @@ public class SessionManager
             AgentId = await _agentManager.CreateAgentAsync(firstName, _deepseek.Model, cwd);
             _agentOpts.AgentName = firstName;
             SwitchScope();
-            await LoadAgentConfigAsync(AgentId, cwd);
+            await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"Agent '{firstName}' created.\n");
             Console.ResetColor();
@@ -108,7 +111,7 @@ public class SessionManager
         }
 
         // Eager-load all agent configs in cwd
-        await LoadAllAgentConfigsAsync(cwd);
+        await _configLoader.LoadAllAgentConfigsAsync(cwd);
 
         // Try resume last active agent in this directory
         var lastActive = await _agentStore.GetLastActiveAgentAsync(cwd);
@@ -119,7 +122,7 @@ public class SessionManager
             AgentId = lastActive;
             _agentOpts.AgentName = lastActive;
             SwitchScope();
-            await LoadAgentConfigAsync(AgentId, cwd);
+            await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
             if (await BlockMemory.GetAgentModelAsync(AgentId) is null)
                 await BlockMemory.SetAgentModelAsync(AgentId, _deepseek.Model);
             return CreateOrResumeResult.Ready;
@@ -236,8 +239,7 @@ public class SessionManager
             return true;
         }
 
-        var cwd = Directory.GetCurrentDirectory();
-
+        var cwd = _cwd;
         if (await _agentStore.AgentExistsAsync(name))
         {
             Console.ForegroundColor = ConsoleColor.Red;
@@ -250,7 +252,7 @@ public class SessionManager
                 AgentId = await _agentManager.CreateAgentAsync(name, _deepseek.Model, cwd);
                 _agentOpts.AgentName = name;
                 SwitchScope();
-                await LoadAgentConfigAsync(AgentId, cwd);
+                await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine($"Agent '{name}' recreated.\n");
                 Console.ResetColor();
@@ -267,7 +269,7 @@ public class SessionManager
         AgentId = await _agentManager.CreateAgentAsync(name, _deepseek.Model, cwd);
         _agentOpts.AgentName = name;
         SwitchScope();
-        await LoadAgentConfigAsync(AgentId, cwd);
+        await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{name}' created.\n");
         Console.ResetColor();
@@ -318,12 +320,8 @@ public class SessionManager
             return true;
         }
 
-        string sourceName;
-        if (int.TryParse(selection, out var idx) && idx >= 1 && idx <= sessions.Count)
-            sourceName = sessions[idx - 1];
-        else if (sessions.Contains(selection))
-            sourceName = selection;
-        else
+        var sourceName = AgentPicker.Resolve(sessions, selection);
+        if (sourceName is null)
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"Agent '{selection}' not found.\n");
@@ -338,12 +336,11 @@ public class SessionManager
     {
         if (name is not null && await _agentStore.AgentExistsAsync(name))
         {
-            var cwd = Directory.GetCurrentDirectory();
             AgentId = name;
             _agentOpts.AgentName = name;
-            await _agentStore.RecordLaunchAsync(name, cwd);
+            await _agentStore.RecordLaunchAsync(name, _cwd);
             SwitchScope();
-            await LoadAgentConfigAsync(name, cwd);
+            await _configLoader.LoadAgentConfigAsync(name, _cwd);
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"Switched to agent '{name}'.\n");
             Console.ResetColor();
@@ -370,7 +367,7 @@ public class SessionManager
         Console.WriteLine("Select agent to use:\n");
         Console.ResetColor();
 
-        var cwd2 = Directory.GetCurrentDirectory();
+        var cwd = _cwd;
         for (int i = 0; i < sessions.Count; i++)
         {
             var isCurrent = string.Equals(sessions[i], AgentId, StringComparison.Ordinal);
@@ -380,7 +377,7 @@ public class SessionManager
             var lastLaunch = await _agentStore.GetLastLaunchPathAsync(sessions[i]);
 
             var marker = isCurrent ? " ← current" : "";
-            var atHome = (string.Equals(agentHome, cwd2, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(agentHome)) ? " [🏠 home]" : "";
+            var atHome = (string.Equals(agentHome, cwd, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(agentHome)) ? " [🏠 home]" : "";
             var createdDate = createdAt.Length >= 10 ? createdAt[..10] : "";
             var lastStr = lastLaunch is not null ? $" last: {lastLaunch}" : "";
 
@@ -400,12 +397,8 @@ public class SessionManager
             return true;
         }
 
-        string targetName;
-        if (int.TryParse(pick, out var idx) && idx >= 1 && idx <= sessions.Count)
-            targetName = sessions[idx - 1];
-        else if (sessions.Contains(pick))
-            targetName = pick;
-        else
+        var targetName = AgentPicker.Resolve(sessions, pick);
+        if (targetName is null)
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"Agent '{pick}' not found.\n");
@@ -415,9 +408,9 @@ public class SessionManager
 
         AgentId = targetName;
         _agentOpts.AgentName = targetName;
-        await _agentStore.RecordLaunchAsync(targetName, cwd2);
+        await _agentStore.RecordLaunchAsync(targetName, cwd);
         SwitchScope();
-        await LoadAgentConfigAsync(targetName, cwd2);
+        await _configLoader.LoadAgentConfigAsync(targetName, cwd);
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Switched to agent '{targetName}'.\n");
         Console.ResetColor();
@@ -472,12 +465,8 @@ public class SessionManager
             return true;
         }
 
-        string targetName;
-        if (int.TryParse(pick, out var idx) && idx >= 1 && idx <= others.Count)
-            targetName = others[idx - 1];
-        else if (others.Contains(pick))
-            targetName = pick;
-        else
+        var targetName = AgentPicker.Resolve(others, pick);
+        if (targetName is null)
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"Agent '{pick}' not found.\n");
@@ -540,105 +529,6 @@ public class SessionManager
         }
     }
 
-    // ── Config loading ──
-
-    public async Task LoadAgentConfigAsync(string agentId, string cwd)
-    {
-        var merge = await ReadAgentConfigFilesAsync(agentId, cwd);
-        if (merge.Count == 0) return;
-
-        var homePath = await _agentStore.GetAgentHomePathAsync(agentId);
-        if (string.Equals(homePath, cwd, StringComparison.OrdinalIgnoreCase))
-            await _cfgService.UpdateConfigAsync(merge, scope: "session", sessionId: agentId);
-        else
-            _cfgService.SetSessionOverlay(agentId, merge);
-    }
-
-    private async Task LoadAllAgentConfigsAsync(string cwd)
-    {
-        var agents = await _agentStore.ListAgentsAsync();
-        var agentSet = new HashSet<string>(agents, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var file in Directory.EnumerateFiles(cwd, "Glyphite.*.json"))
-        {
-            var fileName = Path.GetFileName(file);
-            if (!fileName.StartsWith("Glyphite.", StringComparison.OrdinalIgnoreCase) ||
-                !fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var agentName = fileName["Glyphite.".Length..^".json".Length];
-            if (string.IsNullOrEmpty(agentName) || !agentSet.Contains(agentName))
-                continue;
-
-            var merge = await ReadAgentConfigFilesAsync(agentName, cwd);
-            if (merge.Count > 0)
-            {
-                var homePath = await _agentStore.GetAgentHomePathAsync(agentName);
-                if (string.Equals(homePath, cwd, StringComparison.OrdinalIgnoreCase))
-                    await _cfgService.UpdateConfigAsync(merge, scope: "session", sessionId: agentName);
-                else
-                    _cfgService.SetSessionOverlay(agentName, merge);
-            }
-        }
-    }
-
-    private async Task<Dictionary<string, string>> ReadAgentConfigFilesAsync(string agentId, string cwd)
-    {
-        var merge = new Dictionary<string, string>();
-        var glPath = Path.Combine(cwd, "Glyphite.json");
-        if (File.Exists(glPath))
-        {
-            var glJson = await File.ReadAllTextAsync(glPath);
-            var glConfig = JsonSerializer.Deserialize<Dictionary<string, object>>(glJson);
-            if (glConfig is not null && glConfig.TryGetValue("Glyphite", out var gl) && gl is JsonElement el)
-                FlattenJsonElement("", el, merge);
-        }
-
-        var agentPath = Path.Combine(cwd, $"Glyphite.{agentId}.json");
-        if (File.Exists(agentPath))
-        {
-            var agentJson = await File.ReadAllTextAsync(agentPath);
-            var agentConfig = JsonSerializer.Deserialize<Dictionary<string, object>>(agentJson);
-            if (agentConfig is not null && agentConfig.TryGetValue("Glyphite", out var ac) && ac is JsonElement ael)
-                FlattenJsonElement("", ael, merge);
-        }
-
-        return merge;
-    }
-
-    private static void FlattenJsonElement(string prefix, JsonElement el, Dictionary<string, string> result)
-    {
-        switch (el.ValueKind)
-        {
-            case JsonValueKind.Object:
-                foreach (var prop in el.EnumerateObject())
-                {
-                    var newPrefix = string.IsNullOrEmpty(prefix) ? prop.Name : $"{prefix}:{prop.Name}";
-                    FlattenJsonElement(newPrefix, prop.Value, result);
-                }
-                break;
-            case JsonValueKind.Array:
-                var i = 0;
-                foreach (var item in el.EnumerateArray())
-                    FlattenJsonElement($"{prefix}:{i++}", item, result);
-                break;
-            case JsonValueKind.String:
-                result[prefix] = el.GetString() ?? "";
-                break;
-            case JsonValueKind.Number:
-                result[prefix] = el.GetRawText();
-                break;
-            case JsonValueKind.True:
-                result[prefix] = "True";
-                break;
-            case JsonValueKind.False:
-                result[prefix] = "False";
-                break;
-            case JsonValueKind.Null:
-                break;
-        }
-    }
-
     // ── Private helpers ──
 
     private async Task<bool> PromptAndCloneAsync(string sourceName, string? defaultCloneName = null)
@@ -677,12 +567,12 @@ public class SessionManager
             return true;
         }
 
-        var cwd = Directory.GetCurrentDirectory();
+        var cwd = _cwd;
         await _agentStore.ForkSessionAsync(sourceName, defaultCloneName, cwd);
         AgentId = defaultCloneName;
         _agentOpts.AgentName = defaultCloneName;
         SwitchScope();
-        await LoadAgentConfigAsync(AgentId, cwd);
+        await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
 
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{defaultCloneName}' cloned from '{sourceName}'.\n");
@@ -756,7 +646,7 @@ public class SessionManager
         AgentId = await _agentManager.CreateAgentAsync(newName, _deepseek.Model, cwd);
         _agentOpts.AgentName = newName;
         SwitchScope();
-        await LoadAgentConfigAsync(AgentId, cwd);
+        await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{newName}' created.\n");
         Console.ResetColor();
@@ -776,15 +666,17 @@ public class SessionManager
         Console.ResetColor();
         Console.Write($"\nSelect agent [1-{agents.Count}]: ");
         var pick = Console.ReadLine()?.Trim();
-        if (int.TryParse(pick, out var idx) && idx >= 1 && idx <= agents.Count)
-            AgentId = agents[idx - 1];
-        else if (agents.Contains(pick ?? ""))
-            AgentId = pick!;
-        else
-            AgentId = agents[0];
+        var resolved = AgentPicker.Resolve(agents, pick);
+        AgentId = resolved ?? agents[0];
+        if (resolved is null)
+        {
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            Console.WriteLine($"Agent '{pick}' not found, using '{AgentId}'.\n");
+            Console.ResetColor();
+        }
         _agentOpts.AgentName = AgentId;
         SwitchScope();
-        await LoadAgentConfigAsync(AgentId, Directory.GetCurrentDirectory());
+        await _configLoader.LoadAgentConfigAsync(AgentId, _cwd);
         if (await BlockMemory.GetAgentModelAsync(AgentId) is null)
             await BlockMemory.SetAgentModelAsync(AgentId, _deepseek.Model);
         Console.ForegroundColor = ConsoleColor.Green;
@@ -804,13 +696,14 @@ public class SessionManager
         Console.ResetColor();
         Console.Write($"Select source [1-{agents.Count}]: ");
         var srcPick = Console.ReadLine()?.Trim();
-        string sourceName;
-        if (int.TryParse(srcPick, out var srcIdx) && srcIdx >= 1 && srcIdx <= agents.Count)
-            sourceName = agents[srcIdx - 1];
-        else if (agents.Contains(srcPick ?? ""))
-            sourceName = srcPick!;
-        else
-            sourceName = agents[0];
+        var resolvedSource = AgentPicker.Resolve(agents, srcPick);
+        var sourceName = resolvedSource ?? agents[0];
+        if (resolvedSource is null)
+        {
+            Console.ForegroundColor = ConsoleColor.DarkYellow;
+            Console.WriteLine($"Agent '{srcPick}' not found, using '{sourceName}'.\n");
+            Console.ResetColor();
+        }
         Console.ForegroundColor = ConsoleColor.DarkYellow;
         Console.Write($"Enter new agent name (clone of '{sourceName}'): ");
         Console.ResetColor();
@@ -828,7 +721,7 @@ public class SessionManager
         AgentId = cloneName;
         _agentOpts.AgentName = cloneName;
         SwitchScope();
-        await LoadAgentConfigAsync(AgentId, cwd);
+        await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{cloneName}' cloned from '{sourceName}'.\n");
         Console.ResetColor();

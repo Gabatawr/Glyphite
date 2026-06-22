@@ -84,8 +84,8 @@ public static class BashTool
             bool? peek = null,
             CancellationToken ct = default)
         {
-            var bashOpts = await cfg.GetOptionsAsync<BashOptions>("Bash", sessionId);
-            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);
+            var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, sessionId);
+            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
             return await ExecuteBash(command, workdir, timeoutMs, manager, sessionId, dedupOpts, bashOpts, peek, ct);
         }
     }

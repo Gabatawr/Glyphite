@@ -32,7 +32,7 @@ public class ConsoleRenderer
     /// <summary>Refresh ToolStreamingOptions from config. Call before rendering to pick up changes.</summary>
     public async Task RefreshAsync(string sessionId)
     {
-        _streamOpts = await _cfgService.GetOptionsAsync<ToolStreamingOptions>("ToolStreaming", sessionId);
+        _streamOpts = await _cfgService.GetOptionsAsync<ToolStreamingOptions>(ToolStreamingOptions.Section, sessionId);
     }
 
     public void RenderBlock(MemoryBlock block, ref RenderState s)
@@ -303,16 +303,8 @@ public class ConsoleRenderer
         foreach (var kv in typeStats)
         {
             if (kv.Key is "system_info" or "agent_data") continue;
-            var label = kv.Key switch
-            {
-                "user_message" => "👤 user_message",
-                "agent_message" => "💬 agent_message",
-                "agent_reasoning" => "🧠 agent_reasoning",
-                "tool" => "🔧 tool",
-                "auto_tool" => "🤖 auto_tool",
-                "todo" or "todo_update" => "📋 todo",
-                _ => kv.Key
-            };
+            var icon = Glyphite.Host.Utils.BlockTypeIcon.Get(kv.Key);
+            var label = icon == "  " ? kv.Key : $"{icon} {kv.Key}";
             Console.WriteLine($"  {label,-22}: {kv.Value,4}");
         }
         Console.ResetColor();

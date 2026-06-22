@@ -6,51 +6,11 @@ using Microsoft.Data.Sqlite;
 
 namespace Glyphite.Host.Data;
 
-public class BlockRepository : IBlockStore, IDisposable
+public class BlockRepository : RepositoryBase, IBlockStore
 {
-    private readonly SqliteConnection _conn;
-    private readonly string _connectionString;
-    private readonly SemaphoreSlim _writeLock = new(1, 1);
-
-    public BlockRepository(string connectionString)
+    public BlockRepository(string connectionString) : base(connectionString)
     {
-        _connectionString = connectionString;
-        _conn = new SqliteConnection(connectionString);
-        _conn.Open();
         Initialize();
-    }
-
-    static BlockRepository()
-    {
-        Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
-    }
-
-    public void Dispose()
-    {
-        _writeLock.Dispose();
-        _conn?.Close();
-        _conn?.Dispose();
-    }
-
-    private async Task WithLockAsync(Func<Task> action)
-    {
-        await _writeLock.WaitAsync();
-        try { await action(); }
-        finally { _writeLock.Release(); }
-    }
-
-    private async Task<T> WithLockAsync<T>(Func<Task<T>> func)
-    {
-        await _writeLock.WaitAsync();
-        try { return await func(); }
-        finally { _writeLock.Release(); }
-    }
-
-    private SqliteConnection CreateReadConnection()
-    {
-        var conn = new SqliteConnection(_connectionString);
-        conn.Open();
-        return conn;
     }
 
     private void Initialize()
@@ -77,7 +37,7 @@ public class BlockRepository : IBlockStore, IDisposable
 
     // ── Mapping ──
 
-    private static MemoryBlock MapToBlock(SessionRepository.BlockEntity e)
+    private static MemoryBlock MapToBlock(BlockEntity e)
     {
         var type = Enum.TryParse<BlockType>(e.Type, ignoreCase: true, out var t) ? t : BlockType.system_info;
         return new MemoryBlock
@@ -119,7 +79,7 @@ public class BlockRepository : IBlockStore, IDisposable
 
     private async Task<List<MemoryBlock>> LoadBlocksCoreAsync(string agentId)
     {
-        var entities = await _conn.QueryAsync<SessionRepository.BlockEntity>(
+        var entities = await _conn.QueryAsync<BlockEntity>(
             "SELECT * FROM blocks WHERE agent_id = @sid AND is_deleted = 0 ORDER BY number",
             new { sid = agentId });
         return entities.Select(MapToBlock).ToList();
@@ -128,7 +88,7 @@ public class BlockRepository : IBlockStore, IDisposable
     public async Task<List<MemoryBlock>> LoadBlocksAsync(string agentId)
     {
         using var conn = CreateReadConnection();
-        var entities = await conn.QueryAsync<SessionRepository.BlockEntity>(
+        var entities = await conn.QueryAsync<BlockEntity>(
             "SELECT * FROM blocks WHERE agent_id = @sid AND is_deleted = 0 ORDER BY number",
             new { sid = agentId });
         return entities.Select(MapToBlock).ToList();
@@ -140,7 +100,7 @@ public class BlockRepository : IBlockStore, IDisposable
         var sql = includeDeleted
             ? "SELECT * FROM blocks WHERE agent_id = @sid AND number = @num"
             : "SELECT * FROM blocks WHERE agent_id = @sid AND number = @num AND is_deleted = 0";
-        var entity = await conn.QueryFirstOrDefaultAsync<SessionRepository.BlockEntity>(sql,
+        var entity = await conn.QueryFirstOrDefaultAsync<BlockEntity>(sql,
             new { sid = agentId, num = number });
         return entity is not null ? MapToBlock(entity) : null;
     }
@@ -154,7 +114,7 @@ public class BlockRepository : IBlockStore, IDisposable
         sql += desc ? " ORDER BY number DESC" : " ORDER BY number";
         if (limit is not null)
             sql += " LIMIT @limit";
-        return (await conn.QueryAsync<SessionRepository.BlockEntity>(sql, new { sid = agentId, type = type?.ToString(), limit }))
+        return (await conn.QueryAsync<BlockEntity>(sql, new { sid = agentId, type = type?.ToString(), limit }))
                      .Select(MapToBlock).ToList();
     }
 
@@ -371,7 +331,7 @@ public class BlockRepository : IBlockStore, IDisposable
 
             if (cascade)
             {
-                var all = await _conn.QueryAsync<SessionRepository.BlockEntity>(
+                var all = await _conn.QueryAsync<BlockEntity>(
                     "SELECT * FROM blocks WHERE agent_id = @sid ORDER BY number",
                     new { sid = agentId });
                 var blockIndex = all.ToDictionary(e => e.Number, MapToBlock);

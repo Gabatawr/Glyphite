@@ -3,6 +3,7 @@ using Glyphite.Abstractions.Models;
 using Glyphite.Host.DI;
 using Glyphite.Host.Services;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Glyphite.Host.Tools;
@@ -19,6 +20,7 @@ public class ToolRegistry : IToolRegistry
     private readonly IAgentScopeFactory _scopeFactory;
     private readonly IOptions<DeepSeekOptions> _deepseekOpts;
     private readonly McpService _mcpService;
+    private readonly ILogger _logger;
     private readonly string _defaultDir;
 
     public ToolRegistry(
@@ -31,7 +33,8 @@ public class ToolRegistry : IToolRegistry
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
         IOptions<DeepSeekOptions> deepseekOpts,
-        McpService mcpService)
+        McpService mcpService,
+        ILogger<ToolRegistry> logger)
     {
         _bashManager = bashManager;
         _cfgService = cfgService;
@@ -43,6 +46,7 @@ public class ToolRegistry : IToolRegistry
         _scopeFactory = scopeFactory;
         _deepseekOpts = deepseekOpts;
         _mcpService = mcpService;
+        _logger = logger;
         _defaultDir = Directory.GetCurrentDirectory();
     }
 
@@ -59,8 +63,8 @@ public class ToolRegistry : IToolRegistry
             FilePatchTool.AsAIFunction(_defaultDir),
             TodoTool.AsTodoFunction(_agentStore, _blockStore, sessionId, _cfgService),
             WebFetchTool.AsFetchFunction(_cfgService, sessionId),
-            SearchTools.AsGlobFunction(_cfgService, _defaultDir, sessionId),
-            SearchTools.AsGrepFunction(_cfgService, _defaultDir, sessionId),
+            SearchTools.AsGlobFunction(_cfgService, _defaultDir, sessionId, _logger),
+            SearchTools.AsGrepFunction(_cfgService, _defaultDir, sessionId, _logger),
         };
 
         // Memory tool: available for main agent, or for subagents with saveMemory=true

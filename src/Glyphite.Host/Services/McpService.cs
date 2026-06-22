@@ -177,7 +177,7 @@ public class McpService : IAsyncDisposable
 
     private async Task<Dictionary<string, McpServerOptions>> GetServerConfigAsync(string? sessionId, CancellationToken ct)
     {
-        var config = await _cfg.GetOptionsAsync<McpServersConfig>("McpServers", sessionId);
+        var config = await _cfg.GetOptionsAsync<McpServersConfig>(McpServersConfig.Section, sessionId);
         return config.Servers;
     }
 

@@ -247,7 +247,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         CleanupIdleSessions();
 
         // Load fresh BashOptions for new sessions — IOptions<T> singleton may be stale
-        var freshOpts = await _cfgService.GetOptionsAsync<BashOptions>("Bash");
+        var freshOpts = await _cfgService.GetOptionsAsync<BashOptions>(BashOptions.Section);
         var lazy = _sessions.GetOrAdd(sessionId, _ => new Lazy<BashSession>(() => BashSession.Start(freshOpts, _defaultDirectory)));
         BashSession session;
         try

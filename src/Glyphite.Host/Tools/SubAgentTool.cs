@@ -17,9 +17,9 @@ public static class SubAgentTool
     /// that were created during this task).</summary>
     private static async Task<(string Result, double BlockCheckpoint)> RunAgentTask(
         AgentScope scope, IAgentStore agentStore, IBlockStore blockStore, string agentId, string task,
-        string mainSessionId, bool saveMemory = false)
+        string mainSessionId, string defaultModel, bool saveMemory = false)
     {
-        var resolvedModel = await agentStore.GetAgentModelAsync(agentId) ?? "deepseek-v4-flash";
+        var resolvedModel = await agentStore.GetAgentModelAsync(agentId) ?? defaultModel;
         var chatOptions = new ChatOptions
         {
             ModelId = resolvedModel,
@@ -82,7 +82,8 @@ public static class SubAgentTool
     private static async Task<string> RunSubAgentTaskAsync(
         string agentId, string task, bool isDryRun, bool saveMemory,
         SubAgentManager subAgentManager, IAgentScopeFactory scopeFactory,
-        IAgentStore agentStore, IBlockStore blockStore, string currentSessionId)
+        IAgentStore agentStore, IBlockStore blockStore, string currentSessionId,
+        string defaultModel)
     {
         var scopeErr = await EnsureScope(subAgentManager, scopeFactory, agentStore, agentId);
         if (scopeErr is not null) return scopeErr;
@@ -91,7 +92,7 @@ public static class SubAgentTool
         {
             return await subAgentManager.RunAsync(agentId, async s =>
             {
-                var (output, blockCk) = await RunAgentTask(s, agentStore, blockStore, agentId, task, currentSessionId, saveMemory);
+                var (output, blockCk) = await RunAgentTask(s, agentStore, blockStore, agentId, task, currentSessionId, defaultModel, saveMemory);
                 if (isDryRun)
                 {
                     await agentStore.ClearUsageAsync(agentId);
@@ -126,7 +127,7 @@ public static class SubAgentTool
         try
         {
             return await RunSubAgentTaskAsync(agentId, task, isDryRun: false, saveMemory: false,
-                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId);
+                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, deepseek.Model);
         }
         finally
         {
@@ -162,7 +163,7 @@ public static class SubAgentTool
             if (name is not null && await agentStore.AgentExistsAsync(name))
             {
                 return await RunSubAgentTaskAsync(name, task, isDryRun: true, saveMemory: false,
-                    subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId);
+                    subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, deepseek.Model);
             }
 
             // ── name provided + agent doesn't exist → create temp, run, delete ──
@@ -216,7 +217,7 @@ public static class SubAgentTool
             }
 
             return await RunSubAgentTaskAsync(name, task, isDryRun: false, saveMemory: true,
-                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId);
+                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, deepseek.Model);
         },
         name: "subagent_use",
         description: "Execute a task on a named subagent (auto-creates if not found). Memory and context accumulate across calls — the agent persists. Usage delta recorded in main session."

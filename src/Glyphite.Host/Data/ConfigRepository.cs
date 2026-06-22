@@ -4,44 +4,11 @@ using Microsoft.Data.Sqlite;
 
 namespace Glyphite.Host.Data;
 
-public class ConfigRepository : IConfigStore, IDisposable
+public class ConfigRepository : RepositoryBase, IConfigStore
 {
-    private readonly SqliteConnection _conn;
-    private readonly string _connectionString;
-    private readonly SemaphoreSlim _writeLock = new(1, 1);
-
-    public ConfigRepository(string connectionString)
+    public ConfigRepository(string connectionString) : base(connectionString)
     {
-        _connectionString = connectionString;
-        _conn = new SqliteConnection(connectionString);
-        _conn.Open();
         Initialize();
-    }
-
-    static ConfigRepository()
-    {
-        Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
-    }
-
-    public void Dispose()
-    {
-        _writeLock.Dispose();
-        _conn?.Close();
-        _conn?.Dispose();
-    }
-
-    private async Task WithLockAsync(Func<Task> action)
-    {
-        await _writeLock.WaitAsync();
-        try { await action(); }
-        finally { _writeLock.Release(); }
-    }
-
-    private SqliteConnection CreateReadConnection()
-    {
-        var conn = new SqliteConnection(_connectionString);
-        conn.Open();
-        return conn;
     }
 
     private void Initialize()
@@ -130,13 +97,13 @@ public class ConfigRepository : IConfigStore, IDisposable
 
     // ── Internal helpers ──
 
-    internal async Task<List<SessionRepository.ConfigRow>> GetAllConfigAsync(string scope = "global", string? agentId = null)
+    internal async Task<List<ConfigRow>> GetAllConfigAsync(string scope = "global", string? agentId = null)
     {
         using var conn = CreateReadConnection();
         var sql = "SELECT key, value, scope, agent_id, updated_at FROM config WHERE scope = @scope";
         if (agentId is not null)
             sql += " AND agent_id = @sid";
-        return (await conn.QueryAsync<SessionRepository.ConfigRow>(sql, new { scope, sid = agentId ?? "" })).AsList();
+        return (await conn.QueryAsync<ConfigRow>(sql, new { scope, sid = agentId ?? "" })).AsList();
     }
 
     internal async Task<bool> ConfigExistsAsync(string key, string scope = "global", string? agentId = null)

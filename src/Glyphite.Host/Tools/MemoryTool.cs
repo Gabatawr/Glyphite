@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Memory;
+using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 
 namespace Glyphite.Host.Tools;
@@ -34,7 +35,7 @@ public static class MemoryTool
             {
                 var allBlocks = await provider.GetBlocksAsync(sessionId);
                 var protectedSet = cfg is not null
-                    ? (await cfg.GetOptionsAsync<MemoryOptions>("Memory", sessionId)).ProtectedBlockTypes
+                    ? (await cfg.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId)).ProtectedBlockTypes
                     : [];
                 var protectedTypes = new HashSet<string>(protectedSet, StringComparer.OrdinalIgnoreCase);
                 var blockLines = new List<string> { "── Memory Blocks ────────────────────────" };
@@ -60,15 +61,9 @@ public static class MemoryTool
             case "stats":
                 var (totalBlocks, _, typeStats) = await provider.ComputeStatsAsync(sessionId);
                 var lines = new List<string> { "── Memory Stats ─────────────────────────" };
-                var iconMap = new Dictionary<string, string>
-                {
-                    ["user_message"] = "👤", ["agent_message"] = "💬", ["agent_reasoning"] = "🧠",
-                    ["tool"] = "🔧", ["todo"] = "📋", ["todo_update"] = "🔄",
-                    ["system_info"] = "ℹ️"
-                };
                 foreach (var kv in typeStats.OrderByDescending(kv => kv.Value))
                 {
-                    var icon = iconMap.GetValueOrDefault(kv.Key, "  ");
+                    var icon = BlockTypeIcon.Get(kv.Key);
                     lines.Add($"  {icon} {kv.Key,-20}: {kv.Value,4}");
                 }
                 lines.Add("  ───────────────────────────────────────");
@@ -91,7 +86,7 @@ public static class MemoryTool
                         lines.Add($"  Cache:  {usage.Hit / 1000.0:F1}K hit / {usage.Miss / 1000.0:F1}K miss ({rate}%)");
                     }
 
-                    var deepseekOpts = await cfg.GetOptionsAsync<DeepSeekOptions>("DeepSeek");
+                    var deepseekOpts = await cfg.GetOptionsAsync<DeepSeekOptions>(DeepSeekOptions.Section);
                     var modelPricing = deepseekOpts.Models.FirstOrDefault(m =>
                         string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase));
                     if (modelPricing is not null)
