@@ -8,6 +8,8 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
 
 - **Conversational AI interface** — chat with AI (DeepSeek / OpenAI) directly in the terminal
 - **Agent-oriented architecture** — named agents instead of GUID sessions. Each agent has its own history, home directory, and config
+- **SessionManager** centralizes agent lifecycle — create, clone, switch, delete agents; persist/resume sessions; hot-reload config per agent
+- **InputHistory** shared between sessions — user messages and commands accessible across agent switches
 - **Built-in tools:**
   - `execute_bash` — shell commands
   - `read_file` / `write_file` / `patch_file` — file operations with diff highlighting
@@ -311,13 +313,13 @@ Key log events:
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
 
 ```bash
-glyphite -v       # → 0.7.6
-/version          # → Glyphite v0.7.6
+glyphite -v       # → 0.7.47
+/version          # → Glyphite v0.7.47
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.7.6 — MainAgent 🏠
+Glyphite CLI v0.7.47 — MainAgent 🏠
 ```
 
 ## Publishing and backups
@@ -335,7 +337,7 @@ Use `./publish.sh` to publish:
 
 Rollback:
 ```bash
-cp ~/.glyphite/backup/glyphite.v0.7.5 ~/.glyphite/glyphite
+cp ~/.glyphite/backup/glyphite.v0.7.47 ~/.glyphite/glyphite
 ```
 
 ## Testing

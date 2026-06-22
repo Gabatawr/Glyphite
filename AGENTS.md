@@ -18,9 +18,79 @@ Settings are applied in this order (each overrides the previous):
 2. **`Glyphite.json`** in current working directory — overrides base defaults. Use this for your own preferences (e.g. `"patch_file": -1` to always show diffs).
 3. **`Glyphite.{agentName}.json`** in current working directory — agent-specific overrides (highest priority).
 
-## Session state (Jul 24)
+## Session state (Jun 22)
 
-### Latest changes — Serilog logging, atomic compaction, parallel summarization (v0.7.0–0.7.6)
+### Latest changes — ChatRepl refactoring into SessionManager, MemoryStore split, TurnContext extraction (v0.7.7–0.7.47)
+
+**1. MemoryStore→ 3 repositories — ISP split:**
+
+`IMemoryStore` (composite interface) removed. Three separate interfaces, each with own SQLite connection + semaphore:
+
+| Interface | Implementation | Responsibility |
+|-----------|---------------|----------------|
+| `IAgentStore` | `SessionRepository` | Agent CRUD, usage stats, launch tracking, fork/delete |
+| `IBlockStore` | `BlockRepository` | Block CRUD, atomic `ReplaceBlocksSinceAsync`, load by type/number |
+| `IConfigStore` | `ConfigRepository` | Config read/write by session scope |
+
+`MemoryStore.cs` deleted entirely. DI registers three singletons directly.
+
+**2. `_writeLock` → `WithLockAsync` helper:**
+
+Before: ~30 manual `WaitAsync`/`try`/`finally`/`Release` blocks across MemoryStore — copy-paste boilerplate.
+After: single `WithLockAsync(Func<Task>)` / `WithLockAsync<T>(Func<Task<T>>)` per repository. Every lock acquisition is one line.
+
+```csharp
+// Before
+await _writeLock.WaitAsync();
+try { /* 20 lines of logic */ }
+finally { _writeLock.Release(); }
+
+// After
+await WithLockAsync(async () => { /* 20 lines of logic */ });
+```
+
+**3. FailSafeChatClient → ToolExecutor + UsageTracker (540→310 lines):**
+
+Extracted two focused classes from the monolithic `FailSafeChatClient`:
+
+| Class | Lines | Responsibility |
+|-------|-------|---------------|
+| `ToolExecutor` | 202 | Grouping concurrent/sequential tool calls, tracking peek and memory-clean call IDs |
+| `UsageTracker` | 92 | Extracting cache tokens from API response, recording to IAgentStore |
+| `FailSafeChatClient` (remaining) | 310 | Orchestrator — streaming/non-streaming loops, delegates to ToolExecutor and UsageTracker |
+
+**4. TurnProcessor → TurnContext extraction (400→447 lines):**
+
+Local functions (`ProcessUpdate`, `FlushReasoning`, `FlushText`, `FlushAll`) and helpers (`CleanToolArgs`, `BuildPeekCleanMessage`) moved into `TurnContext` class:
+
+- `TurnProcessor.cs` (43 lines) — pure orchestration: prepare → stream → finish. Three clear phases, `yield return` only in `ProcessAsync`.
+- `TurnProcessor.Streaming.cs` (278 lines) — `TurnContext` with full streaming state. Logic unchanged — only code moved.
+
+**5. ChatRepl → SessionManager + InputHistory (cleanup #10):**
+
+Removed 2 partial files (`ChatRepl.Config.cs`, `ChatRepl.Startup.cs`). ChatRepl now has 3 partials + main class:
+
+| File | Lines | Responsibility |
+|------|-------|---------------|
+| `ChatRepl.cs` | 97 | DI fields + `RunAsync` loop — pure orchestration |
+| `ChatRepl.Input.cs` | 465 | Line editor with history, tab-completion, multi-line Redraw |
+| `ChatRepl.Commands.cs` | 121 | Command dispatcher, delegates to SessionManager |
+| `ChatRepl.Streaming.cs` | 155 | Streaming event loop, RenderChunk + ProcessInputAsync |
+
+New services:
+
+- **`SessionManager`** (850 lines) — owns `_agentId`, `_currentScope`, `SwitchScope()`. Handles startup/resume, all `/команды` (new/clone/use/delete/show models), config loading from disk (Glyphite.json + Glyphite.{agent}.json). Injected as singleton via DI.
+- **`InputHistory`** (6 lines) — `List<string>` subclass shared between ChatRepl.Input and InitializeAfterAgentAsync (pre-seeds user messages and commands from DB).
+
+ChatRepl no longer has DI deps on `IAgentManager`, `IAgentScopeFactory` — all agent lifecycle goes through SessionManager.
+
+**6. Input line scroll fix (v0.7.42–v0.7.47):**
+
+Fixed: when `_promptLine` is near the bottom of the terminal buffer and input wraps, `Console.Write(text)` causes a terminal scroll. After scroll, `_promptLine` stayed fixed — subsequent `Redraw` calls wrote over history above.
+
+Fix: after `Console.Write(text)`, compare `Console.CursorTop` (actual last line) with expected `_promptLine + lineCount - 1`. On mismatch, recalculate `_promptLine = Console.CursorTop - (lineCount - 1)`. Without scroll — `_promptLine` stays fixed, no drift.
+
+### Previous — Serilog logging, atomic compaction, parallel summarization (v0.7.0–0.7.6)
 
 **1. Serilog + ILogger\<T\> — structured file logging:**
 
@@ -243,12 +313,12 @@ Two independent cleanup mechanisms, both running **after LLM consumes the result
 
 ### Architecture
 - **Abstractions** — interfaces, models, no deps (except `Microsoft.Extensions.AI`)
-  - Includes `ISubAgentConfigLoader`, `IAgentManager`, `IMemoryStore`, etc.
-- **Host** — service implementations (TurnProcessor, FailSafeChatClient, MemoryStore, BlockMemoryProvider, SubAgentConfigLoader, SubAgentManager), tools (SubAgentTool, ToolRegistry, etc.), MCP, DI wiring
-- **Cli** — UI only (ChatRepl + 3 partials, ConsoleRenderer). No persistence logic.
+  - Includes `ISubAgentConfigLoader`, `IAgentManager`, `IAgentStore`, `IBlockStore`, `IConfigStore`, etc.
+- **Host** — service implementations (TurnProcessor, FailSafeChatClient, ToolExecutor, UsageTracker, SessionRepository, BlockRepository, ConfigRepository, BlockMemoryProvider, SubAgentConfigLoader, SubAgentManager), tools (SubAgentTool, ToolRegistry, etc.), MCP, DI wiring
+- **Cli** — UI only (ChatRepl + 3 partials, SessionManager, InputHistory, ConsoleRenderer). No persistence logic.
 
 ### Peek flow
-Two levels of peek cleanup, both in `MemoryStore.Blocks.cs`:
+Two levels of peek cleanup, both in `BlockRepository.cs`:
 
 1. **Inter-iteration** (`ClearPeekMarkersAsync(includeReasoning: false)`) — cleans tool/file peek blocks between tool batches (`RemovePeekBlocksAsync` + set `tool_result = NULL`).
 2. **Start-of-turn** (`RemovePeekBlocksAsync(includeReasoning: true)`) — cleans ALL peek blocks from DB (safety net before new turn).
@@ -266,7 +336,7 @@ CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_delet
 -- tool_result, updated_at, parent_number, is_deleted
 ```
 
-See `MemoryStore.cs` `Initialize()` for full DDL.
+See `BlockRepository.cs` `InitializeAsync()` for full DDL.
 
 ### Version
-`Version.txt`: `0.7.6`, published up to v0.7.6
+`Version.txt`: `0.7.47`, published up to v0.7.47
