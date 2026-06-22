@@ -20,6 +20,18 @@ public abstract class RepositoryBase : IDisposable
         _connectionString = connectionString;
         _conn = new SqliteConnection(connectionString);
         _conn.Open();
+        SetPragmas(_conn);
+    }
+
+    private static void SetPragmas(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            PRAGMA journal_mode=WAL;
+            PRAGMA busy_timeout=5000;
+            PRAGMA foreign_keys=ON;
+            """;
+        cmd.ExecuteNonQuery();
     }
 
     public void Dispose()
@@ -47,6 +59,7 @@ public abstract class RepositoryBase : IDisposable
     {
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
+        SetPragmas(conn);
         return conn;
     }
 }

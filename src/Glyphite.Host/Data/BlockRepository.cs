@@ -35,6 +35,17 @@ public class BlockRepository : RepositoryBase, IBlockStore
         _conn.Execute("CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_deleted)");
     }
 
+    // ── Shared SQL ──
+
+    private const string SqlInsertBlock = """
+        INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, parent_number, is_deleted)
+        VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, @parent_number, 0)
+        """;
+
+    private const string SqlSoftDeleteBlock = "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num";
+
+    private const string SqlRecoverBlock = "UPDATE blocks SET is_deleted = 0 WHERE agent_id = @sid AND number = @num AND is_deleted = 1";
+
     // ── Mapping ──
 
     private static MemoryBlock MapToBlock(BlockEntity e)
@@ -128,10 +139,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
             foreach (var block in newBlocks)
             {
                 block.UpdatedAt = DateTime.UtcNow;
-                await _conn.ExecuteAsync("""
-                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, parent_number, is_deleted)
-                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, @parent_number, 0)
-                    """, MapFromBlock(agentId, block));
+                await _conn.ExecuteAsync(SqlInsertBlock, MapFromBlock(agentId, block));
             }
             await _conn.ExecuteAsync(
                 "UPDATE sessions SET next_number = @Next WHERE id = @Id",
@@ -258,7 +266,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
             var removed = 0;
             foreach (var num in toRemove)
                 removed += await _conn.ExecuteAsync(
-                    "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num",
+                    SqlSoftDeleteBlock,
                     new { sid = agentId, num });
             await tx.CommitAsync();
             return removed;
@@ -314,7 +322,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
                 await using var tx = await _conn.BeginTransactionAsync();
                 foreach (var num in toRemove)
                     removed += await _conn.ExecuteAsync(
-                        "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num",
+                    SqlSoftDeleteBlock,
                         new { sid = agentId, num });
                 await tx.CommitAsync();
             }
@@ -356,7 +364,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
             var removed = 0;
             foreach (var num in toRecover)
                 removed += await _conn.ExecuteAsync(
-                    "UPDATE blocks SET is_deleted = 0 WHERE agent_id = @sid AND number = @num AND is_deleted = 1",
+                    SqlRecoverBlock,
                     new { sid = agentId, num });
             await tx.CommitAsync();
             return removed;
@@ -397,7 +405,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
             var removed = 0;
             foreach (var num in toRemove)
                 removed += await _conn.ExecuteAsync(
-                    "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num",
+                    SqlSoftDeleteBlock,
                     new { sid = agentId, num });
             await tx.CommitAsync();
             return removed;
@@ -436,7 +444,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
             {
                 foreach (var num in softDeleteNums)
                     await _conn.ExecuteAsync(
-                        "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num",
+                    SqlSoftDeleteBlock,
                         new { sid = agentId, num });
             }
 
@@ -449,10 +457,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
             foreach (var block in newBlocks)
             {
                 block.UpdatedAt = DateTime.UtcNow;
-                await _conn.ExecuteAsync("""
-                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, parent_number, is_deleted)
-                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, @parent_number, 0)
-                    """, MapFromBlock(agentId, block));
+                await _conn.ExecuteAsync(SqlInsertBlock, MapFromBlock(agentId, block));
             }
 
             // 4. Update next_number

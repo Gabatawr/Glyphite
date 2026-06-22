@@ -28,9 +28,12 @@ public static class HostServiceCollectionExtensions
         RegisterOptions<AgentOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<MemoryOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<BashOptions>(services, glConfig, o => o.Validate());
+        RegisterOptions<WebFetchOptions>(services, glConfig, o => o.Validate());
+        RegisterOptions<SearchOptions>(services, glConfig, o => o.Validate());
+        RegisterOptions<TodoOptions>(services, glConfig, o => o.Validate());
+        RegisterOptions<ContentDedupOptions>(services, glConfig, o => o.Validate());
+        RegisterOptions<DataOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<CompressionOptions>(services, glConfig, o => o.Validate());
-        // остальные секции (WebFetch, Search, Todo, ContentDedup, McpServers)
-        // потребляются через свежий _cfgService.GetOptionsAsync<T>() каждый turn
 
         // ── Data directory ──
         var dataOpts = glConfig.GetSection(DataOptions.Section).Get<DataOptions>()
