@@ -1,6 +1,10 @@
-# Glyphite
+<p align="center">
+  <img src="Glyphite-icon.png" alt="Glyphite logo" width="200" height="200">
+</p>
 
-**AI agent with tools — right in your terminal.**
+<h1 align="center">Glyphite</h1>
+
+<p align="center"><strong>AI agent with tools — right in your terminal.</strong></p>
 
 Glyphite is a .NET console-based AI agent that runs commands, works with files, searches for information, manages todos, and interacts with external services — all from the command line. Built for agentic workflows with block-based memory, cascading context, MCP support, and subagent delegation.
 
