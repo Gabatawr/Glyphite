@@ -265,7 +265,7 @@ namespace Glyphite.Host.Services;
     private async Task<string?> SummarizeSingleZoneAsync(string sessionId, List<MemoryBlock> blocks, string? model)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Summarize this conversation zone concisely in 2-4 sentences, preserving key decisions, findings, code changes, and important context.");
+        sb.AppendLine("Summarize this conversation zone, preserving key decisions, findings, code changes, important context. Pay attention to the volume of content — the more messages in the zone, the more detail is expected. Do not rush past important user requests, agent responses, tool results, or subagent outputs.");
         sb.AppendLine();
 
         foreach (var block in blocks)
@@ -275,7 +275,7 @@ namespace Glyphite.Host.Services;
 
         var messages = new List<ChatMessage>
         {
-            new(ChatRole.System, "You are a precise summarizer for a coding assistant conversation. Provide a concise summary of the given conversation zone."),
+            new(ChatRole.System, "You are a precise summarizer for a coding assistant conversation. Summarize the zone below. Respond in English. Adjust detail to the zone volume — a large zone warrants a proportionally longer summary."),
             new(ChatRole.User, sb.ToString())
         };
 

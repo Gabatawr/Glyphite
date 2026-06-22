@@ -151,7 +151,7 @@ public partial class ChatRepl
                 (ctrl && key.Key == ConsoleKey.Backspace))
             {
                 DeleteWordBefore(buffer, ref pos);
-                Redraw(new string(buffer.ToArray()));
+                Redraw(new string(buffer.ToArray()), pos);
                 continue;
             }
 
@@ -203,10 +203,9 @@ public partial class ChatRepl
                         if ((_inputHistory[i][0] == '/') == false)
                         {
                             _historyIndex = i;
-                            Redraw(_inputHistory[i]);
                             buffer = [.. _inputHistory[i]];
                             pos = buffer.Count;
-                            MoveCursor(pos);
+                            Redraw(_inputHistory[i], pos);
                             break;
                         }
                     }
@@ -225,13 +224,11 @@ public partial class ChatRepl
                         if (i == _inputHistory.Count)
                         {
                             _historyIndex = _inputHistory.Count;
-                            Redraw(_pendingInput ?? "");
                             buffer = [.. (_pendingInput ?? "")];
                         }
                         else if ((_inputHistory[i][0] == '/') == false)
                         {
                             _historyIndex = i;
-                            Redraw(_inputHistory[i]);
                             buffer = [.. _inputHistory[i]];
                         }
                         else
@@ -239,7 +236,7 @@ public partial class ChatRepl
                             continue;
                         }
                         pos = buffer.Count;
-                        MoveCursor(pos);
+                        Redraw(new string(buffer.ToArray()), pos);
                         break;
                     }
                     break;
@@ -279,7 +276,7 @@ public partial class ChatRepl
                     {
                         buffer.RemoveAt(pos - 1);
                         pos--;
-                        Redraw(new string(buffer.ToArray()));
+                        Redraw(new string(buffer.ToArray()), pos);
                     }
                     break;
 
@@ -288,7 +285,7 @@ public partial class ChatRepl
                     if (pos < buffer.Count)
                     {
                         buffer.RemoveAt(pos);
-                        Redraw(new string(buffer.ToArray()));
+                        Redraw(new string(buffer.ToArray()), pos);
                     }
                     break;
 
@@ -302,7 +299,7 @@ public partial class ChatRepl
                         _tabCompletionPrefix = null;
                         buffer.Insert(pos, key.KeyChar);
                         pos++;
-                        Redraw(new string(buffer.ToArray()));
+                        Redraw(new string(buffer.ToArray()), pos);
                     }
                     break;
             }
@@ -343,7 +340,7 @@ public partial class ChatRepl
         buffer.Clear();
         buffer.AddRange(completed);
         pos = completed.Length;
-        Redraw(completed);
+        Redraw(completed, pos);
     }
 
     private static void DeleteWordBefore(List<char> buffer, ref int pos)
@@ -371,7 +368,7 @@ public partial class ChatRepl
         while (pos < buffer.Count && buffer[pos] == ' ') pos++;
     }
 
-    private void Redraw(string text)
+    private void Redraw(string text, int pos = -1)
     {
         var bufWidth = Console.BufferWidth;
         var bufHeight = Console.BufferHeight;
@@ -395,7 +392,7 @@ public partial class ChatRepl
 
         // Обновляем _promptLine и _maxVisualLine под новый текст
         var cursorTop = Console.CursorTop;
-        _promptLine = cursorTop - (promptLen > bufWidth ? (promptLen - 1) / bufWidth : 0);
+        _promptLine = cursorTop - promptLen / bufWidth;
         if (_promptLine < 0) _promptLine = 0;
 
         var textLines = promptLen / bufWidth + (promptLen % bufWidth > 0 ? 1 : 0);
@@ -403,6 +400,15 @@ public partial class ChatRepl
         if (_maxVisualLine < _promptLine) _maxVisualLine = _promptLine;
 
         _lastBufferLen = text.Length;
+
+        // Возвращаем курсор на позицию pos (без мерцания — до выхода из функции)
+        if (pos >= 0)
+        {
+            var col = _promptPrefix.Length + pos;
+            var line = _promptLine + col / bufWidth;
+            if (line >= bufHeight) line = bufHeight - 1;
+            Console.SetCursorPosition(col % bufWidth, line);
+        }
     }
 
     private void ClearFromPromptToBottom()
