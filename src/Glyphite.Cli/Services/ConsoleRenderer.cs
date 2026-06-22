@@ -160,6 +160,23 @@ public class ConsoleRenderer
         await RefreshAsync(sid);
         if (showResumed) Console.WriteLine($"Resumed agent '{sid}'.");
         var prevBlocks = await store.LoadBlocksAsync(sid);
+
+        // Show only the last 2 turns: find the second-to-last turn marker
+        // and render everything from that point onwards.
+        var turnBlocks = prevBlocks
+            .Where(b => b.Type == BlockType.turn)
+            .OrderByDescending(b => b.Number)
+            .Take(2)
+            .ToArray();
+
+        if (turnBlocks.Length == 2)
+        {
+            var cutNumber = turnBlocks[1].Number;
+            prevBlocks = prevBlocks
+                .Where(b => b.Number >= cutNumber)
+                .ToList();
+        }
+
         var s = new RenderState();
         foreach (var block in prevBlocks)
             RenderBlock(block, ref s);

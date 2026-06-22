@@ -44,7 +44,7 @@ public static class FileWriteTool
             [Description("Path to the file (absolute or relative to working directory). Parent directories auto-created.")] string path,
             [Description("Complete file content to write. For targeted changes use `patch_file` instead.")] string content,
             [Description("Result detail level: 'metadata' (default, returns path+size) or 'content' (returns full file content).")] string? resultType = null,
-            [Description("Auto-clean result after tool loop. File is still written.")] bool? peek = null)
+            [Description("Auto-clean result after tool loop (default: true). File is still written. Set false to keep result in visible history.")] bool? peek = true)
             => await WriteFile(path, content, resultType, peek, defaultDirectory: defaultDirectory);
     }
 

@@ -52,7 +52,7 @@ public static class TodoTool
 
         await blockStore.AppendBlocksAsync(sessionId, [block], nextNumber + 1);
 
-        return FormattableString.Invariant($"Created todo list '{title}' as block {nextNumber:F1} with {items.Length} items\n") + FormatItems(dictItems);
+        return title + "\n" + FormatItems(dictItems);
     }
 
     public static async Task<string> TodoUpdate(
@@ -245,7 +245,7 @@ public static class TodoTool
         snapshot.Data["parentNumber"] = parentBlock;
         await blockStore.AppendBlocksAsync(sessionId, [snapshot], nextNumber + 1);
 
-        return FormattableString.Invariant($"Updated block {existing.Number:F1}: {string.Join("; ", results)}\n") + FormatItems(items);
+        return (existing.Content ?? "Updated") + "\n" + FormatItems(items);
     }
 
     private static string FormatItems(IEnumerable<object> dictItems)

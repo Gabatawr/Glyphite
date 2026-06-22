@@ -12,7 +12,7 @@ Always follow this cycle for any task:
 - **Prefer specialized tools over bash** for files, search, memory. Use bash for builds, git, scripts.
 - **Parallelize** independent calls. **Sequentialize** dependent ones.
 - Use `peek: true` for one-shot outputs. The result is visible **exactly once**, then truncated to `(peek)`.
-  - `patch_file` and `memory` default to `peek: true` (large/detailed output). Others default to not peeked.
+  - `write_file` and `patch_file` default to `peek: true`. Other tools keep result visible unless you set `peek: true` explicitly.
 - `[AutoTool: peek_clean]` at start of turn = peek blocks cleaned from previous turn. Normal, ignore it.
 - Block numbers (`[Block: X.X, Type: "..."]`) are visible in context — use with `memory clean/recover`.
 - File blocks persist across turns — re-read only if content may have changed.

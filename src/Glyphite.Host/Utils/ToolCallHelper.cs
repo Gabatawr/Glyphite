@@ -7,7 +7,7 @@ public static class ToolCallHelper
 {
     /// <summary>
     /// Determine if a tool call should be treated as peek (auto-clean after LLM consumes it).
-    /// Default: peek=true for patch_file; otherwise checks the 'peek' argument.
+    /// Default: peek=true for write_file and patch_file; otherwise checks the 'peek' argument.
     /// </summary>
     public static bool IsPeekCall(FunctionCallContent fcc)
     {
@@ -16,13 +16,13 @@ public static class ToolCallHelper
 
     /// <summary>
     /// Determine if a tool call should be treated as peek.
-    /// Default: peek=true for patch_file; otherwise checks the 'peek' argument.
+    /// Default: peek=true for write_file and patch_file; otherwise checks the 'peek' argument.
     /// </summary>
     public static bool IsPeekCall(string? toolName, IDictionary<string, object?>? args)
     {
         if (args?.TryGetValue("peek", out var pv) == true)
             return pv is bool pb ? pb : (pv is JsonElement je && je.ValueKind == JsonValueKind.True);
-        return toolName == "patch_file";
+        return toolName == "patch_file" || toolName == "write_file";
     }
 
     /// <summary>
