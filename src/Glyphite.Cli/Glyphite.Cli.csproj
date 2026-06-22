@@ -7,6 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Glyphite.Cli</RootNamespace>
     <AssemblyName>glyphite</AssemblyName>
+    <ApplicationIcon>../../Glyphite.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
