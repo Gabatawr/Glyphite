@@ -59,7 +59,8 @@ public class ConsoleRenderer
                     s.lineStart = true;
                 }
                 Console.ForegroundColor = AgentColor;
-                Console.Write(block.Content);
+                var formatted = TableRenderer.RenderTables(block.Content);
+                Console.Write(formatted);
                 Console.ResetColor();
                 s.wasReasoning = false;
                 s.wasTool = false;
@@ -135,6 +136,8 @@ public class ConsoleRenderer
                         var trContent = block.ToolResult.TrimEnd('\n', '\r');
                         if (trLen > 0 && trContent.Length > trLen)
                             trContent = trContent[..trLen];
+                        // Format any markdown tables in tool results (subagents may return tables)
+                        trContent = TableRenderer.RenderTables(trContent);
                         Console.WriteLine(trContent);
                         Console.ResetColor();
                     }
