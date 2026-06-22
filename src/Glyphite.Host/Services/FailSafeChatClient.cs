@@ -7,18 +7,29 @@ using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
+/// <summary>
+/// Orchestrates the LLM request loop: sends messages, collects streaming updates,
+/// delegates tool execution to <see cref="ToolExecutor"/>, tracks usage via <see cref="UsageTracker"/>.
+/// On each iteration, if the LLM requests tools, they are grouped and executed,
+/// then the results are fed back for the next iteration.
+/// </summary>
 public sealed class FailSafeChatClient : DelegatingChatClient
 {
     private readonly int _maxIterations;
     private readonly ILogger _logger;
+    private readonly ToolExecutor _toolExecutor;
+    private readonly UsageTracker _usageTracker;
 
-    public HashSet<string> ExecutedCallIds { get; } = [];
+    public HashSet<string> ExecutedCallIds => _toolExecutor.ExecutedCallIds;
 
-    /// <summary>Tracks CallIds of peek=true tool calls for cleanup after LLM consumes them.</summary>
-    private readonly HashSet<string> _pendingPeekCallIds = [];
+    /// <summary>Expose the usage tracker so TurnProcessor can read final values.</summary>
+    public UsageTracker Usage => _usageTracker;
 
-    /// <summary>Tracks block numbers deleted by memory clean for removal from messageList after LLM consumes them.</summary>
-    private readonly List<double> _pendingMemoryCleanBlocks = [];
+    public long TotalCacheHitTokens => _usageTracker.TotalCacheHitTokens;
+    public long TotalCacheMissTokens => _usageTracker.TotalCacheMissTokens;
+    public long TotalOutputTokens => _usageTracker.TotalOutputTokens;
+    public long LastHitTokens => _usageTracker.LastHitTokens;
+    public long LastMissTokens => _usageTracker.LastMissTokens;
 
     public IReadOnlyList<ChatMessage>? LastMessages { get; private set; }
     public Action<long, long, long>? OnUsage { get; set; }
@@ -26,171 +37,13 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     /// <summary>Called after each batch of tool executions completes. Returns text to append to tool results (or null).</summary>
     public Func<Task<string?>>? OnBatchComplete { get; set; }
 
-    public long TotalCacheHitTokens { get; private set; }
-    public long TotalCacheMissTokens { get; private set; }
-    public long TotalOutputTokens { get; private set; }
-
-    public long LastHitTokens { get; private set; }
-    public long LastMissTokens { get; private set; }
-
     public FailSafeChatClient(IChatClient inner, int maxIterations, ILogger logger) : base(inner)
     {
         _maxIterations = maxIterations;
         _logger = logger;
-    }
-
-    // ── Parallel-safe tool names (can be grouped for concurrent execution) ──
-    private static readonly HashSet<string> _parallelSafeTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "read_file", "fetch_web", "search_glob", "search_grep", "subagent_use", "subagent_run"
-    };
-
-    /// <summary>
-    /// Group consecutive parallel-safe tool calls into batches for concurrent execution.
-    /// For subagent_use / subagent_run: mode="parallel" is parallel-safe
-    /// (with duplicate agent name check — same name splits into sequential groups).
-    /// mode="sequential" or no mode (default) stops the group.
-    /// </summary>
-    private static List<List<FunctionCallContent>> BuildToolGroups(IReadOnlyList<FunctionCallContent> fccs)
-    {
-        var groups = new List<List<FunctionCallContent>>();
-        var current = new List<FunctionCallContent>();
-        var agentNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var fcc in fccs)
-        {
-            var name = fcc.Name ?? "";
-            var isSafe = _parallelSafeTools.Contains(name);
-
-            if (!isSafe)
-            {
-                if (current.Count > 0) { groups.Add(current); current = []; agentNames.Clear(); }
-                groups.Add([fcc]);
-                continue;
-            }
-
-            // subagent_use / subagent_run: check mode and duplicate agent names
-            if (name is "subagent_use" or "subagent_run")
-            {
-                // Check mode — default is "sequential"
-                string? mode = null;
-                if (fcc.Arguments?.TryGetValue("mode", out var modeObj) == true)
-                    mode = modeObj?.ToString();
-                var isParallelMode = string.Equals(mode, "parallel", StringComparison.OrdinalIgnoreCase);
-
-                if (!isParallelMode)
-                {
-                    // Sequential mode: stop current group, add as sequential
-                    if (current.Count > 0) { groups.Add(current); current = []; agentNames.Clear(); }
-                    groups.Add([fcc]);
-                    continue;
-                }
-
-                // Parallel mode: check for duplicate explicitly-provided agent names
-                if (fcc.Arguments?.TryGetValue("name", out var nameObj) == true)
-                {
-                    var agentName = nameObj?.ToString();
-                    if (!string.IsNullOrEmpty(agentName) && !agentNames.Add(agentName))
-                    {
-                        // Duplicate agent — flush current batch, start new one
-                        groups.Add(current);
-                        current = [];
-                        agentNames.Clear();
-                        agentNames.Add(agentName);
-                    }
-                }
-            }
-
-            current.Add(fcc);
-        }
-
-        if (current.Count > 0) groups.Add(current);
-        return groups;
-    }
-
-    /// <summary>Run a single tool and return (resultText, errorText, exception).</summary>
-    private static async Task<(string? Result, string? Error, Exception? Exception)> RunToolAsync(
-        AIFunction tool, IDictionary<string, object?>? args, CancellationToken ct)
-    {
-        try
-        {
-            var argsObj = args is not null ? new AIFunctionArguments(args) : null;
-            var r = await tool.InvokeAsync(argsObj, ct);
-            return (r?.ToString() ?? "", null, null);
-        }
-        catch (Exception ex)
-        {
-            return (null, $"Error executing '{tool.Name}': {ex.Message}", ex);
-        }
-    }
-
-    /// <summary>Track memory clean blocks for removal from messageList after LLM consumes them.</summary>
-    private void TrackMemoryClean(IDictionary<string, object?>? args, string toolName, string? resultText, string? errorText)
-    {
-        if (errorText is null && toolName == "memory" && resultText?.StartsWith("Deleted ") == true)
-        {
-            try
-            {
-                var argsJson = args is not null ? JsonSerializer.Serialize(args) : "{}";
-                using var doc = JsonDocument.Parse(argsJson);
-                if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var num in blk.EnumerateArray().Select(e => e.GetDouble()))
-                        _pendingMemoryCleanBlocks.Add(num);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to track memory clean blocks");
-            }
-        }
-    }
-
-    private async Task<List<ChatMessage>> ExecuteTools(
-        IReadOnlyList<FunctionCallContent> fccs, ChatOptions? options, CancellationToken ct)
-    {
-        var tools = options?.Tools?.OfType<AIFunction>().ToList() ?? [];
-        var results = new List<ChatMessage>();
-        var hasError = false;
-
-        for (var i = 0; i < fccs.Count; i++)
-        {
-            var fcc = fccs[i];
-            var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
-
-            if (hasError)
-            {
-                results.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, $"Skipped — previous tool errored"), new TextContent("Skipped — previous tool errored")]));
-                continue;
-            }
-
-            var tool = tools.FirstOrDefault(t => t.Name == fcc.Name);
-            if (tool is null)
-            {
-                results.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, $"No tool found: '{fcc.Name}'"), new TextContent($"No tool found: '{fcc.Name}'")]));
-                continue;
-            }
-
-            try
-            {
-                var args = fcc.Arguments is not null ? new AIFunctionArguments(fcc.Arguments) : null;
-                var result = await tool.InvokeAsync(args, ct);
-                var resultText = result?.ToString() ?? "";
-                results.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, result), new TextContent(resultText)]));
-                ExecutedCallIds.Add(callId);
-            }
-            catch (Exception ex)
-            {
-                var skipped = fccs.Count - i - 1;
-                var msg = $"Error executing '{fcc.Name}': {ex.Message}";
-                if (skipped > 0) msg += $"; {skipped} tool call(s) were not executed";
-                results.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, msg) { Exception = ex }, new TextContent(msg)]));
-                ExecutedCallIds.Add(callId);
-                hasError = true;
-            }
-        }
-
-        return results;
+        _toolExecutor = new ToolExecutor(logger);
+        _usageTracker = new UsageTracker();
+        _usageTracker.OnUsage += (hit, miss, output) => OnUsage?.Invoke(hit, miss, output);
     }
 
     public override async Task<ChatResponse> GetResponseAsync(
@@ -208,7 +61,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             if (fccs.Count == 0) return response;
 
             messageList.Add(assistantMsg);
-            messageList.AddRange(await ExecuteTools(fccs, options, ct));
+            messageList.AddRange(await _toolExecutor.ExecuteTools(fccs, options, ct));
         }
 
         throw new InvalidOperationException($"Tool execution exceeded {_maxIterations} iterations.");
@@ -237,46 +90,18 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             }
 
             // Peek cleanup: truncate tool results that LLM just consumed (seen exactly once)
-            // Must keep FunctionResultContent (same CallId) or API rejects unmatched tool_calls
-            if (_pendingPeekCallIds.Count > 0)
-            {
-                foreach (var m in messageList)
-                {
-                    if (m.Role != ChatRole.Tool) continue;
-                    var shouldTruncate = m.Contents.OfType<FunctionResultContent>().Any(frc =>
-                        _pendingPeekCallIds.Contains(frc.CallId));
-                    if (!shouldTruncate) continue;
-                    foreach (var frc in m.Contents.OfType<FunctionResultContent>())
-                        frc.Result = "(peek)";
-                    foreach (var tc in m.Contents.OfType<TextContent>())
-                        tc.Text = "(peek)";
-                }
-                _pendingPeekCallIds.Clear();
-            }
+            _toolExecutor.CleanupPeekTools(messageList);
 
             // Memory clean: remove deleted blocks from messageList after LLM consumed the result
-            if (_pendingMemoryCleanBlocks.Count > 0)
-            {
-                ToolCallHelper.RemoveBlocksFromMessageList(messageList, _pendingMemoryCleanBlocks);
-                _pendingMemoryCleanBlocks.Clear();
-            }
+            _toolExecutor.CleanupMemoryClean(messageList);
 
             if (!hasToolCall)
             {
                 var chatResponse = allUpdates.ToChatResponse();
-                var (cacheHit, cacheMiss, cacheOutput) = ExtractCacheTokens(allUpdates);
-                if (cacheHit > 0 || cacheMiss > 0 || cacheOutput > 0)
-                {
-                    TotalCacheHitTokens += cacheHit;
-                    TotalCacheMissTokens += cacheMiss;
-                    TotalOutputTokens += cacheOutput;
-                    LastHitTokens = cacheHit;
-                    LastMissTokens = cacheMiss;
-                    OnUsage?.Invoke(cacheHit, cacheMiss, cacheOutput);
-                }
+                _usageTracker.RecordUsage(allUpdates);
 
                 _logger.LogInformation("Completed in {Iteration} iteration(s): hit={Hit} miss={Miss} out={Output}",
-                    iteration + 1, TotalCacheHitTokens, TotalCacheMissTokens, TotalOutputTokens);
+                    iteration + 1, _usageTracker.TotalCacheHitTokens, _usageTracker.TotalCacheMissTokens, _usageTracker.TotalOutputTokens);
                 var finalAssistant = chatResponse.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
                 if (finalAssistant is not null)
                 {
@@ -300,15 +125,10 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                 yield break;
             }
 
+            // Record usage for tool-calling iteration
+            _usageTracker.RecordUsage(allUpdates);
+
             var toolResponse = allUpdates.ToChatResponse();
-            var (tHit, tMiss, tOutput) = ExtractCacheTokens(allUpdates);
-            if (tHit > 0 || tMiss > 0 || tOutput > 0)
-            {
-                TotalCacheHitTokens += tHit;
-                TotalCacheMissTokens += tMiss;
-                TotalOutputTokens += tOutput;
-                OnUsage?.Invoke(tHit, tMiss, tOutput);
-            }
             var toolAssistant = toolResponse.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
             if (toolAssistant is null) yield break;
 
@@ -348,7 +168,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             var toolResults = new List<ChatMessage>();
             var hasError = false;
 
-            var groups = BuildToolGroups(fixedFccs);
+            var groups = ToolExecutor.BuildToolGroups(fixedFccs);
 
             foreach (var group in groups)
             {
@@ -389,10 +209,10 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     }
                     else
                     {
-                        (resultText, errorText, exception) = await RunToolAsync(tool, fcc.Arguments, cancellationToken);
+                        (resultText, errorText, exception) = await ToolExecutor.RunToolAsync(tool, fcc.Arguments, cancellationToken);
                     }
 
-                    if (isPeek) _pendingPeekCallIds.Add(callId);
+                    if (isPeek) _toolExecutor.PendingPeekCallIds.Add(callId);
 
                     if (errorText is not null)
                     {
@@ -406,8 +226,8 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                         yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
                     }
 
-                    ExecutedCallIds.Add(callId);
-                    TrackMemoryClean(fcc.Arguments, toolName, resultText, errorText);
+                    _toolExecutor.ExecutedCallIds.Add(callId);
+                    _toolExecutor.TrackMemoryClean(fcc.Arguments, toolName, resultText, errorText);
                 }
                 // ── Parallel: start all tasks concurrently, yield FCC+FRC as each completes ──
                 else
@@ -429,7 +249,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                             continue;
                         }
 
-                        Task<(string?, string?, Exception?)> t = RunToolAsync(tool, fcc.Arguments, cancellationToken);
+                        Task<(string?, string?, Exception?)> t = ToolExecutor.RunToolAsync(tool, fcc.Arguments, cancellationToken);
                         execData.Add((callId, toolName, isPeek, t));
                     }
 
@@ -445,7 +265,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                         var (resultText, errorText, exception) = await done;
                         var fcc = group[item.idx];
 
-                        if (isPeek) _pendingPeekCallIds.Add(callId);
+                        if (isPeek) _toolExecutor.PendingPeekCallIds.Add(callId);
 
                         yield return new ChatResponseUpdate
                         {
@@ -464,8 +284,8 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                             yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
                         }
 
-                        ExecutedCallIds.Add(callId);
-                        TrackMemoryClean(fcc.Arguments, toolName, resultText, errorText);
+                        _toolExecutor.ExecutedCallIds.Add(callId);
+                        _toolExecutor.TrackMemoryClean(fcc.Arguments, toolName, resultText, errorText);
                     }
                 }
             }
@@ -486,64 +306,5 @@ public sealed class FailSafeChatClient : DelegatingChatClient
         }
 
         throw new InvalidOperationException($"Tool execution exceeded {_maxIterations} iterations.");
-    }
-
-    private static (long Hit, long Miss, long Output) ExtractCacheTokens(List<ChatResponseUpdate> updates)
-    {
-        var hit = 0L;
-        var miss = 0L;
-        var output = 0L;
-
-        foreach (var update in updates)
-        {
-            if (update.RawRepresentation is null) continue;
-
-            try
-            {
-                using var doc = GetUsageDocument(update.RawRepresentation);
-                if (doc is null) continue;
-                if (!doc.RootElement.TryGetProperty("Usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
-                    continue;
-
-                var inputTotal = usage.TryGetProperty("InputTokenCount", out var itc) && itc.ValueKind == JsonValueKind.Number
-                    ? itc.GetInt64() : 0L;
-                var cached = 0L;
-                if (usage.TryGetProperty("InputTokenDetails", out var details) && details.ValueKind == JsonValueKind.Object)
-                {
-                    if (details.TryGetProperty("CachedTokenCount", out var ctc) && ctc.ValueKind == JsonValueKind.Number)
-                        cached = ctc.GetInt64();
-                }
-
-                if (cached > 0)
-                {
-                    hit = Math.Max(hit, cached);
-                    miss = Math.Max(miss, inputTotal - cached);
-                }
-                else if (inputTotal > 0)
-                {
-                    miss = Math.Max(miss, inputTotal);
-                }
-
-                if (usage.TryGetProperty("OutputTokenCount", out var otc) && otc.ValueKind == JsonValueKind.Number)
-                    output = Math.Max(output, otc.GetInt64());
-            }
-            catch
-            {
-            }
-        }
-
-        return (hit, miss, output);
-    }
-
-    /// <summary>Parse RawRepresentation into a JsonDocument without double-serialization.
-    /// RawRepresentation is typically already a JsonDocument or JsonElement from the OpenAI client.</summary>
-    private static JsonDocument? GetUsageDocument(object raw)
-    {
-        return raw switch
-        {
-            JsonDocument jd => JsonDocument.Parse(jd.RootElement.GetRawText()),
-            JsonElement je => JsonDocument.Parse(je.GetRawText()),
-            _ => JsonDocument.Parse(JsonSerializer.Serialize(raw))
-        };
     }
 }

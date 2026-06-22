@@ -33,10 +33,12 @@
 ### ~~7. `ConfigureAwait(false)` — непоследовательно~~ ✅
 - **Исправлено:** убраны все 15 `.ConfigureAwait(false)` из `McpService.cs` (13) и `WebFetchTool.cs` (2) — в консольном приложении нет контекста синхронизации
 
-### 8. FailSafeChatClient — 540 строк, сложная логика
-- **Файл:** `src/Glyphite.Host/Services/FailSafeChatClient.cs`
-- **Проблема:** один класс отвечает за параллельное/последовательное выполнение тулов, трекинг ошибок, подсчёт токенов
-- **Решение:** разделить на `ToolExecutor`, `UsageTracker`, `FailSafeChatClient` (только обёртка)
+### ~~8. FailSafeChatClient — 540 строк, сложная логика~~ ✅
+- **Исправлено:** класс разделён на 3:
+  - **UsageTracker** (92 строки) — учёт токенов (`ExtractCacheTokens`, `RecordUsage`)
+  - **ToolExecutor** (202 строки) — группировка/выполнение тулов, трекинг peek и memory-clean
+  - **FailSafeChatClient** (310 строк) — оркестратор, стриминг/не-стриминг циклы, делегирует ToolExecutor и UsageTracker
+- **Итог:** `−239 строк` из FailSafeChatClient, логика изолирована, каждый класс можно тестировать отдельно
 
 ### 9. TurnProcessor — async iterator с критической логикой
 - **Файл:** `src/Glyphite.Host/Services/TurnProcessor.cs`
