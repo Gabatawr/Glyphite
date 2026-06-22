@@ -12,10 +12,9 @@
 - **Проблема:** один класс имплементирует `IAgentStore`, `IBlockStore`, `IConfigStore`. ~3500 строк в partial-файлах.
 - **Решение:** разбить на отдельные классы-репозитории (`BlockRepository`, `ConfigRepository`, `SessionRepository`), каждый со своим файлом и интерфейсом.
 
-### 3. CreateReadConnection() — новый SQLite connection на каждый вызов
-- **Проблема:** ~30 вызовов `using var conn = CreateReadConnection();` — каждый раз новая строка подключения
-- **Контекст:** в рамках скоупа агента можно переиспользовать `_conn` для read-only, но нужна осторожность с конкуренцией
-- **Решение:** опционально — переиспользовать существующее подключение для read-only операций
+### ~~3. CreateReadConnection() — новый SQLite connection на каждый вызов~~ (частично)
+- **FIX:** `ReplaceBlocksSinceAsync` — атомарная замена истории компакции в одной транзакции (вместо 3 отдельных вызовов)
+- **Open:** ~30 вызовов `CreateReadConnection()` для read-only операций пока не переиспользуются
 
 ### 4. _writeLock — copy-paste блокировка 48+ раз
 - **Файлы:** `MemoryStore*.cs`
