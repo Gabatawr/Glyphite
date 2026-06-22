@@ -153,9 +153,9 @@ public static class SubAgentTool
         return AIFunctionFactory.Create(async (
             [Description("Initial task/instruction for the subagent.")] string task,
             [Description("Agent name (optional — auto-generated GUID if omitted). If name is provided and the agent already exists, runs a dry-clean task (blocks cleared after). If the agent doesn't exist, creates a temporary one and deletes after.")] string? name = null,
-            [Description("Working directory (defaults to main agent's cwd).")] string? cwd = null,
-            [Description("Execution mode: 'sequential' (default, wait) or 'parallel' (hint for orchestrator).")] string? mode = null,
-            [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
+            string? cwd = null,
+            string? mode = null,
+            bool? peek = null) =>
         {
             var parentCwd = await agentStore.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
             var homePath = cwd ?? parentCwd;
@@ -202,9 +202,9 @@ public static class SubAgentTool
         return AIFunctionFactory.Create(async (
             [Description("Name of the subagent to execute the task on. Auto-created if not found.")] string name,
             [Description("Task/instruction for the subagent.")] string task,
-            [Description("Working directory (used only when auto-creating the agent).")] string? cwd = null,
-            [Description("Execution mode: 'sequential' (default, wait for result) or 'parallel' (queues for batch execution via Task.WhenAll).")] string? mode = null,
-            [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
+            string? cwd = null,
+            string? mode = null,
+            bool? peek = null) =>
         {
             if (!await agentStore.AgentExistsAsync(name))
             {
@@ -232,7 +232,7 @@ public static class SubAgentTool
         string currentSessionId)
     {
         return AIFunctionFactory.Create(async (
-            [Description("Auto-clean result after tool loop.")] bool? peek = null) =>
+            bool? peek = null) =>
         {
             var allAgents = await agentStore.ListAgentsAsync();
             var filtered = allAgents.Where(a => !string.Equals(a, currentSessionId)).ToList();

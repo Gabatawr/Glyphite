@@ -79,9 +79,9 @@ public static class BashTool
         [Description("Execute a bash command in a persistent shell session. Working directory and environment persist between commands. Output is auto-deduplicated (repeated lines compressed). Use `workdir` to run in a specific directory (preferred over cd). Use `timeoutMs` for long-running commands. Prefer non-interactive commands: use flags to disable pagers, auto-confirm prompts, provide input via flags rather than stdin.")]
         public async Task<string> Execute(
             [Description("The bash command to execute. Use non-interactive flags where possible (--no-pager, -y, etc.).")] string command,
-            [Description("Working directory (optional, defaults to session's current directory). Preferred over `cd` in the command.")] string? workdir = null,
+            string? workdir = null,
             [Description("Timeout in milliseconds (optional, defaults to 120000). Use for long-running builds/tests.")] int? timeoutMs = null,
-            [Description("Auto-clean result after tool loop.")] bool? peek = null,
+            bool? peek = null,
             CancellationToken ct = default)
         {
             var bashOpts = await cfg.GetOptionsAsync<BashOptions>("Bash", sessionId);

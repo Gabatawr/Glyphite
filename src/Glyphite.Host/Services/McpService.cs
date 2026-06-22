@@ -53,7 +53,7 @@ public class McpService : IAsyncDisposable
                 {
                     var timeoutCt = CreateTimeoutToken(servers.GetValueOrDefault(name), ct);
                     var tools = await client.ListToolsAsync(cancellationToken: timeoutCt).ConfigureAwait(false);
-                    var list = tools.ToList().AsReadOnly();
+                    var list = tools.OfType<AIFunction>().Select(t => (AITool)new McpPeekToolAdapter(t)).ToList().AsReadOnly();
                     _toolCache[name] = list;
                     _toolCounts[name] = list.Count;
                     _statuses[name] = McpServerStatus.Connected;
@@ -149,7 +149,7 @@ public class McpService : IAsyncDisposable
             _errors.TryRemove(name, out _);
 
             var tools = await client.ListToolsAsync(cancellationToken: timeoutCt).ConfigureAwait(false);
-            var list = tools.ToList().AsReadOnly();
+            var list = tools.OfType<AIFunction>().Select(t => (AITool)new McpPeekToolAdapter(t)).ToList().AsReadOnly();
             _toolCache[name] = list;
             _toolCounts[name] = list.Count;
             _serverConfigHashes[name] = ComputeServerHash(name, opts);

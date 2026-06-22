@@ -5,100 +5,146 @@ using Microsoft.Extensions.AI;
 
 namespace Glyphite.Host.Services;
 
-/// <summary>
-/// Auto-compaction service: after each turn, if context usage exceeds the configured threshold,
-/// removes unprotected blocks, distributes remaining blocks into Fibonacci-sized zones by turn,
-/// summarizes each zone via LLM, and replaces the history with the summaries.
-/// </summary>
-public class CompactionService
-{
-    private readonly IBlockStore _blockStore;
-    private readonly IAgentStore _agentStore;
-    private readonly IConfigService _cfgService;
-    private readonly IChatClient _chatClient;
-
-    public CompactionService(
-        IBlockStore blockStore,
-        IAgentStore agentStore,
-        IConfigService cfgService,
-        IChatClient chatClient)
+    /// <summary>
+    /// Auto-compaction service: after each turn, if context usage exceeds the configured threshold,
+    /// groups all blocks into Fibonacci-sized zones by turn, strips unprotected blocks from old zones
+    /// (zone 3+), summarizes them via LLM, and replaces history with summaries + intact new zones.
+    /// Zones 1-2 (the two newest turns) are preserved entirely intact — all blocks, including tool
+    /// calls, auto_tool results, todo blocks, and agent reasoning stay as-is.
+    /// </summary>
+    public class CompactionService
     {
-        _blockStore = blockStore;
-        _agentStore = agentStore;
-        _cfgService = cfgService;
-        _chatClient = chatClient;
-    }
+        private readonly IBlockStore _blockStore;
+        private readonly IAgentStore _agentStore;
+        private readonly IConfigService _cfgService;
+        private readonly IChatClient _chatClient;
 
-    public async Task<bool> TryCompactAsync(string sessionId, int contextWindow)
-    {
-        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", sessionId);
-        if (!compOpts.AutoCompress)
-            return false;
-
-        var blocks = await _blockStore.LoadBlocksAsync(sessionId);
-        if (blocks.Count <= 1) // Only agent_data
-            return false;
-
-        // Use real tokens from the last API request (lastHit + lastMiss from the last turn)
-        var lastUsage = await _agentStore.GetLastUsageAsync(sessionId);
-        var lastRequestTokens = lastUsage.LastHit + lastUsage.LastMiss;
-        var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
-        if (lastRequestTokens < threshold)
-            return false;
-
-        // 1. Remove all non-protected blocks (tool, auto_tool, agent_reasoning, system*, todo, etc.)
-        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
-        var protectedTypes = new HashSet<BlockType>(
-            memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
-
-        await _blockStore.RemoveBlocksAsync(sessionId, b => !protectedTypes.Contains(b.Type));
-
-        // 2. Re-load remaining protected blocks
-        blocks = await _blockStore.LoadBlocksAsync(sessionId);
-
-        // 3. Group into turns: agent_data is its own group, then each group from a
-        //    user_message (or turn marker) to the next turn marker.
-        var turnGroups = GroupByTurns(blocks);
-        if (turnGroups.Count <= 1) // Just agent_data, nothing to compact
-            return false;
-
-        // 4. Distribute turn groups into Fibonacci zones (from newest backwards)
-        var zones = DistributeFibonacci(turnGroups);
-
-        // 5. Keep the first two zones (newest, 1+1 turns) as-is, summarize the rest
-        var model = await _agentStore.GetAgentModelAsync(sessionId);
-        var (summaries, preservedBlocks) = await CompactZonesAsync(zones, model);
-
-        if (summaries.Count == 0 && preservedBlocks.Count == 0)
-            return false;
-
-        // 6. Find agent_data block, delete everything after it, insert compacted history
-        var agentBlock = blocks.First(b => b.Type == BlockType.agent_data);
-        await _blockStore.DeleteBlocksSinceAsync(sessionId, agentBlock.Number + 1);
-
-        var nextNumber = agentBlock.Number + 1;
-        var newBlocks = new List<MemoryBlock>();
-
-        // First insert summaries (old zones, oldest-first)
-        foreach (var summary in summaries)
+        public CompactionService(
+            IBlockStore blockStore,
+            IAgentStore agentStore,
+            IConfigService cfgService,
+            IChatClient chatClient)
         {
-            var block = MemoryBlock.AgentMessage(summary, model: model);
-            block.Number = nextNumber++;
-            newBlocks.Add(block);
+            _blockStore = blockStore;
+            _agentStore = agentStore;
+            _cfgService = cfgService;
+            _chatClient = chatClient;
         }
 
-        // Then insert preserved original blocks (newest, from the two most recent zones)
-        foreach (var block in preservedBlocks)
+        public async Task<bool> TryCompactAsync(string sessionId, int contextWindow)
         {
-            block.Number = nextNumber++;
-            newBlocks.Add(block);
+            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", sessionId);
+            if (!compOpts.AutoCompress)
+                return false;
+
+            var blocks = await _blockStore.LoadBlocksAsync(sessionId);
+            if (blocks.Count <= 1) // Only agent_data
+                return false;
+
+            // Use real tokens from the last API request (lastHit + lastMiss from the last turn)
+            var lastUsage = await _agentStore.GetLastUsageAsync(sessionId);
+            var lastRequestTokens = lastUsage.LastHit + lastUsage.LastMiss;
+            var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
+            if (lastRequestTokens < threshold)
+                return false;
+
+            // 1. Group ALL blocks into turns (including tool, auto_tool, reasoning, todo, etc.)
+            var turnGroups = GroupByTurns(blocks);
+            if (turnGroups.Count <= 1) // Just agent_data + nothing
+                return false;
+
+            // 2. Distribute turn groups into Fibonacci zones (from newest backwards)
+            var zones = DistributeFibonacci(turnGroups);
+            if (zones.Count <= 2) // Two or fewer zones — nothing old enough to compact
+                return false;
+
+            // zones are in oldest-first order:
+            //   zones[0..^3] = old zones (zone 3+) → strip unprotected + summarize
+            //   zones[^2..]   = two newest zones (zone 1-2) → keep intact (all blocks preserved)
+
+            var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>("Memory", sessionId);
+            var protectedTypes = new HashSet<BlockType>(
+                memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
+
+            // Also keep subagent tool results — they get included in summarization
+            var isSubagentTool = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "subagent_run", "subagent_use" };
+
+            var model = await _agentStore.GetAgentModelAsync(sessionId);
+            var summarizeCount = zones.Count - 2; // all zones except the last two (newest)
+
+            // 3. Strip unprotected blocks from old zones, collect protected + subagent blocks for summarization
+            var allUnprotectedNums = new HashSet<double>();
+            var zoneProtectedBlocks = new List<List<MemoryBlock>>();
+
+            for (var i = 0; i < summarizeCount; i++)
+            {
+                var zone = zones[i];
+                var keepInZone = new List<MemoryBlock>();
+
+                foreach (var b in zone)
+                {
+                    if (protectedTypes.Contains(b.Type) ||
+                        (b.Type == BlockType.tool && b.ToolName is not null && isSubagentTool.Contains(b.ToolName)))
+                        keepInZone.Add(b);
+                    else
+                        allUnprotectedNums.Add(b.Number);
+                }
+
+                zoneProtectedBlocks.Add(keepInZone);
+            }
+
+            // Remove all unprotected blocks from old zones in one batch
+            if (allUnprotectedNums.Count > 0)
+                await _blockStore.RemoveBlocksAsync(sessionId, b => allUnprotectedNums.Contains(b.Number));
+
+            // 4. Summarize each old zone via LLM (using only protected blocks)
+            var summaries = new List<string>();
+            for (var i = 0; i < zoneProtectedBlocks.Count; i++)
+            {
+                if (zoneProtectedBlocks[i].Count == 0)
+                    continue;
+
+                var summary = await SummarizeSingleZoneAsync(zoneProtectedBlocks[i], model);
+                if (summary is not null)
+                    summaries.Add(summary);
+            }
+
+            // 5. Collect preserved blocks from the two newest zones (completely intact)
+            var preserved = new List<MemoryBlock>();
+            for (var i = summarizeCount; i < zones.Count; i++)
+                preserved.AddRange(zones[i]);
+
+            if (summaries.Count == 0 && preserved.Count == 0)
+                return false;
+
+            // 6. Find agent_data block, delete everything after it, insert compacted history
+            var agentBlock = blocks.First(b => b.Type == BlockType.agent_data);
+            await _blockStore.DeleteBlocksSinceAsync(sessionId, agentBlock.Number + 1);
+
+            var nextNumber = agentBlock.Number + 1;
+            var newBlocks = new List<MemoryBlock>();
+
+            // First insert summaries (old zones, oldest-first)
+            foreach (var summary in summaries)
+            {
+                var block = MemoryBlock.AgentMessage(summary, model: model);
+                block.Number = nextNumber++;
+                newBlocks.Add(block);
+            }
+
+            // Then insert preserved original blocks (newest zones, completely intact)
+            foreach (var block in preserved)
+            {
+                block.Number = nextNumber++;
+                newBlocks.Add(block);
+            }
+
+            if (newBlocks.Count > 0)
+                await _blockStore.AppendBlocksAsync(sessionId, newBlocks, nextNumber);
+
+            return true;
         }
-
-        if (newBlocks.Count > 0)
-            await _blockStore.AppendBlocksAsync(sessionId, newBlocks, nextNumber);
-
-        return true;
-    }
 
     /// <summary>
     /// Group blocks into turns. The first group contains agent_data alone.
@@ -188,40 +234,6 @@ public class CompactionService
         return zones;
     }
 
-    /// <summary>
-    /// Compact zones: the last two zones (newest, 1+1 turns) are preserved as-is.
-    /// All older zones are summarized individually via LLM.
-    /// Zones are in oldest-first order.
-    /// Returns (summaries oldest-first, preserved blocks from the two newest zones in order).
-    /// </summary>
-    private async Task<(List<string> Summaries, List<MemoryBlock> PreservedBlocks)> CompactZonesAsync(
-        List<List<MemoryBlock>> zones, string? model)
-    {
-        if (zones.Count == 0)
-            return ([], []);
-
-        // Last two zones (newest) — preserve original blocks
-        // All preceding zones — summarize
-        var preserveCount = Math.Min(zones.Count, 2);
-        var summarizeCount = zones.Count - preserveCount;
-
-        var summaries = new List<string>();
-        for (var i = 0; i < summarizeCount; i++)
-        {
-            var summary = await SummarizeSingleZoneAsync(zones[i], model);
-            if (summary is not null)
-                summaries.Add(summary);
-        }
-
-        // Collect preserved blocks from the two newest zones (last two in oldest-first list)
-        var preserved = new List<MemoryBlock>();
-        for (var i = summarizeCount; i < zones.Count; i++)
-        {
-            preserved.AddRange(zones[i]);
-        }
-
-        return (summaries, preserved);
-    }
 
     private async Task<string?> SummarizeSingleZoneAsync(List<MemoryBlock> blocks, string? model)
     {

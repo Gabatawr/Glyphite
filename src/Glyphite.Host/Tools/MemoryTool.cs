@@ -118,7 +118,7 @@ public static class MemoryTool
             [Description("Action: 'stats' (show memory stats), 'list' (list all blocks with numbers and previews), 'clean' (remove blocks to free context), 'recover' (restore cleaned blocks)")] string action,
             [Description("Block numbers for clean/recover, e.g. [5.0, 7.0, 9.0]. Not needed for 'stats' or 'list'.")] double[]? blocks = null,
             [Description("Cascade along parent chain: true=follow Data['parentNumber']. Default: true for clean, false for recover.")] bool? cascade = null,
-            [Description("Auto-clean result after tool loop (default true — memory output is large). Set false to keep result in context.")] bool? peek = true)
+            bool? peek = true)
             => MemoryTool.Execute(action, blocks, cascade, provider, sessionId, cfg);
     }
 

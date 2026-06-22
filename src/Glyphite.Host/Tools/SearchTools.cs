@@ -244,8 +244,8 @@ public static class SearchTools
         [Description("Fast file pattern matching using glob patterns. Returns absolute paths sorted by last modified time (most recent first). Supports ** (recursive), * (single segment), and ? (single char). Faster than `bash find` for this purpose.")]
         public async Task<string> Glob(
             [Description("Glob pattern, e.g. \"**/*.cs\", \"src/**/*.ts\", \"*.json\"")] string pattern,
-            [Description("The directory to search in. Defaults to current directory.")] string? path = null,
-            [Description("Auto-clean result after tool loop.")] bool? peek = null)
+            string? path = null,
+            bool? peek = null)
         {
             var opts = await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId);
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);
@@ -255,9 +255,9 @@ public static class SearchTools
         [Description("Search file contents using a regex pattern. Returns file paths with line numbers and matching lines, sorted by file modification time (most recent first). Supports full .NET regex syntax. Use `include` to filter by file pattern (e.g. \"*.cs\", \"*.{ts,tsx}\"). Ideal for finding code references, imports, function definitions, error messages.")]
         public async Task<string> Grep(
             [Description("Regex pattern to search for. Supports .NET regex syntax (case-insensitive by default).")] string pattern,
-            [Description("The directory to search in. Defaults to current directory.")] string? path = null,
+            string? path = null,
             [Description("File pattern to filter results, e.g. \"*.cs\", \"*.{ts,tsx}\", \"*.py\"")] string? include = null,
-            [Description("Auto-clean result after tool loop.")] bool? peek = null)
+            bool? peek = null)
         {
             var opts = await cfg.GetOptionsAsync<SearchOptions>("Search", sessionId);
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>("ContentDedup", sessionId);

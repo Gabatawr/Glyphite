@@ -8,31 +8,46 @@ using Microsoft.Extensions.AI;
 namespace Glyphite.Host.Tools;
 
 public record TodoItem(
-    [property: JsonPropertyName("text")] string Text,
-    [property: JsonPropertyName("status")] string Status = "pending",
-    [property: JsonPropertyName("priority")] string Priority = "medium"
-);
-
-public record TodoAction(
-    [property: JsonPropertyName("type")] string Type,
-    [property: JsonPropertyName("index")] int? Index = null,
     [property: JsonPropertyName("text")] string? Text = null,
     [property: JsonPropertyName("status")] string? Status = null,
-    [property: JsonPropertyName("priority")] string? Priority = null
+    [property: JsonPropertyName("priority")] string? Priority = null,
+    [property: JsonPropertyName("index")] int? Index = null,
+    [property: JsonPropertyName("remove")] bool? Remove = null
 );
 
 public static class TodoTool
 {
     private static readonly string[] DefaultValidStatuses = ["pending", "in_progress", "done", "cancelled", "blocked"];
 
-    public static async Task<string> TodoWrite(
-        string title,
+    public static async Task<string> Execute(
+        string action,
+        string? title,
         TodoItem[]? items,
         IAgentStore agentStore,
         IBlockStore blockStore,
         string sessionId,
         TodoOptions opts)
     {
+        switch (action)
+        {
+            case "create":
+                return await Create(title, items, agentStore, blockStore, sessionId, opts);
+            case "update":
+                return await Update(title, items, agentStore, blockStore, sessionId, opts);
+            default:
+                return $"Unknown action '{action}'. Use 'create' or 'update'.";
+        }
+    }
+
+    private static async Task<string> Create(
+        string? title,
+        TodoItem[]? items,
+        IAgentStore agentStore,
+        IBlockStore blockStore,
+        string sessionId,
+        TodoOptions opts)
+    {
+        title ??= "Todo";
         var nextNumber = await agentStore.GetNextNumberAsync(sessionId);
         await agentStore.SetNextNumberAsync(sessionId, nextNumber + 1);
 
@@ -40,13 +55,13 @@ public static class TodoTool
 
         var dictItems = items.Select(i => (object)new Dictionary<string, object>
         {
-            ["text"] = i.Text,
-            ["status"] = opts.ValidStatuses.Contains(i.Status) ? i.Status : opts.DefaultStatus,
-            ["priority"] = i.Priority
+            ["text"] = i.Text ?? "",
+            ["status"] = opts.ValidStatuses.Contains(i.Status ?? opts.DefaultStatus) ? i.Status! : opts.DefaultStatus,
+            ["priority"] = i.Priority ?? opts.DefaultPriority
         }).ToList();
 
         var data = new Dictionary<string, object> { ["items"] = dictItems };
-        var block = MemoryBlock.Create(BlockType.todo, title, toolName: "todo_write", data: data);
+        var block = MemoryBlock.Create(BlockType.todo, title, toolName: "todo", data: data);
         block.Number = nextNumber;
 
         await blockStore.AppendBlocksAsync(sessionId, [block], nextNumber + 1);
@@ -54,8 +69,9 @@ public static class TodoTool
         return title + "\n" + FormatItems(dictItems);
     }
 
-    public static async Task<string> TodoUpdate(
-        TodoAction[] actions,
+    private static async Task<string> Update(
+        string? title,
+        TodoItem[]? items,
         IAgentStore agentStore,
         IBlockStore blockStore,
         string sessionId,
@@ -64,37 +80,14 @@ public static class TodoTool
         // Auto-find the latest todo block
         var todos = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo, 1, true);
         if (todos.Count == 0)
-            return "No todo list found. Create one with todo_write first.";
+            return "No todo list found. Create one with action='create' first.";
 
         var existing = todos[0];
 
-        // Follow chain forward from the found block to find the latest todo_update
-        var snapshots = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo_update, null, true);
-        MemoryBlock? latestSnapshot = null;
-        double? chainCursor = existing.Number;
-        while (chainCursor.HasValue)
+        List<Dictionary<string, object?>> currentItems;
+        if (existing.Data?.TryGetValue("items", out var itemsObj) == true)
         {
-            var next = snapshots.FirstOrDefault(s =>
-            {
-                if (s.Data?.TryGetValue("parentNumber", out var raw) == true &&
-                    raw is JsonElement je && je.ValueKind == JsonValueKind.Number)
-                    return je.GetDouble() == chainCursor.Value;
-                return s.ParentNumber == chainCursor.Value;
-            });
-            if (next is null) break;
-            latestSnapshot = next;
-            chainCursor = next.Number;
-        }
-
-        List<Dictionary<string, object?>> items;
-        if (latestSnapshot is not null && latestSnapshot.Data?.TryGetValue("items", out var snapItemsObj) == true)
-        {
-            items = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(
-                ((JsonElement)snapItemsObj!).GetRawText()) ?? [];
-        }
-        else if (existing.Data?.TryGetValue("items", out var itemsObj) == true)
-        {
-            items = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(
+            currentItems = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(
                 ((JsonElement)itemsObj!).GetRawText()) ?? [];
         }
         else
@@ -102,148 +95,106 @@ public static class TodoTool
             return "Latest todo list has no items";
         }
 
-        if (items is null)
+        if (currentItems is null)
             return "Cannot parse items";
 
+        items ??= [];
         var results = new List<string>();
 
-        foreach (var action in actions)
+        foreach (var item in items)
         {
-            switch (action.Type)
+            if (item.Remove == true)
             {
-                case "set_status":
+                // Remove by index
+                if (item.Index is null)
                 {
-                    if (action.Index is null || action.Status is null)
-                    {
-                        results.Add("set_status: missing index or status");
-                        continue;
-                    }
-                    if (action.Index < 0 || action.Index >= items.Count)
-                    {
-                        results.Add($"set_status: index {action.Index} out of range");
-                        continue;
-                    }
-                    if (!opts.ValidStatuses.Contains(action.Status))
-                    {
-                        results.Add($"set_status: invalid status '{action.Status}'");
-                        continue;
-                    }
-                    var old = items[action.Index.Value]["status"]?.ToString() ?? "?";
-                    items[action.Index.Value]["status"] = action.Status;
-                    results.Add($"[{action.Index}] status {old}→{action.Status}");
-                    break;
+                    results.Add("remove: missing index");
+                    continue;
                 }
-
-                case "update":
+                if (item.Index < 0 || item.Index >= currentItems.Count)
                 {
-                    if (action.Index is null)
-                    {
-                        results.Add("update: missing index");
-                        continue;
-                    }
-                    if (action.Index < 0 || action.Index >= items.Count)
-                    {
-                        results.Add($"update: index {action.Index} out of range");
-                        continue;
-                    }
-                    var item = items[action.Index.Value];
-                    if (action.Text is not null)
-                    {
-                        var old = item["text"]?.ToString() ?? "";
-                        item["text"] = action.Text;
-                        results.Add($"[{action.Index}] text changed");
-                    }
-                    if (action.Status is not null)
-                    {
-                        if (opts.ValidStatuses.Contains(action.Status))
-                        {
-                            var old = item["status"]?.ToString() ?? "";
-                            item["status"] = action.Status;
-                            results.Add($"[{action.Index}] status {old}→{action.Status}");
-                        }
-                        else
-                        {
-                            results.Add($"update: invalid status '{action.Status}'");
-                        }
-                    }
-                    if (action.Priority is not null)
-                    {
-                        var old = item["priority"]?.ToString() ?? "";
-                        item["priority"] = action.Priority;
-                        results.Add($"[{action.Index}] priority {old}→{action.Priority}");
-                    }
-                    if (action.Text is null && action.Status is null && action.Priority is null)
-                        results.Add($"update: no fields to update for index {action.Index}");
-                    break;
+                    results.Add($"remove: index {item.Index} out of range");
+                    continue;
                 }
-
-                case "add":
+                var removed = currentItems[item.Index.Value]["text"]?.ToString() ?? "?";
+                currentItems.RemoveAt(item.Index.Value);
+                results.Add($"remove: '{removed}' at [{item.Index}]");
+            }
+            else if (item.Index is not null)
+            {
+                // Update existing item by index
+                if (item.Index < 0 || item.Index >= currentItems.Count)
                 {
-                    if (string.IsNullOrWhiteSpace(action.Text))
-                    {
-                        results.Add("add: missing text");
-                        continue;
-                    }
-                    var newItem = new Dictionary<string, object?>
-                    {
-                        ["text"] = action.Text,
-                        ["status"] = opts.ValidStatuses.Contains(action.Status ?? opts.DefaultStatus) ? action.Status! : opts.DefaultStatus,
-                        ["priority"] = action.Priority ?? opts.DefaultPriority
-                    };
+                    results.Add($"update: index {item.Index} out of range");
+                    continue;
+                }
+                var target = currentItems[item.Index.Value];
+                var changed = false;
 
-                    if (action.Index is not null && action.Index >= 0 && action.Index <= items.Count)
+                if (item.Text is not null)
+                {
+                    target["text"] = item.Text;
+                    results.Add($"[{item.Index}] text changed");
+                    changed = true;
+                }
+                if (item.Status is not null)
+                {
+                    if (opts.ValidStatuses.Contains(item.Status))
                     {
-                        items.Insert(action.Index.Value, newItem);
-                        results.Add($"add: inserted '{action.Text}' at [{action.Index}]");
+                        var old = target["status"]?.ToString() ?? "?";
+                        target["status"] = item.Status;
+                        results.Add($"[{item.Index}] status {old}→{item.Status}");
+                        changed = true;
                     }
                     else
                     {
-                        items.Add(newItem);
-                        results.Add($"add: appended '{action.Text}' at [{items.Count - 1}]");
+                        results.Add($"update: invalid status '{item.Status}'");
                     }
-                    break;
                 }
-
-                case "remove":
+                if (item.Priority is not null)
                 {
-                    if (action.Index is null)
-                    {
-                        results.Add("remove: missing index");
-                        continue;
-                    }
-                    if (action.Index < 0 || action.Index >= items.Count)
-                    {
-                        results.Add($"remove: index {action.Index} out of range");
-                        continue;
-                    }
-                    var removed = items[action.Index.Value]["text"]?.ToString() ?? "?";
-                    items.RemoveAt(action.Index.Value);
-                    results.Add($"remove: '{removed}' at [{action.Index}]");
-                    break;
+                    var old = target["priority"]?.ToString() ?? "?";
+                    target["priority"] = item.Priority;
+                    results.Add($"[{item.Index}] priority {old}→{item.Priority}");
+                    changed = true;
                 }
-
-                default:
-                    results.Add($"unknown action type '{action.Type}'");
-                    break;
+                if (!changed)
+                    results.Add($"update: no fields to change for index {item.Index}");
+            }
+            else
+            {
+                // No index — add new item
+                if (string.IsNullOrWhiteSpace(item.Text))
+                {
+                    results.Add("add: missing text");
+                    continue;
+                }
+                var newItem = new Dictionary<string, object?>
+                {
+                    ["text"] = item.Text,
+                    ["status"] = opts.ValidStatuses.Contains(item.Status ?? opts.DefaultStatus) ? item.Status! : opts.DefaultStatus,
+                    ["priority"] = item.Priority ?? opts.DefaultPriority
+                };
+                currentItems.Add(newItem);
+                results.Add($"add: appended '{item.Text}' at [{currentItems.Count - 1}]");
             }
         }
 
-        // Create a snapshot todo_update block (parent stays immutable)
-        var snapshotItems = JsonSerializer.Deserialize<object>(JsonSerializer.Serialize(items));
-        var snapshotData = new Dictionary<string, object>
+        // Update the existing todo block in-place
+        var updatedData = new Dictionary<string, object>
         {
-            ["items"] = snapshotItems!
+            ["items"] = JsonSerializer.Deserialize<object>(JsonSerializer.Serialize(currentItems))!
         };
-        var nextNumber = await agentStore.GetNextNumberAsync(sessionId);
-        var snapshot = MemoryBlock.Create(BlockType.todo_update, existing.Content ?? "", toolName: "todo_update", data: snapshotData);
-        snapshot.Number = nextNumber;
-        var parentBlock = latestSnapshot?.Number ?? existing.Number;
-        snapshot.ParentNumber = parentBlock;
-        snapshot.Data ??= [];
-        snapshot.Data["parentNumber"] = parentBlock;
-        await blockStore.AppendBlocksAsync(sessionId, [snapshot], nextNumber + 1);
+        await blockStore.UpdateBlockDataAsync(sessionId, existing.Number, updatedData);
 
-        return (existing.Content ?? "Updated") + "\n" + FormatItems(items);
+        // Update title if provided
+        if (!string.IsNullOrWhiteSpace(title) && title != existing.Content)
+        {
+            await blockStore.UpdateBlockAsync(sessionId, existing.Number, content: title);
+        }
+
+        var displayTitle = !string.IsNullOrWhiteSpace(title) ? title : existing.Content ?? "Updated";
+        return displayTitle + "\n" + FormatItems(currentItems);
     }
 
     private static string FormatItems(IEnumerable<object> dictItems)
@@ -274,31 +225,19 @@ public static class TodoTool
 
     private sealed class TodoInvoker(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService cfg)
     {
-        [Description("Create a todo list block to plan and track task progress. Use this FREQUENTLY for complex/multi-step tasks to break them down and show progress. Statuses: pending, in_progress, done, cancelled, blocked. Priority: low, medium, high.")]
-        public async Task<string> Write(
-            [Description("Title/description of the todo list")] string title,
-            [Description("Optional array of items: [{text: '...', status: 'pending', priority: 'medium'}]. Status and priority default to pending, medium.")] TodoItem[]? items)
+        [Description("Create or update a todo list block to plan and track task progress. Only ONE todo list is active at a time — 'update' always modifies the latest created list. Statuses: pending, in_progress, done, cancelled, blocked. Priority: low, medium, high.")]
+        public async Task<string> Invoke(
+            [Description("Action: 'create' to create a new todo list, 'update' to modify the latest todo list (there is only one active list — update always targets the most recently created one)")] string action,
+            [Description("Title/description (required for create, optional for update — updates the title of the LATEST todo list; does NOT search by title, only renames the latest list)")] string? title = null,
+            [Description("Items for the todo. For create: {text: string, status?: string, priority?: string}. For update: {index?: number, text?: string, status?: string, priority?: string, remove?: boolean}. Items without index are added; items with index are updated; items with remove=true are deleted.")] TodoItem[]? items = null)
         {
             var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
-            return await TodoWrite(title, items, agentStore, blockStore, sessionId, opts);
-        }
-
-        [Description("Modify the latest todo list block. Action types: set_status (change item status by index), update (change text/status/priority by index), add (insert new item), remove (delete item by index). Creates a snapshot block to track progress history.")]
-        public async Task<string> Update(
-            [Description("Array of action objects: {type: 'set_status'|'update'|'add'|'remove', index?: number, text?: string, status?: string, priority?: string}")] TodoAction[] actions)
-        {
-            var opts = await cfg.GetOptionsAsync<TodoOptions>("Todo", sessionId);
-            return await TodoUpdate(actions, agentStore, blockStore, sessionId, opts);
+            return await Execute(action, title, items, agentStore, blockStore, sessionId, opts);
         }
     }
 
-    public static AIFunction AsTodoWriteFunction(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService? cfg)
+    public static AIFunction AsTodoFunction(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService? cfg)
         => AIFunctionFactory.Create(
-            new TodoInvoker(agentStore, blockStore, sessionId, cfg!).Write,
-            "todo_write");
-
-    public static AIFunction AsTodoUpdateFunction(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService? cfg)
-        => AIFunctionFactory.Create(
-            new TodoInvoker(agentStore, blockStore, sessionId, cfg!).Update,
-            "todo_update");
+            new TodoInvoker(agentStore, blockStore, sessionId, cfg!).Invoke,
+            "todo");
 }

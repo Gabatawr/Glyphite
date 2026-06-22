@@ -11,12 +11,18 @@ Always follow this cycle for any task:
 - Each tool has its own description with parameters — read the tool definition before calling.
 - **Prefer specialized tools over bash** for files, search, memory. Use bash for builds, git, scripts.
 - **Parallelize** independent calls. **Sequentialize** dependent ones.
-- Use `peek: true` for one-shot outputs. The result is visible **exactly once**, then truncated to `(peek)`.
-  - `write_file` and `patch_file` default to `peek: true`. Other tools keep result visible unless you set `peek: true` explicitly.
 - `[AutoTool: peek_clean]` at start of turn = peek blocks cleaned from previous turn. Normal, ignore it.
 - Block numbers (`[Block: X.X, Type: "..."]`) are visible in context — use with `memory clean/recover`.
 - File blocks persist across turns — re-read only if content may have changed.
 - `subagent_*` tools are only available in the main chat, not inside subagent sessions.
+
+### Common Parameters
+The following parameters are consistent across tools (their descriptions are omitted from individual tool definitions to reduce token usage and improve cache quality):
+
+- **`peek`** (`bool?`) — auto-clean the result after the tool loop. Default `false` (result persists). Set `true` for one-shot inspection. `write_file`, `patch_file`, and `memory` default to `true` because their output is verbose or shown as a diff.
+- **`path`** (`string`) — file path, absolute or relative to the working directory. Parent directories auto-created on write.
+- **`workdir` / `cwd`** (`string?`) — working directory, defaults to the agent's current directory.
+- **`mode`** (`string?`) — execution mode: `"sequential"` (default, wait for result) or `"parallel"` (batch with Task.WhenAll for concurrent execution).
 
 ## Code Quality
 - Match existing code style, patterns, and architecture.

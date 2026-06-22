@@ -14,7 +14,7 @@ public static partial class WebFetchTool
         public async Task<string> Execute(
             [Description("URL to fetch (must start with http:// or https://)")] string url,
             [Description("Output format: 'text' (default, strips HTML) or 'markdown'")] string? format = null,
-            [Description("Auto-clean result after tool loop.")] bool? peek = null,
+            bool? peek = null,
             CancellationToken ct = default)
         {
             var opts = await cfg.GetOptionsAsync<WebFetchOptions>("WebFetch", sessionId);

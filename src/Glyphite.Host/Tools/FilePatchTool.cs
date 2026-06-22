@@ -272,11 +272,11 @@ public static class FilePatchTool
     {
         [Description("Replace text in a file using multi-strategy fuzzy matching. Supports 4 matching strategies (tried in order): exact match, trimmed match, whitespace-normalized, and indentation-flexible. Returns a unified diff of changes. Use for targeted edits; for large rewrites use `write_file`. Tip: when using Search/Replace blocks from a diff, copy the EXACT text from the file to avoid fuzzy fallback.")]
         public Task<string> Execute(
-            [Description("Path to the file (absolute or relative to working directory)")] string path,
+            string path,
             [Description("Text to find. Try to match exact content from the file (including indentation). Fuzzy fallbacks handle minor whitespace differences.")] string oldString,
             [Description("Replacement text")] string newString,
             [Description("Replace ALL occurrences (default: false, replaces only first match). Use with caution.")] bool replaceAll = false,
-            [Description("Auto-clean result after tool loop (default: true — patch output is detailed diff). Set false to keep result in visible history.")] bool? peek = true)
+            bool? peek = true)
             => PatchFile(path, oldString, newString, replaceAll, peek, defaultDirectory);
     }
 

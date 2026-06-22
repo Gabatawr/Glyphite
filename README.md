@@ -19,7 +19,7 @@ Glyphite is a .NET console-based AI agent that runs commands, works with files, 
 - **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`). Every agent (main + subagents) can have its own MCP servers via `Glyphite.{agentName}.json`
 - **Block-based memory** — full conversation history stored in SQLite with smart deduplication and compression
   - **`ParentNumber` + cascade** — blocks carry parent references; `memory delete` and `recover` cascade through `Data["parentNumber"]` chains
-  - **Todo chain** — each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
+  - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
 - **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
 - **ToolMaxLength** — per-tool output length control. Set `0` to hide, `-1` for full output, or `N` for first N characters. Works for all tools including MCP.
@@ -102,8 +102,8 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `search_glob` | Find files by glob pattern |
 | `search_grep` | Search text inside files (with content dedup) |
 | `fetch_web` | HTTP request (GET/POST) with text extraction |
-| `todo_write` | Create a structured todo list |
-| `todo_update` | Update tasks in a todo list (status, priority) — creates a snapshot chain |
+| `todo_write` | Create a structured todo list (only one active list at a time) |
+| `todo_update` | Update the latest todo list (status, priority, title, add/remove items) — always targets the most recently created list; `title` renames the latest list, does not search; creates a snapshot chain |
 | `memory` | Memory management: `stats` (type breakdown), `clean` (soft-delete with optional `cascade`; also removes from messageList), `recover` (restore with optional `cascade`), `list` (view blocks) |
 | `subagent_run` | One-shot task execution. Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Supports `mode="parallel"` |
 | `subagent_use` | Execute a task on a named subagent (auto-creates if not found). Memory and context **accumulate** across calls — the agent persists. `memory` tool is available. Supports `mode="parallel"` |
