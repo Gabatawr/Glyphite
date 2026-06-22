@@ -373,6 +373,7 @@ public partial class ChatRepl
     private void Redraw(string text, int pos = -1)
     {
         var bufWidth = Console.BufferWidth;
+        var bufHeight = Console.BufferHeight;
         var promptLen = _promptPrefix.Length + text.Length;
         var lineCount = (promptLen + bufWidth - 1) / bufWidth; // ceil
 
@@ -399,6 +400,32 @@ public partial class ChatRepl
         Console.ResetColor();
         Console.Write(text);
 
+        // Если текст привёл к скроллу терминала (выход за буфер) —
+        // корректируем _promptLine по фактической позиции курсора.
+        // Иначе последующие Redraw будут писать на неправильной строке
+        // и "съедать" историю выше.
+        var actualLastLine = Console.CursorTop;
+        var expectedLastLine = _promptLine + lineCount - 1;
+        if (actualLastLine != expectedLastLine)
+        {
+            // Скролл сдвинул содержимое вверх — пересчитываем _promptLine
+            var oldPromptLine = _promptLine;
+            _promptLine = actualLastLine - (lineCount - 1);
+            if (_promptLine < 0) _promptLine = 0;
+            _maxVisualLine = _promptLine + lineCount - 1;
+
+            // Если _promptLine сместился вверх (отрицательный скролл?) —
+            // чистим зависшие строки между старым и новым положением
+            if (_promptLine < oldPromptLine)
+            {
+                for (var line = _promptLine; line < oldPromptLine && line < bufHeight; line++)
+                {
+                    Console.SetCursorPosition(0, line);
+                    Console.Write(new string(' ', bufWidth));
+                }
+            }
+        }
+
         // Хвост последней строки — если текст стал короче в этой же строке
         var endCol = promptLen % bufWidth;
         if (endCol > 0)
@@ -414,6 +441,7 @@ public partial class ChatRepl
         {
             var col = _promptPrefix.Length + pos;
             var line = _promptLine + col / bufWidth;
+            if (line >= bufHeight) line = bufHeight - 1;
             Console.SetCursorPosition(col % bufWidth, line);
         }
     }
