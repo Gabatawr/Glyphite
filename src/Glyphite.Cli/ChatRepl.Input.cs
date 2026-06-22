@@ -373,42 +373,47 @@ public partial class ChatRepl
     private void Redraw(string text, int pos = -1)
     {
         var bufWidth = Console.BufferWidth;
-        var bufHeight = Console.BufferHeight;
         var promptLen = _promptPrefix.Length + text.Length;
+        var lineCount = (promptLen + bufWidth - 1) / bufWidth; // ceil
 
-        // Сохраняем старый диапазон ДО перерисовки
-        var oldLine = _promptLine;
+        // Старый диапазон для очистки
         var oldMaxLine = _maxVisualLine;
 
-        // Очищаем весь старый диапазон
-        for (var line = oldLine; line <= oldMaxLine && line < bufHeight; line++)
+        // Новый диапазон — _promptLine фиксирован (точка старта ввода),
+        // _maxVisualLine вычисляем через ceil
+        _maxVisualLine = _promptLine + lineCount - 1;
+
+        // Если новый текст короче — чистим лишние строки снизу ДО записи
+        if (_maxVisualLine < oldMaxLine)
         {
-            Console.SetCursorPosition(0, line);
-            Console.Write(new string(' ', bufWidth));
+            for (var line = _maxVisualLine + 1; line <= oldMaxLine; line++)
+            {
+                Console.SetCursorPosition(0, line);
+                Console.Write(new string(' ', bufWidth));
+            }
         }
 
-        Console.SetCursorPosition(0, oldLine);
+        // Запись: промпт + текст с фиксированной _promptLine
+        Console.SetCursorPosition(0, _promptLine);
         WriteColoredPrompt();
         Console.ResetColor();
         Console.Write(text);
 
-        // Обновляем _promptLine и _maxVisualLine под новый текст
-        var cursorTop = Console.CursorTop;
-        _promptLine = cursorTop - promptLen / bufWidth;
-        if (_promptLine < 0) _promptLine = 0;
-
-        var textLines = promptLen / bufWidth + (promptLen % bufWidth > 0 ? 1 : 0);
-        _maxVisualLine = _promptLine + textLines - 1;
-        if (_maxVisualLine < _promptLine) _maxVisualLine = _promptLine;
+        // Хвост последней строки — если текст стал короче в этой же строке
+        var endCol = promptLen % bufWidth;
+        if (endCol > 0)
+        {
+            Console.SetCursorPosition(endCol, _maxVisualLine);
+            Console.Write(new string(' ', bufWidth - endCol));
+        }
 
         _lastBufferLen = text.Length;
 
-        // Возвращаем курсор на позицию pos (без мерцания — до выхода из функции)
+        // Курсор на позицию pos
         if (pos >= 0)
         {
             var col = _promptPrefix.Length + pos;
             var line = _promptLine + col / bufWidth;
-            if (line >= bufHeight) line = bufHeight - 1;
             Console.SetCursorPosition(col % bufWidth, line);
         }
     }
