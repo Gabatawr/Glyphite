@@ -94,11 +94,8 @@ namespace Glyphite.Host.Services;
                 zoneProtectedBlocks.Add(keepInZone);
             }
 
-            // Remove all unprotected blocks from old zones in one batch
-            if (allUnprotectedNums.Count > 0)
-                await _blockStore.RemoveBlocksAsync(sessionId, b => allUnprotectedNums.Contains(b.Number));
-
             // 4. Summarize each old zone via LLM (using only protected blocks)
+            //    Run BEFORE deletion — if summarization fails, no data is lost.
             var summaries = new List<string>();
             for (var i = 0; i < zoneProtectedBlocks.Count; i++)
             {
@@ -117,6 +114,11 @@ namespace Glyphite.Host.Services;
 
             if (summaries.Count == 0 && preserved.Count == 0)
                 return false;
+
+            // Remove all unprotected blocks from old zones in one batch
+            // Done AFTER successful summarization — if LLM failed, data stays intact.
+            if (allUnprotectedNums.Count > 0)
+                await _blockStore.RemoveBlocksAsync(sessionId, b => allUnprotectedNums.Contains(b.Number));
 
             // 6. Find agent_data block, delete everything after it, insert compacted history
             var agentBlock = blocks.First(b => b.Type == BlockType.agent_data);

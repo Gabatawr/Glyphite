@@ -191,7 +191,7 @@ public class TurnProcessor : ITurnProcessor
                             if (doc.RootElement.TryGetProperty("path", out var p))
                                 fPath = p.GetString();
                         }
-                        catch { /* args not JSON */ }
+                        catch { Console.Error.WriteLine("[TurnProcessor] Failed to parse args for path"); }
 
                         if (fPath is not null)
                         {
@@ -199,7 +199,7 @@ public class TurnProcessor : ITurnProcessor
                             if (name == "write_file")
                             {
                                 try { fileContent = await File.ReadAllTextAsync(fPath); }
-                                catch { fileContent = output; /* fallback to raw output */ }
+                                catch { Console.Error.WriteLine("[TurnProcessor] Failed to read written file"); fileContent = output; /* fallback to raw output */ }
                             }
                             else
                             {
@@ -243,7 +243,7 @@ public class TurnProcessor : ITurnProcessor
                             if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == JsonValueKind.Array)
                                 ToolCallHelper.RemoveBlocksFromMessageList(contextMessages, blk.EnumerateArray().Select(e => e.GetDouble()));
                         }
-                        catch { /* args not JSON */ }
+                        catch { Console.Error.WriteLine("[TurnProcessor] Failed to parse args for memory clean"); }
                     }
                     // Peek tools: replace ChatMessage with cleaned block render (ToContextString)
                     // Only tool blocks — reasoning peek blocks persist for the current turn
@@ -370,8 +370,9 @@ public class TurnProcessor : ITurnProcessor
 
             return cleaned == argsJson ? null : cleaned;
         }
-        catch
+        catch (Exception ex)
         {
+            Console.Error.WriteLine($"[TurnProcessor] CleanToolArgs failed: {ex.Message}");
             return null;
         }
     }

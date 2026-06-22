@@ -23,13 +23,11 @@
 - **Решение:** сделать helper-метод `async Task<T> WithLockAsync<T>(Func<Task<T>> action)` или декоратор
 
 ### ~~5. Пустые `catch { }` — нужно проработать flow ошибок~~ ✅
-- **Исправлено:** все 6 пустых `catch` заменены на `Console.Error.WriteLine` с контекстным сообщением
-  - `MemoryBlock.cs:124` — `"Failed to parse items in ToContextString"`
-  - `FailSafeChatClient.cs:139` — `"Failed to track memory clean blocks"`
-  - `BashSessionManager.cs:72` — `"Error killing process on listener failure"`
-  - `BashSessionManager.cs:196` — `"Error killing process on timeout"`
-  - `McpService.cs:108` — `"Error disposing client '{name}'"`
-  - `McpService.cs:322` — `"Error disposing client on shutdown"`
+- **Исправлено:** все пустые `catch` заменены на `Console.Error.WriteLine`
+  - **6 catch** в `MemoryBlock.cs`, `FailSafeChatClient.cs`, `BashSessionManager.cs`, `McpService.cs` — логгирование ошибок
+  - **4 catch** в `TurnProcessor.cs:194,202,246,373` — парсинг args, чтение файла, memory clean, CleanToolArgs
+  - **CompactionService.cs:269** — ошибка LLM при суммаризации (graceful degradation, без потери данных)
+- **CompactionService:** удаление непротектированных блоков перенесено ПОСЛЕ суммаризации — если LLM упала, блоки не теряются
 
 ### 6. `null!` для scoped-сервисов в ChatRepl
 - **Файл:** `ChatRepl.cs:16-17`
