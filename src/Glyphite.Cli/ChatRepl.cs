@@ -13,15 +13,14 @@ public partial class ChatRepl
 {
     private readonly IAgentStore _agentStore;
     private readonly IBlockStore _blockStore;
-    private ITurnProcessor _turnProcessor = null!;
-    private IBlockMemoryProvider _blockMemory = null!;
+    private ITurnProcessor _turnProcessor => _currentScope?.TurnProcessor ?? throw new InvalidOperationException("Scope not initialized. SwitchScope() before use.");
+    private IBlockMemoryProvider _blockMemory => _currentScope?.BlockMemoryProvider ?? throw new InvalidOperationException("Scope not initialized. SwitchScope() before use.");
     private readonly IConfigService _cfgService;
     private readonly IAgentManager _agentManager;
     private readonly IAgentScopeFactory _scopeFactory;
     private readonly ConsoleRenderer _renderer;
     private readonly DeepSeekOptions _deepseek;
     private readonly AgentOptions _agentOpts;
-    private readonly CompressionOptions _compressionOpts;
     private AgentScope? _currentScope;
     private string _agentId = string.Empty;
     private long _lastTurnHit;
@@ -39,8 +38,7 @@ public partial class ChatRepl
         IAgentScopeFactory scopeFactory,
         ConsoleRenderer renderer,
         IOptions<DeepSeekOptions> deepseek,
-        IOptions<AgentOptions> agentOpts,
-        IOptions<CompressionOptions> compressionOpts)
+        IOptions<AgentOptions> agentOpts)
     {
         _agentStore = agentStore;
         _blockStore = blockStore;
@@ -50,10 +48,6 @@ public partial class ChatRepl
         _renderer = renderer;
         _deepseek = deepseek.Value;
         _agentOpts = agentOpts.Value;
-        _compressionOpts = compressionOpts.Value;
-        // Scoped services — resolved lazily from AgentScope
-        _turnProcessor = null!;
-        _blockMemory = null!;
     }
 
     /// <summary>Switch to a new agent scope. Call when creating/switching/cloning agents.</summary>
@@ -61,8 +55,6 @@ public partial class ChatRepl
     {
         _currentScope?.Dispose();
         _currentScope = _scopeFactory.CreateScope();
-        _turnProcessor = _currentScope.TurnProcessor;
-        _blockMemory = _currentScope.BlockMemoryProvider;
     }
 
     public async Task RunAsync(CancellationToken ct)

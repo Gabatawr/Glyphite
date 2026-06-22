@@ -55,7 +55,7 @@ public class McpService : IAsyncDisposable
                 try
                 {
                     var timeoutCt = CreateTimeoutToken(servers.GetValueOrDefault(name), ct);
-                    var tools = await client.ListToolsAsync(cancellationToken: timeoutCt).ConfigureAwait(false);
+                    var tools = await client.ListToolsAsync(cancellationToken: timeoutCt);
                     var list = tools.OfType<AIFunction>().Select(t => (AITool)new McpPeekToolAdapter(t)).ToList().AsReadOnly();
                     _toolCache[name] = list;
                     _toolCounts[name] = list.Count;
@@ -109,7 +109,7 @@ public class McpService : IAsyncDisposable
     {
         foreach (var (name, client) in _clients)
         {
-            try { await client.DisposeAsync().ConfigureAwait(false); }
+            try { await client.DisposeAsync(); }
             catch (Exception ex) { _logger.LogWarning(ex, "Error disposing client '{Name}'", name); }
         }
         _clients.Clear();
@@ -135,13 +135,13 @@ public class McpService : IAsyncDisposable
         if (!opts.Enabled)
         {
             if (_clients.TryRemove(name, out var old))
-                await old.DisposeAsync().ConfigureAwait(false);
+                await old.DisposeAsync();
             _statuses[name] = McpServerStatus.Disabled;
             return new McpServerInfo(name, opts.Type, McpServerStatus.Disabled, null, 0);
         }
 
         if (_clients.TryRemove(name, out var oldClient))
-            await oldClient.DisposeAsync().ConfigureAwait(false);
+            await oldClient.DisposeAsync();
 
         _statuses[name] = McpServerStatus.Connecting;
         _errors.TryRemove(name, out _);
@@ -149,12 +149,12 @@ public class McpService : IAsyncDisposable
         try
         {
             var timeoutCt = CreateTimeoutToken(opts, ct);
-            var client = await CreateClientAsync(name, opts, timeoutCt).ConfigureAwait(false);
+            var client = await CreateClientAsync(name, opts, timeoutCt);
             _clients[name] = client;
             _statuses[name] = McpServerStatus.Connected;
             _errors.TryRemove(name, out _);
 
-            var tools = await client.ListToolsAsync(cancellationToken: timeoutCt).ConfigureAwait(false);
+            var tools = await client.ListToolsAsync(cancellationToken: timeoutCt);
             var list = tools.OfType<AIFunction>().Select(t => (AITool)new McpPeekToolAdapter(t)).ToList().AsReadOnly();
             _toolCache[name] = list;
             _toolCounts[name] = list.Count;
@@ -189,7 +189,7 @@ public class McpService : IAsyncDisposable
             if (!servers.ContainsKey(name))
             {
                 if (_clients.TryRemove(name, out var old))
-                    await old.DisposeAsync().ConfigureAwait(false);
+                    await old.DisposeAsync();
                 _statuses.TryRemove(name, out _);
                 _errors.TryRemove(name, out _);
                 _toolCounts.TryRemove(name, out _);
@@ -204,7 +204,7 @@ public class McpService : IAsyncDisposable
             if (!opts.Enabled)
             {
                 if (_clients.TryRemove(name, out var old))
-                    await old.DisposeAsync().ConfigureAwait(false);
+                    await old.DisposeAsync();
                 _statuses[name] = McpServerStatus.Disabled;
                 _toolCache.TryRemove(name, out _);
                 _serverConfigHashes.TryRemove(name, out _);
@@ -222,7 +222,7 @@ public class McpService : IAsyncDisposable
             // Options changed or new server — reconnect
             if (_clients.TryRemove(name, out var oldClient))
             {
-                await oldClient.DisposeAsync().ConfigureAwait(false);
+                await oldClient.DisposeAsync();
                 _toolCache.TryRemove(name, out _);
                 _logger.LogInformation("Reconnecting '{Name}' (config changed)", name);
             }
@@ -231,7 +231,7 @@ public class McpService : IAsyncDisposable
             try
             {
                 var timeoutCt = CreateTimeoutToken(opts, ct);
-                var client = await CreateClientAsync(name, opts, timeoutCt).ConfigureAwait(false);
+                var client = await CreateClientAsync(name, opts, timeoutCt);
                 _clients[name] = client;
                 _serverConfigHashes[name] = configHash;
                 _statuses[name] = McpServerStatus.Connected;
@@ -272,7 +272,7 @@ public class McpService : IAsyncDisposable
                     Command = opts.Command,
                     Arguments = opts.Args,
                 });
-                return await McpClient.CreateAsync(transport, cancellationToken: ct).ConfigureAwait(false);
+                return await McpClient.CreateAsync(transport, cancellationToken: ct);
             }
             case "http":
             case "streamablehttp":
@@ -286,7 +286,7 @@ public class McpService : IAsyncDisposable
                     TransportMode = HttpTransportMode.AutoDetect,
                 };
                 var transport = new HttpClientTransport(transportOpts);
-                return await McpClient.CreateAsync(transport, cancellationToken: ct).ConfigureAwait(false);
+                return await McpClient.CreateAsync(transport, cancellationToken: ct);
             }
             default:
                 throw new ArgumentException($"Unsupported MCP transport type: {opts.Type}");
@@ -326,7 +326,7 @@ public class McpService : IAsyncDisposable
     {
         foreach (var client in _clients.Values)
         {
-            try { await client.DisposeAsync().ConfigureAwait(false); }
+            try { await client.DisposeAsync(); }
             catch (Exception ex) { _logger.LogWarning(ex, "Error disposing client on shutdown"); }
         }
         _clients.Clear();

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Glyphite.Abstractions.Models;
 
 namespace Glyphite.Cli;
 
@@ -22,6 +23,8 @@ public partial class ChatRepl
 
     private async Task UpdatePromptPrefixAsync()
     {
+        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>("Compression", _agentId);
+
         _promptSegments.Clear();
         var def = ConsoleColor.DarkGray;
         var yellow = ConsoleColor.DarkYellow;
@@ -30,7 +33,7 @@ public partial class ChatRepl
         var lastTokens = _lastTurnLastHit + _lastTurnLastMiss;
         if (lastTokens > 0)
         {
-            var useYellow = lastTokens * 100.0 / _deepseek.ContextWindow >= _compressionOpts.AutoThreshold;
+            var useYellow = lastTokens * 100.0 / _deepseek.ContextWindow >= compOpts.AutoThreshold;
             _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", useYellow ? yellow : white));
         }
 
@@ -47,7 +50,7 @@ public partial class ChatRepl
             if (delta > 0)
             {
                 var costStr = delta >= 0.01 ? $"${delta:F2}" : $"${delta:F6}";
-                _promptSegments.Add(($"+{costStr}", delta >= _compressionOpts.CostSignificantThreshold ? white : def));
+                _promptSegments.Add(($"+{costStr}", delta >= compOpts.CostSignificantThreshold ? white : def));
             }
         }
         _prevCumulativeCost = currentCost;
@@ -56,7 +59,7 @@ public partial class ChatRepl
         if (totalRate > 0)
         {
             var rate = (int)(_lastTurnHit * 100.0 / totalRate);
-            var thr = _compressionOpts.CacheHitRateThreshold;
+            var thr = compOpts.CacheHitRateThreshold;
             var useWhite = rate < thr;
             _promptSegments.Add(($"{rate}%", useWhite ? white : def));
         }

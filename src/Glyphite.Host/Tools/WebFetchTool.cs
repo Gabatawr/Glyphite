@@ -50,9 +50,9 @@ public static partial class WebFetchTool
 
         try
         {
-            var response = await http.GetAsync(uri, ct).ConfigureAwait(false);
+            var response = await http.GetAsync(uri, ct);
             response.EnsureSuccessStatusCode();
-            var content = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var content = await response.Content.ReadAsStringAsync(ct);
             var trimmed = content.Trim();
 
             if (trimmed.Length > maxContentLength)

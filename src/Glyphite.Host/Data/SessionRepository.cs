@@ -1,18 +1,17 @@
 using System.Text.Json;
-using Glyphite.Abstractions.Models;
 using Glyphite.Abstractions.Interfaces;
 using Dapper;
 using Microsoft.Data.Sqlite;
 
 namespace Glyphite.Host.Data;
 
-public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
+public class SessionRepository : IAgentStore, IDisposable
 {
     private readonly SqliteConnection _conn;
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
-    public MemoryStore(string connectionString)
+    public SessionRepository(string connectionString)
     {
         _connectionString = connectionString;
         _conn = new SqliteConnection(connectionString);
@@ -20,34 +19,37 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
         Initialize();
     }
 
-    /// <summary>Create a short-lived read-only connection (pooled by Microsoft.Data.Sqlite).</summary>
-    private SqliteConnection CreateReadConnection()
-    {
-        var conn = new SqliteConnection(_connectionString);
-        conn.Open();
-        return conn;
-    }
-
-    static MemoryStore()
+    static SessionRepository()
     {
         Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
     }
-
-    public static MemoryStore CreateForApp(string dataDir, string? dbFileName = null)
-    {
-        Directory.CreateDirectory(dataDir);
-        dbFileName ??= "Glyphite.db";
-        return new MemoryStore($"Data Source={Path.Combine(dataDir, dbFileName)}");
-    }
-
-    public static MemoryStore CreateInMemory()
-        => new("Data Source=:memory:");
 
     public void Dispose()
     {
         _writeLock.Dispose();
         _conn?.Close();
         _conn?.Dispose();
+    }
+
+    private async Task WithLockAsync(Func<Task> action)
+    {
+        await _writeLock.WaitAsync();
+        try { await action(); }
+        finally { _writeLock.Release(); }
+    }
+
+    private async Task<T> WithLockAsync<T>(Func<Task<T>> func)
+    {
+        await _writeLock.WaitAsync();
+        try { return await func(); }
+        finally { _writeLock.Release(); }
+    }
+
+    private SqliteConnection CreateReadConnection()
+    {
+        var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        return conn;
     }
 
     private void Initialize()
@@ -59,29 +61,6 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
                 next_number REAL NOT NULL DEFAULT 1,
                 created_at TEXT,
                 home_path TEXT
-            );
-            CREATE TABLE IF NOT EXISTS blocks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agent_id TEXT NOT NULL REFERENCES sessions(id),
-                number REAL NOT NULL,
-                type TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                content TEXT NOT NULL,
-                tool_name TEXT,
-                data TEXT,
-                model TEXT,
-                tool_result TEXT,
-                updated_at TEXT,
-                parent_number REAL,
-                is_deleted INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS config (
-                key TEXT NOT NULL,
-                value TEXT NOT NULL,
-                scope TEXT NOT NULL DEFAULT 'global',
-                agent_id TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY (key, scope, agent_id)
             );
             CREATE TABLE IF NOT EXISTS agent_launches (
                 agent_id TEXT NOT NULL REFERENCES sessions(id),
@@ -104,9 +83,8 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
                 applied_at TEXT NOT NULL
             );
             """);
-        ApplyMigrations();
         _conn.Execute("CREATE INDEX IF NOT EXISTS idx_session_usage_agent ON session_usage(agent_id)");
-        _conn.Execute("CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_deleted)");
+        ApplyMigrations();
     }
 
     private void ApplyMigrations()
@@ -116,7 +94,6 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
 
         if (currentVersion < 1)
         {
-            // Migration v1: add columns for databases created before these were in the initial schema
             if (!ColumnExists("session_usage", "last_request_hit"))
                 _conn.Execute("ALTER TABLE session_usage ADD COLUMN last_request_hit INTEGER NOT NULL DEFAULT 0");
             if (!ColumnExists("session_usage", "last_request_miss"))
@@ -139,40 +116,14 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
 
     public async Task EnsureSessionAsync(string id, string? homePath = null)
     {
-        await _writeLock.WaitAsync();
-        try
+        await WithLockAsync(async () =>
         {
             var now = DateTime.UtcNow.ToString("O");
             await _conn.ExecuteAsync("""
                 INSERT OR IGNORE INTO sessions (id, next_number, created_at, home_path)
                 VALUES (@Id, 1, @Now, @Path)
                 """, new { Id = id, Now = now, Path = homePath ?? "" });
-        }
-        finally { _writeLock.Release(); }
-    }
-
-    public async Task RecordLaunchAsync(string agentId, string path)
-    {
-        await _writeLock.WaitAsync();
-        try
-        {
-            var now = DateTime.UtcNow.ToString("O");
-            await _conn.ExecuteAsync("""
-                INSERT INTO agent_launches (agent_id, path, last_active_at)
-                VALUES (@AgentId, @Path, @Now)
-                ON CONFLICT(agent_id, path) DO UPDATE SET last_active_at = @Now
-                """, new { AgentId = agentId, Path = path, Now = now });
-        }
-        finally { _writeLock.Release(); }
-    }
-
-    public async Task<List<(string path, string lastActive)>> GetLaunchesAsync(string agentId)
-    {
-        using var conn = CreateReadConnection();
-        var rows = await conn.QueryAsync<(string path, string lastActive)>(
-            "SELECT path, last_active_at FROM agent_launches WHERE agent_id = @aid ORDER BY last_active_at DESC",
-            new { aid = agentId });
-        return rows.ToList();
+        });
     }
 
     public async Task<string?> GetAgentHomePathAsync(string id)
@@ -189,14 +140,6 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
             "SELECT created_at FROM sessions WHERE id = @id", new { id });
     }
 
-    public async Task<string?> GetLastLaunchPathAsync(string agentId)
-    {
-        using var conn = CreateReadConnection();
-        return await conn.QueryFirstOrDefaultAsync<string>(
-            "SELECT path FROM agent_launches WHERE agent_id = @aid ORDER BY last_active_at DESC LIMIT 1",
-            new { aid = agentId });
-    }
-
     public async Task<string?> GetAgentModelAsync(string id)
     {
         using var conn = CreateReadConnection();
@@ -204,24 +147,22 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
             "SELECT current_model FROM sessions WHERE id = @id", new { id });
     }
 
-    public async Task<bool> AgentExistsAsync(string id)
-    {
-        using var conn = CreateReadConnection();
-        return await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(1) FROM sessions WHERE id = @id", new { id }) > 0;
-    }
-
     public async Task<bool> SetAgentModelAsync(string id, string model)
     {
-        await _writeLock.WaitAsync();
-        try
+        return await WithLockAsync(async () =>
         {
             var rows = await _conn.ExecuteAsync(
                 "UPDATE sessions SET current_model = @Model WHERE id = @Id",
                 new { Id = id, Model = model });
             return rows > 0;
-        }
-        finally { _writeLock.Release(); }
+        });
+    }
+
+    public async Task<bool> AgentExistsAsync(string id)
+    {
+        using var conn = CreateReadConnection();
+        return await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(1) FROM sessions WHERE id = @id", new { id }) > 0;
     }
 
     public async Task<double> GetNextNumberAsync(string id)
@@ -233,22 +174,17 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
 
     public async Task SetNextNumberAsync(string id, double next)
     {
-        await _writeLock.WaitAsync();
-        try
+        await WithLockAsync(async () =>
         {
             await _conn.ExecuteAsync(
                 "UPDATE sessions SET next_number = @Next WHERE id = @Id",
                 new { Id = id, Next = next });
-        }
-        finally { _writeLock.Release(); }
+        });
     }
-
-    // ── Delete ──
 
     public async Task DeleteSessionAsync(string agentId)
     {
-        await _writeLock.WaitAsync();
-        try
+        await WithLockAsync(async () =>
         {
             await using var tx = await _conn.BeginTransactionAsync();
             await _conn.ExecuteAsync("DELETE FROM session_usage WHERE agent_id = @sid", new { sid = agentId });
@@ -257,48 +193,37 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
             await _conn.ExecuteAsync("DELETE FROM agent_launches WHERE agent_id = @sid", new { sid = agentId });
             await _conn.ExecuteAsync("DELETE FROM sessions WHERE id = @sid", new { sid = agentId });
             await tx.CommitAsync();
-        }
-        finally { _writeLock.Release(); }
+        });
     }
 
-    // ── Mapping ──
-
-    private static MemoryBlock MapToBlock(BlockEntity e)
+    public async Task RecordLaunchAsync(string agentId, string path)
     {
-        var type = Enum.TryParse<BlockType>(e.Type, ignoreCase: true, out var t) ? t : BlockType.system_info;
-            return new MemoryBlock
-            {
-                Number = e.Number,
-                Type = type,
-                CreatedAt = DateTime.Parse(e.CreatedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
-                UpdatedAt = e.UpdatedAt is not null
-                    ? DateTime.Parse(e.UpdatedAt, null, System.Globalization.DateTimeStyles.RoundtripKind)
-                    : null,
-                Content = e.Content,
-                ToolName = e.ToolName,
-                Data = e.Data is not null ? JsonSerializer.Deserialize<Dictionary<string, object>>(e.Data) : null,
-                Model = e.Model,
-                ParentNumber = e.ParentNumber,
-                ToolResult = e.ToolResult
-            };
-    }
-
-    private static object MapFromBlock(string agentId, MemoryBlock b)
-    {
-        return new
+        await WithLockAsync(async () =>
         {
-            sid = agentId,
-            b.Number,
-            Type = b.Type.ToString(),
-            CreatedAt = b.CreatedAt.ToString("O"),
-            UpdatedAt = b.UpdatedAt?.ToString("O"),
-            b.Content,
-            b.ToolName,
-            Data = b.Data is not null ? JsonSerializer.Serialize(b.Data) : null,
-            b.Model,
-            parent_number = b.ParentNumber,
-            tool_result = b.ToolResult
-        };
+            var now = DateTime.UtcNow.ToString("O");
+            await _conn.ExecuteAsync("""
+                INSERT INTO agent_launches (agent_id, path, last_active_at)
+                VALUES (@AgentId, @Path, @Now)
+                ON CONFLICT(agent_id, path) DO UPDATE SET last_active_at = @Now
+                """, new { AgentId = agentId, Path = path, Now = now });
+        });
+    }
+
+    public async Task<List<(string path, string lastActive)>> GetLaunchesAsync(string agentId)
+    {
+        using var conn = CreateReadConnection();
+        var rows = await conn.QueryAsync<(string path, string lastActive)>(
+            "SELECT path, last_active_at FROM agent_launches WHERE agent_id = @aid ORDER BY last_active_at DESC",
+            new { aid = agentId });
+        return rows.ToList();
+    }
+
+    public async Task<string?> GetLastLaunchPathAsync(string agentId)
+    {
+        using var conn = CreateReadConnection();
+        return await conn.QueryFirstOrDefaultAsync<string>(
+            "SELECT path FROM agent_launches WHERE agent_id = @aid ORDER BY last_active_at DESC LIMIT 1",
+            new { aid = agentId });
     }
 
     public async Task<string?> GetLastActiveAgentAsync(string cwd)
@@ -309,19 +234,97 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
             new { cwd });
     }
 
+    public async Task<List<string>> ListAgentsAsync()
+    {
+        using var conn = CreateReadConnection();
+        return (await conn.QueryAsync<string>(
+            "SELECT id FROM sessions ORDER BY id")).ToList();
+    }
+
+    public async Task<string?> GetSessionIdByWorkingDirectoryAsync(string cwd)
+    {
+        using var conn = CreateReadConnection();
+        return await conn.QueryFirstOrDefaultAsync<string>(
+            "SELECT agent_id FROM config WHERE key = 'Session:WorkingDirectory' AND value = @cwd AND scope = 'session' ORDER BY updated_at DESC LIMIT 1",
+            new { cwd });
+    }
+
+    public async Task ForkSessionAsync(string sourceId, string targetId, string cwd)
+    {
+        await WithLockAsync(async () =>
+        {
+            await using var tx = await _conn.BeginTransactionAsync();
+
+            // Copy session (model + home_path)
+            var srcInfo = await _conn.QueryFirstOrDefaultAsync<(string? model, string? homePath)>(
+                "SELECT current_model, home_path FROM sessions WHERE id = @id", new { id = sourceId });
+            var now = DateTime.UtcNow.ToString("O");
+            await _conn.ExecuteAsync("""
+                INSERT OR IGNORE INTO sessions (id, current_model, next_number, created_at, home_path)
+                VALUES (@Id, @Model, 1, @Now, @Path)
+                """, new { Id = targetId, Model = srcInfo.model, Now = now, Path = cwd });
+
+            // Copy blocks (with new agent_id, reset numbers)
+            var blocks = await _conn.QueryAsync<BlockEntity>(
+                "SELECT * FROM blocks WHERE agent_id = @sid AND is_deleted = 0 ORDER BY number",
+                new { sid = sourceId });
+
+            double num = 1;
+            foreach (var b in blocks)
+            {
+                await _conn.ExecuteAsync("""
+                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, parent_number, is_deleted)
+                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, @parent_number, 0)
+                    """, new
+                {
+                    sid = targetId,
+                    Number = num++,
+                    b.Type,
+                    CreatedAt = b.CreatedAt,
+                    UpdatedAt = b.UpdatedAt,
+                    b.Content,
+                    b.ToolName,
+                    b.Data,
+                    b.Model,
+                    parent_number = b.ParentNumber
+                });
+            }
+
+            // Copy session-scoped config
+            var configs = await _conn.QueryAsync<ConfigRow>(
+                "SELECT key, value, scope, agent_id, updated_at FROM config WHERE scope = 'session' AND agent_id = @sid",
+                new { sid = sourceId });
+            foreach (var cfg in configs)
+            {
+                await _conn.ExecuteAsync("""
+                    INSERT INTO config (key, value, scope, agent_id, updated_at)
+                    VALUES (@key, @value, 'session', @sid, @now)
+                    ON CONFLICT(key, scope, agent_id) DO UPDATE SET value = @value, updated_at = @now
+                    """, new { key = cfg.Key, value = cfg.Value, sid = targetId, now });
+            }
+
+            // Record first launch for the new agent
+            await _conn.ExecuteAsync("""
+                INSERT INTO agent_launches (agent_id, path, last_active_at)
+                VALUES (@AgentId, @Path, @Now)
+                ON CONFLICT(agent_id, path) DO UPDATE SET last_active_at = @Now
+                """, new { AgentId = targetId, Path = cwd, Now = now });
+
+            await tx.CommitAsync();
+        });
+    }
+
     // ── Usage tracking ──
 
     public async Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long lastRequestHit = 0, long lastRequestMiss = 0, string? model = null)
     {
-        await _writeLock.WaitAsync();
-        try
+        await WithLockAsync(async () =>
         {
             await _conn.ExecuteAsync("""
                 INSERT INTO session_usage (agent_id, cache_hit, cache_miss, output_tokens, model, last_request_hit, last_request_miss, created_at)
                 VALUES (@Id, @Hit, @Miss, @Output, @Model, @LastHit, @LastMiss, datetime('now'))
                 """, new { Id = agentId, Hit = cacheHit, Miss = cacheMiss, Output = output, Model = model, LastHit = lastRequestHit, LastMiss = lastRequestMiss });
-        }
-        finally { _writeLock.Release(); }
+        });
     }
 
     public async Task<(long Hit, long Miss, long Output)> GetUsageAsync(string agentId)
@@ -353,16 +356,15 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
 
     public async Task ClearUsageAsync(string agentId)
     {
-        await _writeLock.WaitAsync();
-        try
+        await WithLockAsync(async () =>
         {
             await _conn.ExecuteAsync("DELETE FROM session_usage WHERE agent_id = @sid", new { sid = agentId });
-        }
-        finally { _writeLock.Release(); }
+        });
     }
 
+    // ── Shared records (referenced by BlockRepository/ConfigRepository) ──
 
-    private sealed record BlockEntity
+    internal sealed record BlockEntity
     {
         public int Id { get; set; }
         public double Number { get; set; }
@@ -376,4 +378,6 @@ public partial class MemoryStore : IAgentStore, IBlockStore, IConfigStore
         public double? ParentNumber { get; set; }
         public string? ToolResult { get; set; }
     }
+
+    internal sealed record ConfigRow(string Key, string Value, string Scope, string AgentId, string UpdatedAt);
 }

@@ -40,11 +40,10 @@ public static class HostServiceCollectionExtensions
         Directory.CreateDirectory(dataDir);
 
         // ── Data ──
-        services.AddSingleton<MemoryStore>(sp =>
-            MemoryStore.CreateForApp(dataDir, dataOpts.DatabaseFileName));
-        services.AddSingleton<IAgentStore>(sp => sp.GetRequiredService<MemoryStore>());
-        services.AddSingleton<IBlockStore>(sp => sp.GetRequiredService<MemoryStore>());
-        services.AddSingleton<IConfigStore>(sp => sp.GetRequiredService<MemoryStore>());
+        var connStr = $"Data Source={Path.Combine(dataDir, dataOpts.DatabaseFileName)}";
+        services.AddSingleton<IAgentStore>(_ => new SessionRepository(connStr));
+        services.AddSingleton<IBlockStore>(_ => new BlockRepository(connStr));
+        services.AddSingleton<IConfigStore>(_ => new ConfigRepository(connStr));
 
         // ── IChatClient ──
         services.AddSingleton<IChatClient>(sp =>

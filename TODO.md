@@ -7,19 +7,18 @@
 
 ## 🔧 Рефакторинг
 
-### 2. MemoryStore — нарушение ISP (Interface Segregation)
-- **Файл:** `src/Glyphite.Host/Data/MemoryStore.cs`
-- **Проблема:** один класс имплементирует `IAgentStore`, `IBlockStore`, `IConfigStore`. ~3500 строк в partial-файлах.
-- **Решение:** разбить на отдельные классы-репозитории (`BlockRepository`, `ConfigRepository`, `SessionRepository`), каждый со своим файлом и интерфейсом.
+### ~~2. MemoryStore — нарушение ISP (Interface Segregation)~~ ✅
+- **Исправлено:** `MemoryStore` разбит на `SessionRepository` (IAgentStore), `BlockRepository` (IBlockStore), `ConfigRepository` (IConfigStore).
+- Каждый репозиторий — отдельный файл, отдельный SQLite connection + semaphore.
+- DI регистрирует три singletone напрямую.
+- Старые файлы `MemoryStore*.cs` удалены.
 
 ### ~~3. CreateReadConnection() — новый SQLite connection на каждый вызов~~ (частично)
 - **FIX:** `ReplaceBlocksSinceAsync` — атомарная замена истории компакции в одной транзакции (вместо 3 отдельных вызовов)
 - **Open:** ~30 вызовов `CreateReadConnection()` для read-only операций пока не переиспользуются
 
-### 4. _writeLock — copy-paste блокировка 48+ раз
-- **Файлы:** `MemoryStore*.cs`
-- **Проблема:** паттерн `await _writeLock.WaitAsync(); try { ... } finally { _writeLock.Release(); }` повторяется ~48 раз
-- **Решение:** сделать helper-метод `async Task<T> WithLockAsync<T>(Func<Task<T>> action)` или декоратор
+### ~~4. _writeLock — copy-paste блокировка 48+ раз~~ ✅
+- **Исправлено:** все ~25 блоков `WaitAsync/try/finally/Release` заменены на `WithLockAsync(Func<Task>)` / `WithLockAsync<T>(Func<Task<T>>)` helper.
 
 ### ~~5. Пустые `catch { }` — нужно проработать flow ошибок~~ ✅
 - **Исправлено:** все пустые `catch` заменены на `Console.Error.WriteLine`
@@ -28,14 +27,11 @@
   - **CompactionService.cs:269** — ошибка LLM при суммаризации (graceful degradation, без потери данных)
 - **CompactionService:** удаление непротектированных блоков перенесено ПОСЛЕ суммаризации — если LLM упала, блоки не теряются
 
-### 6. `null!` для scoped-сервисов в ChatRepl
-- **Файл:** `ChatRepl.cs:16-17`
-- **Проблема:** `_turnProcessor = null!` и `_blockMemory = null!`. Если вызвать метод до `SwitchScope()` — NRE
-- **Решение:** избавиться от `null!` — инициализировать через фабрику или ленивую загрузку
+### ~~6. `null!` для scoped-сервисов в ChatRepl~~ ✅
+- **Исправлено:** `_turnProcessor` и `_blockMemory` стали computed properties, читающие из `_currentScope`. Никакого `null!`.
 
-### 7. `ConfigureAwait(false)` — непоследовательно
-- **Проблема:** используется только в `McpService.cs`. В консольном/библиотечном коде не нужно (нет контекста синхронизации)
-- **Решение:** убрать `ConfigureAwait(false)` из всех мест (кроме библиотечных сценариев)
+### ~~7. `ConfigureAwait(false)` — непоследовательно~~ ✅
+- **Исправлено:** убраны все 15 `.ConfigureAwait(false)` из `McpService.cs` (13) и `WebFetchTool.cs` (2) — в консольном приложении нет контекста синхронизации
 
 ### 8. FailSafeChatClient — 540 строк, сложная логика
 - **Файл:** `src/Glyphite.Host/Services/FailSafeChatClient.cs`
@@ -61,8 +57,5 @@
 ### ~~12. FormattableString.Invariant в TodoTool~~ ✅
 - **Исправлено:** все `FormattableString.Invariant` убраны при рефакторинге туду-тула
 
-### 13. _compressionOpts в ChatRepl — хот-релоад конфига
-- **Файл:** `ChatRepl.cs:24`
-- **Проблема:** `_compressionOpts` инициализируется через DI (при старте), а конфиг может меняться через `Glyphite.json` между turn-ами
-- **Важно:** хот-релоад должен работать — изменения в `Glyphite.json` должны подтягиваться в следующий turn
-- **Решение:** получать свежий `CompressionOptions` через `_cfgService.GetOptionsAsync<CompressionOptions>()`, как это делается в других местах
+### ~~13. _compressionOpts в ChatRepl — хот-релоад конфига~~ ✅
+- **Исправлено:** `_compressionOpts` поле и DI-инъекция убраны. `UpdatePromptPrefixAsync()` получает свежий `CompressionOptions` через `_cfgService.GetOptionsAsync<CompressionOptions>()` каждый turn.
