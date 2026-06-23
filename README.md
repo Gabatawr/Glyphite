@@ -183,14 +183,14 @@ subagent_use(name="writer", task="write report", mode="parallel")
 - If two parallel calls use the **same agent name**, they're automatically split into sequential groups to prevent race conditions
 - Parallel-safe tools: `read_file`, `fetch_web`, `search_glob`, `search_grep`, `subagent_use`, `subagent_run`
 
-### Config loading per agent
+### Config loading
 
-When a subagent is created (via `subagent_run` or `subagent_use`), its configuration is loaded from:
-1. `Glyphite.json` in the parent agent's working directory
-2. `Glyphite.{agentName}.json` in the parent agent's working directory
-3. `Glyphite.{agentName}.json` in the subagent's own home directory (if different)
+Both CLI agents and subagents use the unified `ISessionConfigLoader` (old `ConfigLoader.cs` removed). Called every turn:
 
-Config is loaded by `SubAgentConfigLoader` every turn — changes to config files are reflected immediately.
+1. **Home → DB** — config files from the agent's home directory are read, compared with existing DB keys (change detection), and only home-originated keys are persisted to DB.
+2. **Cascade merge** — `DB session keys` → `parentCwd/Glyphite.json` → `parentCwd/Glyphite.{id}.json` → `agentCwd/Glyphite.json` → `agentCwd/Glyphite.{id}.json` (each overrides the previous).
+3. **Auto-migrate** — if the original home directory was deleted, the current working directory is adopted as the new home.
+4. **Overlay** — if agent is not at home, the merged config is set as session overlay; otherwise `IConfiguration` + DB suffice.
 
 ## Auto-compaction
 

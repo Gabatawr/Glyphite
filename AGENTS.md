@@ -15,8 +15,43 @@ After publish — exit and restart glyphite to test the new build.
 Settings are applied in this order (each overrides the previous):
 
 1. **`appsettings.json`** (embedded in the binary) — base defaults. **Do not modify** — it's compiled into the binary.
-2. **`Glyphite.json`** in current working directory — overrides base defaults. Use this for your own preferences (e.g. `"patch_file": -1` to always show diffs).
-3. **`Glyphite.{agentName}.json`** in current working directory — agent-specific overrides (highest priority).
+2. **`Glyphite.json`** in current working directory — overrides base defaults. Hot-reloaded via `IConfiguration` on every turn.
+3. **`Glyphite.{agentName}.json`** in current working directory — agent-specific overrides.
+
+### Per-agent config loading (`ISessionConfigLoader.LoadConfigAsync`)
+
+Called **every turn** (both for CLI agents and subagents). Four steps:
+
+```
+Step 0 ─ Home directory still exists?
+  └─ NO → homePath = agentCwd (current working directory becomes new home),
+          SetAgentHomePathAsync updates DB, stale session keys cleared
+
+Step 1 ─ Home → DB (change detection)
+  Read home/Glyphite.json + home/Glyphite.{id}.json
+  Compare with existing DB session keys
+  └─ Changed → DeleteConfigByScope + UpdateConfig (only home keys!)
+
+  ⚠️ Only home-originated keys go to DB. Parent/cwd keys never persist.
+
+Step 2 ─ Final merge (bottom→top, top wins)
+
+  agentCwd/Glyphite.{id}.json       TOP (if cwd != parentCwd)
+  agentCwd/Glyphite.json                 (if cwd != parentCwd)
+  parentCwd/Glyphite.{id}.json
+  parentCwd/Glyphite.json
+  DB session keys (home keys only)  BASE
+
+Step 3 ─ Overlay?
+  cwd == homePath → no overlay (IConfiguration + DB suffice)
+  cwd != homePath → SetSessionOverlay(agentId, merged)
+```
+
+**Key principles:**
+- Home keys → DB (change detection, only home keys persist)
+- Parent + cwd keys → each time from files, never saved to DB
+- One loader for CLI agents and subagents
+- Auto-migrate home if original directory was deleted
 
 ## Session state (Jun 23 — v1.0.16)
 
@@ -382,9 +417,9 @@ Added `subagent_run` and `subagent_use` to `ToolStreaming:ToolMaxLength` (defaul
    - `IAgentManager` and `ISubAgentConfigLoader` injected via DI
 
 2. **Config loading extracted** (lines 80–144 removed):
-   - `LoadSubAgentConfigAsync`, `ReadAndFlattenConfigFileAsync`, `FlattenJsonElement` moved to `SubAgentConfigLoader` service
-   - New interface: `ISubAgentConfigLoader` in `Glyphite.Abstractions`
-   - New implementation: `SubAgentConfigLoader` in `Glyphite.Host.Services`
+   - `LoadSubAgentConfigAsync`, `ReadAndFlattenConfigFileAsync`, `FlattenJsonElement` moved to `SessionConfigLoader` service
+   - New interface: `ISessionConfigLoader` in `Glyphite.Abstractions`
+   - New implementation: `SessionConfigLoader` in `Glyphite.Host.Services`
    - Registered as singleton in DI (`HostServiceCollectionExtensions.cs`)
    - `SubAgentTool.cs` slimmed from 350 to 284 lines (-66 lines)
 
@@ -420,9 +455,9 @@ Two independent cleanup mechanisms, both running **after LLM consumes the result
 
 ### Architecture
 - **Abstractions** — interfaces, models, no deps (except `Microsoft.Extensions.AI`)
-  - Includes `ISubAgentConfigLoader`, `IAgentManager`, `IAgentStore`, `IBlockStore`, `IConfigStore`, etc.
-- **Host** — service implementations (TurnProcessor, FailSafeChatClient, ToolExecutor, UsageTracker, SessionRepository, BlockRepository, ConfigRepository, BlockMemoryProvider, SubAgentConfigLoader, SubAgentManager, RepositoryBase), tools (SubAgentTool, TodoTool, ToolRegistry, etc.), utils (UsageParser, BlockTypeIcon, ToolCallHelper), MCP, DI wiring
-- **Cli** — UI only (ChatRepl + 4 partials, SessionManager + Commands partial, InputHistory, ConsoleRenderer, ConfigLoader, AgentPicker). No persistence logic.
+  - Includes `ISessionConfigLoader`, `IAgentManager`, `IAgentStore`, `IBlockStore`, `IConfigStore`, etc.
+- **Host** — service implementations (TurnProcessor, FailSafeChatClient, ToolExecutor, UsageTracker, SessionRepository, BlockRepository, ConfigRepository, BlockMemoryProvider, SessionConfigLoader, SubAgentManager, RepositoryBase), tools (SubAgentTool, TodoTool, ToolRegistry, etc.), utils (UsageParser, BlockTypeIcon, ToolCallHelper), MCP, DI wiring
+- **Cli** — UI only (ChatRepl + 4 partials, SessionManager + Commands partial, InputHistory, ConsoleRenderer, AgentPicker). No persistence logic. Config loading unified via `ISessionConfigLoader` (old `ConfigLoader.cs` removed).
 
 ### Peek flow
 Two levels of peek cleanup, both in `BlockRepository.cs`:
