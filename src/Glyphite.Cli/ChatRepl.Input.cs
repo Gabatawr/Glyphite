@@ -484,9 +484,11 @@ public partial class ChatRepl
             if (_promptLine < 0) _promptLine = 0;
             _maxVisualLine = _promptLine + lineCount - 1;
 
-            // Если _promptLine сместился вверх (отрицательный скролл?) —
-            // чистим зависшие строки между старым и новым положением
-            if (_promptLine < oldPromptLine)
+            // Если _promptLine сместился вниз — чистим зависшие строки
+            // между старым и новым положением (при нормальном скролле
+            // вверх _promptLine становится меньше oldPromptLine —
+            // там чистить нечего, терминал уже сдвинул содержимое).
+            if (_promptLine > oldPromptLine)
             {
                 for (var line = _promptLine; line < oldPromptLine && line < bufHeight; line++)
                 {
