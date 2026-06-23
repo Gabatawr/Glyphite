@@ -96,9 +96,6 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             // Peek cleanup: truncate tool results that LLM just consumed (seen exactly once)
             _toolExecutor.CleanupPeekTools(messageList);
 
-            // Memory clean: remove deleted blocks from messageList after LLM consumed the result
-            _toolExecutor.CleanupMemoryClean(messageList);
-
             if (!hasToolCall)
             {
                 var chatResponse = allUpdates.ToChatResponse();
@@ -239,7 +236,6 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     }
 
                     _toolExecutor.ExecutedCallIds.Add(callId);
-                    _toolExecutor.TrackMemoryClean(fcc.Arguments, toolName, resultText, errorText);
                 }
                 // ── Parallel: start all tasks concurrently, yield FCC+FRC as each completes ──
                 else
@@ -297,7 +293,6 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                         }
 
                         _toolExecutor.ExecutedCallIds.Add(callId);
-                        _toolExecutor.TrackMemoryClean(fcc.Arguments, toolName, resultText, errorText);
                     }
                 }
             }

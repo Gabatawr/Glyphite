@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
@@ -20,10 +21,12 @@ public class InstructionProvider : IInstructionProvider
     private readonly ConcurrentDictionary<string, CachedFile> _agentsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CachedFile> _nameCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly IConfigService _cfgService;
+    private readonly ILogger _logger;
 
-    public InstructionProvider(IConfigService cfgService)
+    public InstructionProvider(IConfigService cfgService, ILogger<InstructionProvider>? logger = null)
     {
         _cfgService = cfgService;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<InstructionProvider>.Instance;
     }
 
     /// <summary>
@@ -55,7 +58,7 @@ public class InstructionProvider : IInstructionProvider
     }
 
     /// <summary>Read a file in cascade (home → parentCwd → agentCwd), top wins. Returns null if not found.</summary>
-    private static async Task<string?> ReadCascadeAsync(
+    private async Task<string?> ReadCascadeAsync(
         string agentId, string fileName, string? homePath, string parentCwd, string agentCwd,
         ConcurrentDictionary<string, CachedFile> cache, bool turnReload)
     {
@@ -76,9 +79,19 @@ public class InstructionProvider : IInstructionProvider
         foreach (var dir in paths)
         {
             var filePath = Path.Combine(dir, fileName);
-            if (File.Exists(filePath))
-                content = await File.ReadAllTextAsync(filePath);
+            try
+            {
+                if (File.Exists(filePath))
+                    content = await File.ReadAllTextAsync(filePath);
+            }
+            catch (IOException ex)
+            {
+                _logger.LogWarning(ex, "Failed to read instruction file '{Path}' for agent '{AgentId}'", filePath, agentId);
+            }
         }
+
+        _logger.LogDebug("Agent '{AgentId}': loaded '{FileName}' from '{Dir}' (cached: {Cached})",
+            agentId, fileName, paths.FirstOrDefault(p => File.Exists(Path.Combine(p, fileName))) ?? "(not found)", turnReload ? "no" : "yes");
 
         cache[cacheKey] = new CachedFile(content);
         return content;
@@ -120,6 +133,8 @@ public class InstructionProvider : IInstructionProvider
         var nameKeysToRemove = _nameCache.Keys.Where(k => k.StartsWith(agentId + ":", StringComparison.OrdinalIgnoreCase)).ToList();
         foreach (var key in nameKeysToRemove)
             _nameCache.TryRemove(key, out _);
+
+        _logger.LogDebug("Invalidated instruction cache for agent '{AgentId}'", agentId);
     }
 
     private record CachedFile(string? Content);

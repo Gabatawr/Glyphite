@@ -25,23 +25,5 @@ public static class ToolCallHelper
         return toolName == "patch_file" || toolName == "write_file";
     }
 
-    /// <summary>
-    /// Remove ChatMessages from a list by matching their Text against block number prefixes.
-    /// Used after `memory clean` to remove deleted blocks from in-memory message lists.
-    /// </summary>
-    public static void RemoveBlocksFromMessageList(IList<ChatMessage> messages, IEnumerable<double> blockNumbers)
-    {
-        foreach (var num in blockNumbers)
-        {
-            var pat = $"[Block: {num:F1},";
-            for (var i = messages.Count - 1; i >= 0; i--)
-            {
-                if (messages[i].Text?.StartsWith(pat) == true)
-                {
-                    messages.RemoveAt(i);
-                    break;
-                }
-            }
-        }
-    }
+
 }

@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
-using Serilog;
+using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
@@ -12,6 +12,7 @@ public class BashSession : IDisposable
     private readonly Process _process;
     private readonly StreamWriter _stdin;
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly ILogger _logger;
     private TaskCompletionSource? _pendingTcs;
     private string? _pendingMarker;
     private List<string> _pendingOutput = [];
@@ -22,10 +23,11 @@ public class BashSession : IDisposable
 
     public DateTime LastUsed { get; private set; } = DateTime.UtcNow;
 
-    private BashSession(Process process, StreamWriter stdin)
+    private BashSession(Process process, StreamWriter stdin, ILogger logger)
     {
         _process = process;
         _stdin = stdin;
+        _logger = logger;
         _readerCts = new CancellationTokenSource();
         _ = ReadStdoutAsync(_readerCts.Token);
     }
@@ -70,7 +72,7 @@ public class BashSession : IDisposable
         }
         catch (Exception ex)
         {
-            try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { Log.Warning(killEx, "Error killing process on listener failure"); }
+            try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { _logger.LogWarning(killEx, "Error killing process on listener failure"); }
             lock (_gate)
             {
                 _pendingTcs?.TrySetException(ex);
@@ -101,9 +103,9 @@ public class BashSession : IDisposable
         }
     }
 
-    public static BashSession Start(BashOptions opts, string? defaultDirectory = null)
+    public static BashSession Start(BashOptions opts, ILogger logger, string? defaultDirectory = null)
     {
-        if (!TryFindBash(opts))
+        if (!TryFindBash(opts, logger))
             throw new InvalidOperationException(
                 "bash not found. Install Git Bash or WSL, or ensure bash is in PATH.");
 
@@ -130,10 +132,11 @@ public class BashSession : IDisposable
             NewLine = "\n"
         };
         stdin.WriteLine(opts.InitCommand);
-        return new BashSession(process, stdin);
+        logger.LogDebug("Bash session started (pid: {Pid})", process.Id);
+        return new BashSession(process, stdin, logger);
     }
 
-    private static bool TryFindBash(BashOptions opts)
+    private static bool TryFindBash(BashOptions opts, ILogger logger)
     {
         try
         {
@@ -150,10 +153,14 @@ public class BashSession : IDisposable
                 }
             };
             proc.Start();
-            return proc.WaitForExit(opts.DiscoveryTimeoutMs) && proc.ExitCode == 0;
+            var found = proc.WaitForExit(opts.DiscoveryTimeoutMs) && proc.ExitCode == 0;
+            if (!found)
+                logger.LogWarning("Bash not found at '{Path}'", opts.ExecutablePath);
+            return found;
         }
-        catch
+        catch (Exception ex)
         {
+            logger.LogWarning(ex, "Error discovering bash at '{Path}'", opts.ExecutablePath);
             return false;
         }
     }
@@ -194,7 +201,7 @@ public class BashSession : IDisposable
 
             using (linkedCts.Token.Register(() =>
             {
-                try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { Log.Warning(killEx, "Error killing process on timeout"); }
+                try { _process.Kill(entireProcessTree: true); _killed = true; } catch (Exception killEx) { _logger.LogWarning(killEx, "Error killing process on timeout"); }
                 tcs.TrySetCanceled();
             }))
             {
@@ -231,13 +238,15 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 {
     private readonly ConcurrentDictionary<string, Lazy<BashSession>> _sessions = new();
     private readonly IConfigService _cfgService;
+    private readonly ILogger _logger;
     private readonly BashOptions _opts;
     private readonly string? _defaultDirectory;
     private static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
 
-    public BashSessionManager(IConfigService cfgService, BashOptions opts, string? defaultDirectory = null)
+    public BashSessionManager(IConfigService cfgService, BashOptions opts, ILogger<BashSessionManager> logger, string? defaultDirectory = null)
     {
         _cfgService = cfgService;
+        _logger = logger;
         _opts = opts;
         _defaultDirectory = defaultDirectory;
     }
@@ -248,7 +257,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
         // Load fresh BashOptions for new sessions — IOptions<T> singleton may be stale
         var freshOpts = await _cfgService.GetOptionsAsync<BashOptions>(BashOptions.Section);
-        var lazy = _sessions.GetOrAdd(agentId, _ => new Lazy<BashSession>(() => BashSession.Start(freshOpts, _defaultDirectory)));
+        var lazy = _sessions.GetOrAdd(agentId, _ => new Lazy<BashSession>(() => BashSession.Start(freshOpts, _logger, _defaultDirectory)));
         BashSession session;
         try
         {
@@ -257,6 +266,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         catch
         {
             _sessions.TryRemove(agentId, out _);
+            _logger.LogWarning("Failed to start bash session for agent '{AgentId}'", agentId);
             throw;
         }
 
@@ -268,6 +278,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         {
             _sessions.TryRemove(agentId, out _);
             session.Dispose();
+            _logger.LogInformation("Bash session for agent '{AgentId}' cancelled/timeout", agentId);
             throw;
         }
     }
@@ -275,7 +286,10 @@ public class BashSessionManager : IBashSessionManager, IDisposable
     public void KillSession(string agentId)
     {
         if (_sessions.TryRemove(agentId, out var lazy) && lazy.IsValueCreated)
+        {
             lazy.Value.Dispose();
+            _logger.LogDebug("Killed bash session for agent '{AgentId}'", agentId);
+        }
     }
 
     public string[] ActiveSessions => _sessions.Where(kv => kv.Value.IsValueCreated).Select(kv => kv.Key).ToArray();
@@ -288,7 +302,10 @@ public class BashSessionManager : IBashSessionManager, IDisposable
             if (lazy.IsValueCreated && lazy.Value.LastUsed < cutoff)
             {
                 if (_sessions.TryRemove(key, out var removed))
+                {
                     removed.Value.Dispose();
+                    _logger.LogDebug("Cleaned up idle bash session for agent '{AgentId}'", key);
+                }
             }
         }
     }

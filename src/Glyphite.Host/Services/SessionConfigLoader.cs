@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Glyphite.Abstractions.Interfaces;
+using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
@@ -13,12 +14,14 @@ public class SessionConfigLoader : ISessionConfigLoader
     private readonly IConfigService _cfgService;
     private readonly IAgentStore _agentStore;
     private readonly IConfigStore _configStore;
+    private readonly ILogger _logger;
 
-    public SessionConfigLoader(IConfigService cfgService, IAgentStore agentStore, IConfigStore configStore)
+    public SessionConfigLoader(IConfigService cfgService, IAgentStore agentStore, IConfigStore configStore, ILogger<SessionConfigLoader> logger)
     {
         _cfgService = cfgService;
         _agentStore = agentStore;
         _configStore = configStore;
+        _logger = logger;
     }
 
     public async Task LoadConfigAsync(string agentId, string agentCwd, string parentCwd)
@@ -29,6 +32,7 @@ public class SessionConfigLoader : ISessionConfigLoader
         // This handles the case where the original project/working directory was deleted.
         if (homePath is not null && !Directory.Exists(homePath))
         {
+            _logger.LogInformation("Home directory '{HomePath}' no longer exists, migrating agent '{AgentId}' to '{NewHome}'", homePath, agentId, agentCwd);
             homePath = agentCwd;
             await _agentStore.SetAgentHomePathAsync(agentId, homePath);
             // Clear stale session keys from the old (deleted) home
@@ -58,9 +62,14 @@ public class SessionConfigLoader : ISessionConfigLoader
 
             if (changed)
             {
+                _logger.LogInformation("Agent '{AgentId}' home config changed ({Count} keys), updating DB", agentId, homeConfig.Count);
                 await _configStore.DeleteConfigByScopeAsync("session", agentId);
                 if (homeConfig.Count > 0)
                     await _cfgService.UpdateConfigAsync(homeConfig, scope: "session", agentId: agentId);
+            }
+            else if (homeConfig.Count > 0)
+            {
+                _logger.LogDebug("Agent '{AgentId}' home config unchanged ({Count} keys)", agentId, homeConfig.Count);
             }
         }
 
@@ -94,18 +103,29 @@ public class SessionConfigLoader : ISessionConfigLoader
         }
     }
 
-    private static async Task ReadAndFlattenConfigFileAsync(string filePath, Dictionary<string, string> target)
+    private async Task ReadAndFlattenConfigFileAsync(string filePath, Dictionary<string, string> target)
     {
         if (!File.Exists(filePath)) return;
-        var json = await File.ReadAllTextAsync(filePath);
-        using var doc = JsonDocument.Parse(json);
-        if (doc.RootElement.ValueKind == JsonValueKind.Object)
+        try
         {
-            foreach (var prop in doc.RootElement.EnumerateObject())
+            var json = await File.ReadAllTextAsync(filePath);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
             {
-                if (string.Equals(prop.Name, "Glyphite", StringComparison.OrdinalIgnoreCase))
-                    FlattenJsonElement("", prop.Value, target);
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (string.Equals(prop.Name, "Glyphite", StringComparison.OrdinalIgnoreCase))
+                        FlattenJsonElement("", prop.Value, target);
+                }
             }
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Failed to parse config file '{Path}'", filePath);
+        }
+        catch (IOException ex)
+        {
+            _logger.LogWarning(ex, "Failed to read config file '{Path}'", filePath);
         }
     }
 

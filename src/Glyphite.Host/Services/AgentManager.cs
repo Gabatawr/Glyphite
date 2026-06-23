@@ -1,6 +1,7 @@
 using System.Linq;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Host.Utils;
+using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
@@ -8,11 +9,13 @@ public class AgentManager : IAgentManager
 {
     private readonly IAgentStore _store;
     private readonly IConfigService _cfgService;
+    private readonly ILogger _logger;
 
-    public AgentManager(IAgentStore store, IConfigService cfgService)
+    public AgentManager(IAgentStore store, IConfigService cfgService, ILogger<AgentManager>? logger = null)
     {
         _store = store;
         _cfgService = cfgService;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentManager>.Instance;
     }
 
     public async Task<string> GetOrCreateAsync(string cwd)
@@ -25,6 +28,7 @@ public class AgentManager : IAgentManager
             await _cfgService.UpdateConfigAsync(
                 new() { ["Environment:OS"] = OSHelper.DetectOS(), ["Session:WorkingDirectory"] = cwd },
                 scope: "session", agentId: sessionId);
+            _logger.LogInformation("Created new session {SessionId} for cwd '{Cwd}'", sessionId, cwd);
         }
         return sessionId;
     }
@@ -36,6 +40,7 @@ public class AgentManager : IAgentManager
         await _cfgService.UpdateConfigAsync(
             new() { ["Environment:OS"] = OSHelper.DetectOS(), ["Session:WorkingDirectory"] = cwd },
             scope: "session", agentId: sessionId);
+        _logger.LogInformation("Created new session {SessionId} for cwd '{Cwd}'", sessionId, cwd);
         return sessionId;
     }
 
@@ -44,7 +49,10 @@ public class AgentManager : IAgentManager
         // Agent name is the session id
         var sessionId = agentName;
         if (await _store.AgentExistsAsync(sessionId))
+        {
+            _logger.LogWarning("Attempted to create existing agent '{AgentName}'", agentName);
             throw new InvalidOperationException($"Agent '{agentName}' already exists.");
+        }
 
         await _store.EnsureSessionAsync(sessionId, homePath: cwd);
         await _store.SetAgentModelAsync(sessionId, model);
@@ -53,6 +61,7 @@ public class AgentManager : IAgentManager
         await _cfgService.UpdateConfigAsync(
             new() { ["Environment:OS"] = OSHelper.DetectOS(), ["Session:WorkingDirectory"] = cwd },
             scope: "session", agentId: sessionId);
+        _logger.LogInformation("Created agent '{AgentName}' (model: {Model}, home: {Cwd})", agentName, model, cwd);
         return sessionId;
     }
 

@@ -1,11 +1,9 @@
-using System.Text.Json;
-using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
-/// <summary>Executes AIFunction tools, groups them for parallel execution, and tracks peek/memory-clean state.</summary>
+/// <summary>Executes AIFunction tools, groups them for parallel execution, and tracks peek state.</summary>
 public sealed class ToolExecutor
 {
     private readonly ILogger _logger;
@@ -20,9 +18,6 @@ public sealed class ToolExecutor
 
     /// <summary>CallIds of peek=true tool calls — result truncated after LLM consumes them.</summary>
     public HashSet<string> PendingPeekCallIds { get; } = [];
-
-    /// <summary>Block numbers deleted by memory clean — removed from messageList after LLM consumes them.</summary>
-    public List<double> PendingMemoryCleanBlocks { get; } = [];
 
     // ── Parallel-safe tool names (can be grouped for concurrent execution) ──
     private static readonly HashSet<string> _parallelSafeTools = new(StringComparer.OrdinalIgnoreCase)
@@ -103,28 +98,6 @@ public sealed class ToolExecutor
         }
     }
 
-    /// <summary>Track memory clean blocks for removal from messageList after LLM consumes them.</summary>
-    public void TrackMemoryClean(IDictionary<string, object?>? args, string toolName, string? resultText, string? errorText)
-    {
-        if (errorText is null && toolName == "memory" && resultText?.StartsWith("Deleted ") == true)
-        {
-            try
-            {
-                var argsJson = args is not null ? JsonSerializer.Serialize(args) : "{}";
-                using var doc = JsonDocument.Parse(argsJson);
-                if (doc.RootElement.TryGetProperty("blocks", out var blk) && blk.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var num in blk.EnumerateArray().Select(e => e.GetDouble()))
-                        PendingMemoryCleanBlocks.Add(num);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to track memory clean blocks");
-            }
-        }
-    }
-
     /// <summary>Sequential tool execution (non-streaming path). Returns tool result messages.</summary>
     public async Task<List<ChatMessage>> ExecuteTools(
         IReadOnlyList<FunctionCallContent> fccs, ChatOptions? options, CancellationToken ct)
@@ -190,13 +163,5 @@ public sealed class ToolExecutor
                 tc.Text = "(peek)";
         }
         PendingPeekCallIds.Clear();
-    }
-
-    /// <summary>After LLM consumed memory clean result, remove deleted block references from messageList.</summary>
-    public void CleanupMemoryClean(List<ChatMessage> messageList)
-    {
-        if (PendingMemoryCleanBlocks.Count == 0) return;
-        ToolCallHelper.RemoveBlocksFromMessageList(messageList, PendingMemoryCleanBlocks);
-        PendingMemoryCleanBlocks.Clear();
     }
 }

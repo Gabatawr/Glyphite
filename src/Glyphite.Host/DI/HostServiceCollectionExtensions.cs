@@ -63,10 +63,11 @@ public static class HostServiceCollectionExtensions
         {
             var cfgService = sp.GetRequiredService<IConfigService>();
             var bashOpts = sp.GetRequiredService<IOptions<BashOptions>>().Value;
+            var logger = sp.GetRequiredService<ILogger<BashSessionManager>>();
             var defaultDir = !string.IsNullOrEmpty(bashOpts.DefaultDirectory)
                 ? Path.GetFullPath(bashOpts.DefaultDirectory)
                 : Directory.GetCurrentDirectory();
-            return new BashSessionManager(cfgService, bashOpts, defaultDir);
+            return new BashSessionManager(cfgService, bashOpts, logger, defaultDir);
         });
 
         services.AddSingleton<IConfigService>(sp =>
@@ -80,7 +81,8 @@ public static class HostServiceCollectionExtensions
         {
             var store = sp.GetRequiredService<IAgentStore>();
             var cfg = sp.GetRequiredService<IConfigService>();
-            return new AgentManager(store, cfg);
+            var logger = sp.GetRequiredService<ILogger<AgentManager>>();
+            return new AgentManager(store, cfg, logger);
         });
 
         services.AddSingleton<SubAgentManager>();
