@@ -28,7 +28,6 @@ public class BlockRepository : RepositoryBase, IBlockStore
                 model TEXT,
                 tool_result TEXT,
                 updated_at TEXT,
-                parent_number REAL,
                 is_deleted INTEGER NOT NULL DEFAULT 0
             );
             """);
@@ -38,13 +37,12 @@ public class BlockRepository : RepositoryBase, IBlockStore
     // ── Shared SQL ──
 
     private const string SqlInsertBlock = """
-        INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, parent_number, is_deleted)
-        VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, @parent_number, 0)
+        INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, is_deleted)
+        VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, 0)
         """;
 
     private const string SqlSoftDeleteBlock = "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num";
 
-    private const string SqlRecoverBlock = "UPDATE blocks SET is_deleted = 0 WHERE agent_id = @sid AND number = @num AND is_deleted = 1";
 
     // ── Mapping ──
 
@@ -63,7 +61,6 @@ public class BlockRepository : RepositoryBase, IBlockStore
             ToolName = e.ToolName,
             Data = e.Data is not null ? JsonSerializer.Deserialize<Dictionary<string, object>>(e.Data) : null,
             Model = e.Model,
-            ParentNumber = e.ParentNumber,
             ToolResult = e.ToolResult
         };
     }
@@ -81,7 +78,6 @@ public class BlockRepository : RepositoryBase, IBlockStore
             b.ToolName,
             Data = b.Data is not null ? JsonSerializer.Serialize(b.Data) : null,
             b.Model,
-            parent_number = b.ParentNumber,
             tool_result = b.ToolResult
         };
     }
@@ -273,7 +269,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
         });
     }
 
-    public async Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null, bool cascade = true)
+    public async Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null)
     {
         return await WithLockAsync(async () =>
         {
@@ -286,24 +282,6 @@ public class BlockRepository : RepositoryBase, IBlockStore
             var protectedNums = new List<double>();
             var toRemove = new HashSet<double>();
 
-            void CollectCascade(double num)
-            {
-                if (toRemove.Contains(num)) return;
-                var block = all.FirstOrDefault(b => b.Number == num);
-                if (block is null) return;
-                if (protectedTypes.Contains(block.Type)) return;
-                toRemove.Add(num);
-
-                if (cascade && block.Data?.TryGetValue("parentNumber", out var pnRaw) == true)
-                {
-                    double? pn = pnRaw is JsonElement je && je.ValueKind == JsonValueKind.Number
-                        ? je.GetDouble()
-                        : pnRaw is double d ? d : null;
-                    if (pn.HasValue)
-                        CollectCascade(pn.Value);
-                }
-            }
-
             foreach (var num in numbers)
             {
                 var block = all.FirstOrDefault(b => b.Number == num);
@@ -313,7 +291,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
                     protectedNums.Add(num);
                     continue;
                 }
-                CollectCascade(num);
+                toRemove.Add(num);
             }
 
             var removed = 0;
@@ -328,46 +306,6 @@ public class BlockRepository : RepositoryBase, IBlockStore
             }
 
             return (removed, protectedNums);
-        });
-    }
-
-    public async Task<int> RecoverBlocksAsync(string agentId, double[] numbers, bool cascade = false)
-    {
-        return await WithLockAsync(async () =>
-        {
-            var toRecover = new HashSet<double>(numbers);
-
-            if (cascade)
-            {
-                var all = await _conn.QueryAsync<BlockEntity>(
-                    "SELECT * FROM blocks WHERE agent_id = @sid ORDER BY number",
-                    new { sid = agentId });
-                var blockIndex = all.ToDictionary(e => e.Number, MapToBlock);
-
-                var queue = new Queue<double>(numbers);
-                while (queue.Count > 0)
-                {
-                    var num = queue.Dequeue();
-                    if (!blockIndex.TryGetValue(num, out var block)) continue;
-                    if (block.Data?.TryGetValue("parentNumber", out var pnRaw) == true)
-                    {
-                        double? pn = pnRaw is JsonElement je && je.ValueKind == JsonValueKind.Number
-                            ? je.GetDouble()
-                            : pnRaw is double d ? d : null;
-                        if (pn.HasValue && toRecover.Add(pn.Value))
-                            queue.Enqueue(pn.Value);
-                    }
-                }
-            }
-
-            await using var tx = await _conn.BeginTransactionAsync();
-            var removed = 0;
-            foreach (var num in toRecover)
-                removed += await _conn.ExecuteAsync(
-                    SqlRecoverBlock,
-                    new { sid = agentId, num });
-            await tx.CommitAsync();
-            return removed;
         });
     }
 

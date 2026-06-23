@@ -12,52 +12,12 @@ public static class MemoryTool
     public static async Task<string> Execute(
         string action,
         double[]? blocks,
-        bool? cascade,
         IBlockMemoryProvider provider,
         string agentId,
         IConfigService? cfg = null)
     {
         switch (action.ToLowerInvariant())
         {
-            case "delete":
-            case "clean":
-                if (blocks is null || blocks.Length == 0)
-                    return "No block numbers provided for deletion.";
-                return await provider.DeleteBlocksAsync(agentId, blocks, cascade ?? true);
-
-            case "recover":
-                if (blocks is null || blocks.Length == 0)
-                    return "No block numbers provided for recovery.";
-                var recovered = await provider.RecoverBlocksAsync(agentId, blocks, cascade ?? false);
-                return $"Recovered {recovered} block{(recovered == 1 ? "" : "s")}.";
-
-            case "list":
-            {
-                var allBlocks = await provider.GetBlocksAsync(agentId);
-                var protectedSet = cfg is not null
-                    ? (await cfg.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId)).ProtectedBlockTypes
-                    : [];
-                var protectedTypes = new HashSet<string>(protectedSet, StringComparer.OrdinalIgnoreCase);
-                var blockLines = new List<string> { "── Memory Blocks ────────────────────────" };
-                foreach (var block in allBlocks.OrderBy(b => b.Number))
-                {
-                    var isProtected = protectedTypes.Contains(block.Type.ToString());
-                    var typeDisplay = block.Type.ToString();
-                    if (block.ToolName is not null)
-                        typeDisplay += $"/{block.ToolName}";
-                    var prefix = isProtected ? "[!]" : "   ";
-                    var preview = (block.Content ?? "").Replace('\n', ' ').Replace('\r', ' ');
-                    if (preview.Length > 64)
-                        preview = preview[..64] + "...";
-                    else if (preview.Length == 0)
-                        preview = "(empty)";
-                    blockLines.Add($"  {prefix} {block.Number,5:F1} {typeDisplay,-22} {preview}");
-                }
-                blockLines.Add("  ───────────────────────────────────────");
-                blockLines.Add($"  Total: {allBlocks.Count}");
-                return string.Join("\n", blockLines);
-            }
-
             case "stats":
                 var (totalBlocks, _, typeStats) = await provider.ComputeStatsAsync(agentId);
                 var lines = new List<string> { "── Memory Stats ─────────────────────────" };
@@ -102,19 +62,18 @@ public static class MemoryTool
                 return string.Join("\n", lines);
 
             default:
-                return $"Unknown action '{action}'. Use 'stats', 'list', 'clean', or 'recover'.";
+                return $"Unknown action '{action}'. Use 'stats'.";
         }
     }
 
     private sealed class Invoker(IBlockMemoryProvider provider, string agentId, IConfigService? cfg)
     {
-        [Description("Memory management tool. Actions: 'stats' — show block type distribution, token usage, cache stats, and cost; 'list' — show all blocks with numbers, types, and content previews (protected blocks marked [!]); 'clean' — soft-delete blocks by number (remove clutter from context); 'recover' — restore soft-deleted blocks by number.")]
+        [Description("Memory management tool. Actions: 'stats' — show block type distribution, token usage, cache stats, and cost.")]
         public Task<string> Execute(
-            [Description("Action: 'stats' (show memory stats), 'list' (list all blocks with numbers and previews), 'clean' (remove blocks to free context), 'recover' (restore cleaned blocks)")] string action,
-            [Description("Block numbers for clean/recover, e.g. [5.0, 7.0, 9.0]. Not needed for 'stats' or 'list'.")] double[]? blocks = null,
-            [Description("Cascade along parent chain: true=follow Data['parentNumber']. Default: true for clean, false for recover.")] bool? cascade = null,
+            [Description("Action: 'stats' (show memory stats)")] string action,
+            [Description("Not used.")] double[]? blocks = null,
             bool? peek = true)
-            => MemoryTool.Execute(action, blocks, cascade, provider, agentId, cfg);
+            => MemoryTool.Execute(action, blocks, provider, agentId, cfg);
     }
 
     public static AIFunction AsAIFunction(IBlockMemoryProvider provider, string agentId, IConfigService? cfg = null)

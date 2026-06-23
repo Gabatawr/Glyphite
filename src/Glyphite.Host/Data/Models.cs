@@ -11,7 +11,6 @@ public sealed record BlockEntity
     public string? ToolName { get; set; }
     public string? Data { get; set; }
     public string? Model { get; set; }
-    public double? ParentNumber { get; set; }
     public string? ToolResult { get; set; }
 }
 

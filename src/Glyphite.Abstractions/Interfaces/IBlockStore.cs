@@ -16,8 +16,7 @@ public interface IBlockStore
     Task<int> ClearPeekMarkersAsync(string agentId, bool includeReasoning = true);
     Task<Dictionary<string, int>> GetPeekBlockStatsAsync(string agentId, bool includeReasoning = true);
     Task<int> RemoveBlocksAsync(string agentId, Predicate<MemoryBlock> match);
-    Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null, bool cascade = true);
-    Task<int> RecoverBlocksAsync(string agentId, double[] numbers, bool cascade = false);
+    Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null);
     Task<int> DeleteBlocksByFilterAsync(string agentId, string[]? types, TimeSpan? recent, HashSet<BlockType>? protectedTypes = null);
     Task ClearAgentBlocksAsync(string agentId);
     Task DeleteBlocksSinceAsync(string agentId, double fromNumber);

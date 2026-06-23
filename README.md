@@ -23,11 +23,10 @@
   - `fetch_web` — HTTP requests
   - `search_glob` / `search_grep` — file and content search
    - `todo` — task management with create/update/list, title-based multi-list support
-  - `memory` — context and memory management (stats, delete, recover blocks)
+  - `memory` — memory statistics (stats)
   - `subagent_run` / `subagent_use` / `subagent_list` — delegate tasks to worker agents
 - **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`). Every agent (main + subagents) can have its own MCP servers via `Glyphite.{agentName}.json`
 - **Block-based memory** — full conversation history stored in SQLite with smart deduplication and compression
-  - **`ParentNumber` + cascade** — blocks carry parent references; `memory delete` and `recover` cascade through `Data["parentNumber"]` chains
   - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
 - **Atomic auto-compaction** — when context exceeds threshold, groups old turns into Fibonacci zones, summarizes them via LLM in **parallel**, and atomically replaces history in a single SQLite transaction. Protected blocks (agent_data, user_message, agent_task, agent_message, turn) are preserved; if summarization fails, blocks fall back intact.
@@ -40,7 +39,6 @@
 - **Incremental saving** — conversation blocks are saved as they're generated
 - **Live streaming** — text/reasoning chunks rendered in real-time with color transitions and mode switches
 - **Peek tool calls** — LLM can mark tool calls as `peek=true` to see the result once before it's truncated to `(peek)`. File writes/patches always execute regardless of peek.
-- **Memory clean from messageList** — `memory clean` removes blocks from both SQLite and the in-memory message list, preventing stale data from reaching the LLM.
 - **Auto-tool events** — compaction and peek-reasoning notifications shown as compact auto-tool blocks
 - **Structured file logging** — all host service logs written to `~/.glyphite/logs/{date}-{run}.log` via Serilog + `ILogger<T>`. No console noise from subagents.
 - **Prompt prefix** — colored segments: DarkGray default, DarkYellow (good cache rate), White (bad rate / significant cost)
@@ -115,7 +113,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `search_grep` | Search text inside files (with content dedup) |
 | `fetch_web` | HTTP request (GET/POST) with text extraction |
 | `todo` | Create, update, or list todo lists — title as immutable ID for multi-list support. `create(title, items)`, `update(title, items)`, `list(title?)` — list all or by title. Statuses: pending, in_progress, done, cancelled, blocked. Update by index or by text (no index = match by text, new text = add item). |
-| `memory` | Memory management: `stats` (type breakdown), `clean` (soft-delete with optional `cascade`; also removes from messageList), `recover` (restore with optional `cascade`), `list` (view blocks) |
+| `memory` | Memory statistics: `stats` (block type distribution, token usage, cache stats, cost) |
 | `subagent_run` | One-shot task execution. Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Supports `mode="parallel"` |
 | `subagent_use` | Execute a task on a named subagent (auto-creates if not found). Memory and context **accumulate** across calls — the agent persists. `memory` tool is available. Supports `mode="parallel"` |
 | `subagent_list` | List all existing agents (excluding current session) with home, model, block count, cache stats |
@@ -143,7 +141,7 @@ Three modes:
 | Agent **exists** | Executes the task, **preserves** blocks and usage. Context accumulates across calls |
 | Agent **doesn't exist** | **Auto-creates** the agent (with config), executes, preserves context |
 
-The subagent has access to the `memory` tool (`stats`/`clean`/`recover`/`list`), allowing it to manage its own context — clean old blocks, inspect memory, etc. Subagents **do not** have access to `subagent_*` tools (prevents recursive agent creation).
+The subagent has access to the `memory` tool (`stats`), allowing it to inspect memory statistics. Subagents **do not** have access to `subagent_*` tools (prevents recursive agent creation).
 
 ### Escape cancellation
 
@@ -294,22 +292,6 @@ The LLM can pass `"peek": true` to any tool to mark the result as transient:
 
 > Peek is for inspection — use it to read files, check command output, or fetch web pages without cluttering the conversation history.
 
-## Memory clean
-
-The `memory` tool with `clean` action removes blocks from the conversation history:
-
-```
-memory clean blocks=[5, 7, 9]
-memory clean blocks=[11] cascade=false
-```
-
-- **Removes from SQLite** — blocks are soft-deleted (`is_deleted = 1`) and won't appear in future context loads
-- **Removes from messageList** — the corresponding `[Block: N, ...]` messages are removed from the in-memory list **after the LLM sees the deletion result once**
-- **Cascade** (default `true`) — follows `Data["parentNumber"]` chains to remove parent/child blocks recursively
-- **Protected types** — `agent_data`, `user_message`, `agent_task`, `agent_message` cannot be deleted
-
-Use `memory recover blocks=[5, 7]` to restore soft-deleted blocks.
-
 ## Models
 
 Glyphite uses the OpenAI-compatible API via `Microsoft.Extensions.AI.OpenAI`. Any provider that speaks the OpenAI protocol works — just configure the endpoint, API key, and model in `Glyphite.json`.
@@ -378,7 +360,7 @@ cp ~/.glyphite/backup/glyphite.v1.0.0 ~/.glyphite/glyphite
 
 ## Testing
 
-Tests are in the `tests/Glyphite.Tests.Unit/` directory with 119 tests covering configuration validation, data layer (SessionRepository, BlockRepository), ConfigService, and FilePatchTool — written with xUnit + NSubstitute.
+Tests are in the `tests/Glyphite.Tests.Unit/` directory with 118 tests covering configuration validation, data layer (SessionRepository, BlockRepository), ConfigService, and FilePatchTool — written with xUnit + NSubstitute.
 
 ## License
 

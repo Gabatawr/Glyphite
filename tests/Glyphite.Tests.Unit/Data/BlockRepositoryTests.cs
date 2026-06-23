@@ -74,29 +74,6 @@ public class BlockRepositoryTests : IDisposable
         Assert.Equal("Delete me", deletedBlock!.Content);
     }
 
-    [Fact]
-    public async Task Can_Recover_SoftDeleted_Block()
-    {
-        const string agentId = "test-agent-recover";
-        using var sessionRepo = CreateSessionRepo();
-        await sessionRepo.EnsureSessionAsync(agentId);
-
-        using var repo = CreateBlockRepo();
-        await repo.AppendBlocksAsync(agentId,
-            [new MemoryBlock { Type = BlockType.user_message, Content = "Recover me", Number = 1 }], nextNumber: 2);
-
-        await repo.DeleteBlocksAsync(agentId, [1]);
-
-        var afterDelete = await repo.LoadBlocksAsync(agentId);
-        Assert.Empty(afterDelete);
-
-        var recovered = await repo.RecoverBlocksAsync(agentId, [1]);
-        Assert.Equal(1, recovered);
-
-        var afterRecover = await repo.LoadBlocksAsync(agentId);
-        Assert.Single(afterRecover);
-        Assert.Equal("Recover me", afterRecover[0].Content);
-    }
 
     [Fact]
     public async Task Blocks_List_Filtered_By_AgentId()

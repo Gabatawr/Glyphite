@@ -249,8 +249,8 @@ public class SessionRepository : RepositoryBase, IAgentStore
             foreach (var b in blocks)
             {
                 await _conn.ExecuteAsync("""
-                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, parent_number, is_deleted)
-                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, @parent_number, 0)
+                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, is_deleted)
+                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, 0)
                     """, new
                 {
                     sid = targetId,
@@ -261,8 +261,7 @@ public class SessionRepository : RepositoryBase, IAgentStore
                     b.Content,
                     b.ToolName,
                     b.Data,
-                    b.Model,
-                    parent_number = b.ParentNumber
+                    b.Model
                 });
             }
 

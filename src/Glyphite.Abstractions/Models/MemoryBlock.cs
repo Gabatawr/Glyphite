@@ -53,10 +53,6 @@ public class MemoryBlock
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonPropertyOrder(7)]
-    public double? ParentNumber { get; set; }
-
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    [JsonPropertyOrder(8)]
     public string? ToolResult { get; set; }
 
     public static MemoryBlock Create(BlockType type, string content, string? toolName = null, Dictionary<string, object>? data = null, string? model = null)

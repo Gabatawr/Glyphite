@@ -62,7 +62,7 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
     public async Task<int> RemoveBlocksAsync(string agentId, Predicate<MemoryBlock> match)
         => await _blockStore.RemoveBlocksAsync(agentId, match);
 
-    public async Task<string> DeleteBlocksAsync(string agentId, double[] numbers, bool cascade = true)
+    public async Task<string> DeleteBlocksAsync(string agentId, double[] numbers)
     {
         if (!await _agentStore.AgentExistsAsync(agentId))
             return $"Agent '{agentId}' not found";
@@ -70,15 +70,12 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
         var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId);
         var protectedTypes = new HashSet<BlockType>(
             memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
-        var (removed, protectedNums) = await _blockStore.DeleteBlocksAsync(agentId, numbers, protectedTypes, cascade);
+        var (removed, protectedNums) = await _blockStore.DeleteBlocksAsync(agentId, numbers, protectedTypes);
         var msg = $"Deleted {removed} block{(removed == 1 ? "" : "s")}";
         if (protectedNums.Count > 0)
             msg += $"; skipped protected block{(protectedNums.Count == 1 ? "" : "s")}: {string.Join(", ", protectedNums)}";
         return msg;
     }
-
-    public async Task<int> RecoverBlocksAsync(string agentId, double[] numbers, bool cascade = false)
-        => await _blockStore.RecoverBlocksAsync(agentId, numbers, cascade);
 
     public async Task<string> DeleteBlocksByFilterAsync(string agentId, string[]? types, string? recent)
     {

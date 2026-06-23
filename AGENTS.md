@@ -142,7 +142,7 @@ You are a specialized QA agent. Always run tests before and after changes.
 | `TurnProcessor.ProcessAsync` | Проверяет флаг — создаёт `AgentTask(input)` вместо `UserMessage(input)` для субагентов |
 | `ConsoleRenderer` | `case BlockType.agent_task:` — рендер Cyan `> ...` (отличается от user_message 👤) |
 | `BlockTypeIcon` | `["agent_task"] = "📋"` |
-| `ProtectedBlockTypes` | `"agent_task"` добавлен — защищён от compaction и memory clean |
+| `ProtectedBlockTypes` | `"agent_task"` добавлен — защищён от compaction |
 
 **4. TodoTool — match by text (1 файл):**
 
@@ -496,10 +496,9 @@ Two independent cleanup mechanisms, both running **after LLM consumes the result
    - Keeps `FunctionResultContent` (same callId) so API doesn't reject unmatched tool_calls
    - LLM sees the real result **exactly once**, then sees `"(peek)"` on subsequent iterations
 
-2. **Memory clean cleanup** (lines 151–167):
-   - Tracks `_pendingMemoryCleanBlocks` (block numbers from `memory clean` result)
-   - After LLM generates response → removes the corresponding `[Block: N, ...]` messages from `messageList`
-   - Works alongside `TurnProcessor.DeleteBlocksAsync` (which deletes from DB)
+2. **Peek cleanup in messageList** (lines 151–167):
+   - After LLM generates response → replaces peek results with `"(peek)"` in `messageList`
+   - Works alongside `TurnProcessor` peek handling
 
 **Two independent cleanup paths:**
 
@@ -532,7 +531,7 @@ Both are separate from the `FailSafeClient` messageList cleanup — DB and in-me
 
 -- blocks table columns:
 -- id, agent_id, number, type, created_at, content, tool_name, data, model,
--- tool_result, updated_at, parent_number, is_deleted
+-- tool_result, updated_at, is_deleted
 
 -- session_usage columns:
 -- agent_id, cache_hit, cache_miss, output_tokens, model, last_request_hit, last_request_miss, created_at
