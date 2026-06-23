@@ -30,7 +30,7 @@
   - **`ParentNumber` + cascade** — blocks carry parent references; `memory delete` and `recover` cascade through `Data["parentNumber"]` chains
   - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
-- **Atomic auto-compaction** — when context exceeds threshold, groups old turns into Fibonacci zones, summarizes them via LLM in **parallel**, and atomically replaces history in a single SQLite transaction. Protected blocks (agent_data, user_message, agent_message, turn) are preserved; if summarization fails, blocks fall back intact.
+- **Atomic auto-compaction** — when context exceeds threshold, groups old turns into Fibonacci zones, summarizes them via LLM in **parallel**, and atomically replaces history in a single SQLite transaction. Protected blocks (agent_data, user_message, agent_task, agent_message, turn) are preserved; if summarization fails, blocks fall back intact.
   - **No UI freeze:** fast pre-check (`ShouldCompactAsync`) runs first, `[AutoTool: compression]` notification appears immediately, then slow summarization (`CompactAsync`) runs in background — user sees progress.
 - **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
 - **ToolMaxLength** — per-tool output length control. Set `0` to hide, `-1` for full output, or `N` for first N characters. Works for all tools including MCP.
@@ -114,7 +114,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `search_glob` | Find files by glob pattern |
 | `search_grep` | Search text inside files (with content dedup) |
 | `fetch_web` | HTTP request (GET/POST) with text extraction |
-| `todo` | Create, update, or list todo lists — title as immutable ID for multi-list support. `create(title, items)`, `update(title, items)`, `list(title?)` — list all or by title. Statuses: pending, in_progress, done, cancelled, blocked. |
+| `todo` | Create, update, or list todo lists — title as immutable ID for multi-list support. `create(title, items)`, `update(title, items)`, `list(title?)` — list all or by title. Statuses: pending, in_progress, done, cancelled, blocked. Update by index or by text (no index = match by text, new text = add item). |
 | `memory` | Memory management: `stats` (type breakdown), `clean` (soft-delete with optional `cascade`; also removes from messageList), `recover` (restore with optional `cascade`), `list` (view blocks) |
 | `subagent_run` | One-shot task execution. Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Supports `mode="parallel"` |
 | `subagent_use` | Execute a task on a named subagent (auto-creates if not found). Memory and context **accumulate** across calls — the agent persists. `memory` tool is available. Supports `mode="parallel"` |
@@ -144,6 +144,30 @@ Three modes:
 | Agent **doesn't exist** | **Auto-creates** the agent (with config), executes, preserves context |
 
 The subagent has access to the `memory` tool (`stats`/`clean`/`recover`/`list`), allowing it to manage its own context — clean old blocks, inspect memory, etc. Subagents **do not** have access to `subagent_*` tools (prevents recursive agent creation).
+
+### Escape cancellation
+
+When the user presses Escape during a subagent task:
+
+1. CancellationToken propagates through the **entire chain**: tool lambda → `RunAgentTask` → `TurnProcessor.ProcessAsync`
+2. The subagent's `ProcessAsync` throws `OperationCanceledException`
+3. **Dry-clean runs**: for `subagent_run` on a named agent, blocks created during this run are deleted and usage is cleared
+4. **`pending_runs` record is cleared** — no orphan agents left in DB
+5. **Scope is disposed** — `SubAgentManager` removes the entry, semaphore released
+6. For GUID temp agents — `DeleteSessionAsync` runs in `finally`, agent entirely removed
+7. **Usage from completed iterations is already saved** (per-iteration write via `OnIterationRecorded`)
+
+### Crash safety (`pending_runs` table)
+
+If the process crashes during a subagent task, a record in `pending_runs` table persists in SQLite:
+
+| Record mode | Recovery action |
+|-------------|----------------|
+| `"run"` (GUID agent) | `CleanupOrphanRunsAsync` deletes the orphan agent entirely |
+| `"run-dry"` (named agent) | Clears usage + deletes blocks since checkpoint — agent returns to pre-run state |
+| `"use"` (persistent) | Nothing to clean — usage saved per-iteration, agent stays intact |
+
+Cleanup runs automatically at the start of the **next** `subagent_run`/`subagent_use` call.
 
 ### Parallel execution
 
@@ -184,7 +208,7 @@ When enabled, Glyphite automatically compresses old conversation history via LLM
 - **Trigger:** when last request tokens exceed `AutoThreshold`% of the context window (e.g., 75% of 160K = 120K tokens)
 - **Fibonacci zones:** history is grouped into Fibonacci-sized zones (1, 1, 2, 3, 5, 8... turns). The two newest zones (1-2) are always preserved intact.
 - **Parallel summarization:** old zones are summarized via LLM **in parallel** — all zones at once, reducing latency
-- **Protected blocks:** `agent_data`, `user_message`, `agent_message`, `turn` — preserved in summarization prompt
+- **Protected blocks:** `agent_data`, `user_message`, `agent_task`, `agent_message`, `turn` — preserved in summarization prompt
 - **Subagent results:** `subagent_run`/`subagent_use` tool blocks are also included in summarization
 - **Fail-safe:** if summarization fails for a zone, its protected blocks are kept intact (no data loss)
 - **Atomic replacement:** summaries + preserved blocks are inserted atomically via `ReplaceBlocksSinceAsync` in a single SQLite transaction. On crash — rollback, nothing lost.
@@ -282,7 +306,7 @@ memory clean blocks=[11] cascade=false
 - **Removes from SQLite** — blocks are soft-deleted (`is_deleted = 1`) and won't appear in future context loads
 - **Removes from messageList** — the corresponding `[Block: N, ...]` messages are removed from the in-memory list **after the LLM sees the deletion result once**
 - **Cascade** (default `true`) — follows `Data["parentNumber"]` chains to remove parent/child blocks recursively
-- **Protected types** — `agent_data`, `user_message`, `agent_message` cannot be deleted
+- **Protected types** — `agent_data`, `user_message`, `agent_task`, `agent_message` cannot be deleted
 
 Use `memory recover blocks=[5, 7]` to restore soft-deleted blocks.
 

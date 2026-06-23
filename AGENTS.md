@@ -18,30 +18,61 @@ Settings are applied in this order (each overrides the previous):
 2. **`Glyphite.json`** in current working directory — overrides base defaults. Use this for your own preferences (e.g. `"patch_file": -1` to always show diffs).
 3. **`Glyphite.{agentName}.json`** in current working directory — agent-specific overrides (highest priority).
 
-## Session state (Jun 22)
+## Session state (Jun 23 — v1.0.16)
 
-### Latest changes — TableRenderer, history navigation fix (v0.8.7)
+### Latest changes — subagent escape handling, crash-safe pending_runs, agent_task block type, todo match-by-text
 
-**1. TableRenderer — markdown table formatting (new file + 3 files changed):**
+**1. Subagent escape — CancellationToken propagation + dry-clean on cancel (6 files):**
 
-| Компонент | Фикс | Статус |
-|:---------:|:----|:------:|
-| New file | `TableRenderer.cs` — detects markdown tables in agent output and renders formatted console tables | 🆕 |
-| Proportional columns | Column widths calculated from content length, scaled to terminal width (min 10 chars per column) | ✅ |
-| Centered headers | Header row always centered within each column | ✅ |
-| Multi-line cells | Content that exceeds column width is wrapped to multiple rows | ✅ |
-| Word-wrap | Breaks at spaces (searches forward for next space before hard-breaking on long unbreakable tokens) | ✅ |
-| Streaming tables | `ChatRepl.Streaming.cs` — line-buffered streaming with real-time table detection via `RenderStreamingText` | ✅ |
-| Replay tables | `ConsoleRenderer.RenderBlock(agent_message)` runs text through `TableRenderer.RenderTables()` | ✅ |
-| Subagent tables | Tool results (both streaming and replay) pass through `TableRenderer.RenderTables()` — subagent tables formatted too | ✅ |
-| Mode switch | Fixed reasoning→text line break regression from streaming refactor | ✅ |
-| History nav | Fixed `IndexOutOfRangeException` — `HandleArrowUp`/`HandleArrowDown` now mutates the original buffer (`.Clear()` + `.AddRange()`) instead of creating a new `List<char>` via `[..]` | ✅ |
+| Проблема | Решение |
+|:---------|:--------|
+| Escape не доходил до суб-агентов — `CancellationToken.None` в `RunAgentTask` | CancellationToken проброшен через всю цепочку: `AIFunction` → `RunAgentTask` → `TurnProcessor.ProcessAsync` |
+| `OperationCanceledException` прятался в `catch(Exception)` → возвращал строку ошибки | Отдельный `catch (OperationCanceledException) { throw; }` — пробрасывает наверх |
+| При Escape dry-clean блоков не выполнялся (код стоял после `RunAgentTask` в `try`) | Dry-clean перенесён в `catch (OperationCanceledException)` — блоки + usage чистятся перед throw |
+| Usage терялся при краше/отмене — писался одной строкой в конце turn | Per-iteration запись через `OnIterationRecorded` callback — каждая итерация пишется в БД сразу |
+| После Escape UI показывал устаревшие `_lastTurn*` значения | `LastIteration*` свойства (total/Last hit/miss/output) — ChatRepl читает их при Escape |
+
+**2. Crash-safe `pending_runs` table (3 файла):**
+
+| Проблема | Решение |
+|:---------|:--------|
+| При краше процесса во время `subagent_run`, `finally` не выполнялся → орфан-агент навсегда в БД | Таблица `pending_runs` в SQLite — запись ДО создания агента, чистка в `finally` |
+| При краше между `SetPendingRunAsync` и `CreateAgentAsync` — орфан | `CleanupOrphanRunsAsync()` вызывается в начале каждого `subagent_run/use` — находит pending-записи от crashed сессий |
+| GUID-агент после краша | `mode=="run"` + GUID → `DeleteSessionAsync` (полное удаление) |
+| Named-агент после краша (dry-run) | `mode=="run-dry"` → `ClearUsageAsync` + `DeleteBlocksSinceAsync(checkpoint)` |
+
+**3. `agent_task` block type (8 файлов):**
+
+| Что изменилось | Детали |
+|:---------------|--------|
+| Новый `BlockType.agent_task` | В `MemoryBlock.cs` enum + factory `AgentTask(string)` |
+| Флаг `isSubagent` | `SubAgentTool.RunAgentTask` ставит `chatOptions.AdditionalProperties["isSubagent"] = "true"` |
+| `TurnProcessor.ProcessAsync` | Проверяет флаг — создаёт `AgentTask(input)` вместо `UserMessage(input)` для субагентов |
+| `ConsoleRenderer` | `case BlockType.agent_task:` — рендер Cyan `> ...` (отличается от user_message 👤) |
+| `BlockTypeIcon` | `["agent_task"] = "📋"` |
+| `ProtectedBlockTypes` | `"agent_task"` добавлен — защищён от compaction и memory clean |
+
+**4. TodoTool — match by text (1 файл):**
+
+| Было | Стало |
+|:-----|:------|
+| `update` требовал `index` для обновления — LLM не знала точных индексов | Если `text` передан без `index` — ищется существующий item с таким же текстом (case-insensitive). Найден → обновляется. Не найден → добавляется новый |
+| `{status:"done"}` без текста — ошибка "missing text" | Если только статус без текста и без индекса — ищет первый item с таким же статусом? Нет — просто обновляет по тексту. Если текста нет и index нет — ошибка как и было |
 
 **Files changed:**
-- `src/Glyphite.Cli/Services/TableRenderer.cs` 🆕 (453 lines)
-- `src/Glyphite.Cli/Services/ConsoleRenderer.cs` 📝 (TableRenderer call in RenderBlock)
-- `src/Glyphite.Cli/ChatRepl.Streaming.cs` 📝 (streaming buffer + table detection)
-- `src/Glyphite.Cli/ChatRepl.Input.cs` 📝 (history navigation fix)
+- `src/Glyphite.Abstractions/Models/MemoryBlock.cs` — +`agent_task` enum + factory
+- `src/Glyphite.Host/Tools/SubAgentTool.cs` — CancellationToken проброс, dry-clean в catch OCE, CleanupOrphanRunsAsync, isSubagent флаг
+- `src/Glyphite.Host/Services/TurnProcessor.cs` — AgentTask для субагентов, LastIteration* свойства
+- `src/Glyphite.Host/Services/UsageTracker.cs` — LastOutputTokens
+- `src/Glyphite.Host/Services/FailSafeChatClient.cs` — OnIterationRecorded callback
+- `src/Glyphite.Abstractions/Interfaces/IAgentStore.cs` — Set/Clear/GetPendingRunsAsync
+- `src/Glyphite.Host/Data/SessionRepository.cs` — pending_runs table
+- `src/Glyphite.Host/Tools/TodoTool.cs` — match by text
+- `src/Glyphite.Cli/ChatRepl.Input.cs` — UpdateFromLastIteration()
+- `src/Glyphite.Cli/ChatRepl.Streaming.cs` — вызов UpdateFromLastIteration на Escape
+- `src/Glyphite.Cli/Services/ConsoleRenderer.cs` — agent_task рендер
+- `src/Glyphite.Host/Utils/BlockTypeIcon.cs` — иконка agent_task
+- `src/Glyphite.Cli/appsettings.json` — agent_task в ProtectedBlockTypes
 
 ### Previous — Tech debt cleanup, compaction UI fix, TodoTool improvements (v0.7.47–0.7.77)
 
@@ -404,15 +435,21 @@ Both are separate from the `FailSafeClient` messageList cleanup — DB and in-me
 ### Schema
 
 ```sql
--- Index:
-CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_deleted);
+-- Tables:
+-- sessions, blocks, session_usage, config, pending_runs, agent_launches, schema_version
 
 -- blocks table columns:
 -- id, agent_id, number, type, created_at, content, tool_name, data, model,
 -- tool_result, updated_at, parent_number, is_deleted
+
+-- session_usage columns:
+-- agent_id, cache_hit, cache_miss, output_tokens, model, last_request_hit, last_request_miss, created_at
+
+-- pending_runs columns:
+-- agent_id, mode, block_checkpoint, created_at
 ```
 
 See `BlockRepository.cs` `InitializeAsync()` for full DDL.
 
 ### Version
-`Version.txt`: `0.7.77`, published up to v0.7.77
+`Version.txt`: `1.0.16`, published up to v1.0.16
