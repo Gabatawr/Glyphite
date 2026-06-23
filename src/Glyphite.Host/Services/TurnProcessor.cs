@@ -16,7 +16,7 @@ public class TurnProcessor : ITurnProcessor
     private readonly IConfigService _cfgService;
     private readonly CompactionService _compactionService;
     private readonly ILogger _logger;
-    private readonly ISubAgentConfigLoader _configLoader;
+    private readonly ISessionConfigLoader _configLoader;
 
     // Last per-iteration usage (for ChatRepl fallback after Escape/crash)
     public long LastIterationTotalHit { get; private set; }
@@ -33,7 +33,7 @@ public class TurnProcessor : ITurnProcessor
         IToolRegistry toolRegistry,
         IConfigService cfgService,
         CompactionService compactionService,
-        ISubAgentConfigLoader configLoader,
+        ISessionConfigLoader configLoader,
         ILogger<TurnProcessor> logger)
     {
         _agentStore = agentStore;
@@ -51,12 +51,13 @@ public class TurnProcessor : ITurnProcessor
         string agentId,
         string input,
         ChatOptions chatOptions,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct,
+        string? agentCwd = null)
     {
         // ── 1. PREPARATION: config, options, context ──
 
         var parentCwd = Directory.GetCurrentDirectory();
-        var agentCwd = await _agentStore.GetAgentHomePathAsync(agentId) ?? parentCwd;
+        agentCwd ??= await _agentStore.GetAgentHomePathAsync(agentId) ?? parentCwd;
         await _configLoader.LoadConfigAsync(agentId, agentCwd, parentCwd);
 
         var llmOpts = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section, agentId);

@@ -6,6 +6,7 @@ public interface IAgentStore
 {
     Task EnsureSessionAsync(string id, string? homePath = null);
     Task<string?> GetAgentHomePathAsync(string id);
+    Task SetAgentHomePathAsync(string id, string homePath);
     Task<string?> GetAgentCreatedAtAsync(string id);
     Task<string?> GetAgentModelAsync(string id);
     Task<bool> SetAgentModelAsync(string id, string model);

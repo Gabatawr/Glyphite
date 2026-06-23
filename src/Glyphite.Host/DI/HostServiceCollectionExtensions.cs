@@ -85,7 +85,7 @@ public static class HostServiceCollectionExtensions
 
         services.AddSingleton<SubAgentManager>();
         services.AddSingleton<CompactionService>();
-        services.AddSingleton<ISubAgentConfigLoader, SubAgentConfigLoader>();
+        services.AddSingleton<ISessionConfigLoader, SessionConfigLoader>();
 
         // ── Agent Scope (per-agent DI scope) ──
         services.AddSingleton<IAgentScopeFactory, AgentScopeFactory>();

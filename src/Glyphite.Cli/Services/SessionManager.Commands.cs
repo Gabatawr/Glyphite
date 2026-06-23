@@ -48,7 +48,7 @@ public partial class SessionManager
                 await _agentStore.DeleteSessionAsync(name);
                 AgentId = await _agentManager.CreateAgentAsync(name, await GetDefaultModelAsync(), cwd);
                 SwitchScope();
-                await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
+                await _sessionConfigLoader.LoadConfigAsync(AgentId, cwd, _cwd);
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine($"Agent '{name}' recreated.\n");
                 Console.ResetColor();
@@ -64,7 +64,7 @@ public partial class SessionManager
 
         AgentId = await _agentManager.CreateAgentAsync(name, await GetDefaultModelAsync(), cwd);
         SwitchScope();
-        await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
+        await _sessionConfigLoader.LoadConfigAsync(AgentId, cwd, _cwd);
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{name}' created.\n");
         Console.ResetColor();
@@ -134,7 +134,7 @@ public partial class SessionManager
             AgentId = name;
             await _agentStore.RecordLaunchAsync(name, _cwd);
             SwitchScope();
-            await _configLoader.LoadAgentConfigAsync(name, _cwd);
+            await _sessionConfigLoader.LoadConfigAsync(name, _cwd, _cwd);
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"Switched to agent '{name}'.\n");
             Console.ResetColor();
@@ -203,7 +203,7 @@ public partial class SessionManager
         AgentId = targetName;
         await _agentStore.RecordLaunchAsync(targetName, cwd);
         SwitchScope();
-        await _configLoader.LoadAgentConfigAsync(targetName, cwd);
+        await _sessionConfigLoader.LoadConfigAsync(targetName, cwd, _cwd);
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Switched to agent '{targetName}'.\n");
         Console.ResetColor();
@@ -366,7 +366,7 @@ public partial class SessionManager
         await _agentStore.ForkSessionAsync(sourceName, defaultCloneName, cwd);
         AgentId = defaultCloneName;
         SwitchScope();
-        await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
+        await _sessionConfigLoader.LoadConfigAsync(AgentId, cwd, _cwd);
 
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{defaultCloneName}' cloned from '{sourceName}'.\n");
@@ -439,7 +439,7 @@ public partial class SessionManager
             newName = await GenerateUniqueNameAsync(newName);
         AgentId = await _agentManager.CreateAgentAsync(newName, await GetDefaultModelAsync(), cwd);
         SwitchScope();
-        await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
+        await _sessionConfigLoader.LoadConfigAsync(AgentId, cwd, _cwd);
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{newName}' created.\n");
         Console.ResetColor();
@@ -468,7 +468,7 @@ public partial class SessionManager
             Console.ResetColor();
         }
         SwitchScope();
-        await _configLoader.LoadAgentConfigAsync(AgentId, _cwd);
+        await _sessionConfigLoader.LoadConfigAsync(AgentId, _cwd, _cwd);
         if (await BlockMemory.GetAgentModelAsync(AgentId) is null)
             await BlockMemory.SetAgentModelAsync(AgentId, await GetDefaultModelAsync());
         Console.ForegroundColor = ConsoleColor.Green;
@@ -512,7 +512,7 @@ public partial class SessionManager
         await _agentStore.ForkSessionAsync(sourceName, cloneName, cwd);
         AgentId = cloneName;
         SwitchScope();
-        await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
+        await _sessionConfigLoader.LoadConfigAsync(AgentId, cwd, _cwd);
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Agent '{cloneName}' cloned from '{sourceName}'.\n");
         Console.ResetColor();

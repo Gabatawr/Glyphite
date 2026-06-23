@@ -65,7 +65,8 @@ internal static class SubAgentTool
     /// that were created during this task).</summary>
     private static async Task<(string Result, double BlockCheckpoint)> RunAgentTask(
         AgentScope scope, IAgentStore agentStore, IBlockStore blockStore, string agentId, string task,
-        string mainSessionId, string defaultModel, CancellationToken ct, bool saveMemory = false)
+        string mainSessionId, string defaultModel, CancellationToken ct, bool saveMemory = false,
+        string? cwd = null)
     {
         var resolvedModel = await agentStore.GetAgentModelAsync(agentId) ?? defaultModel;
         var chatOptions = new ChatOptions
@@ -86,7 +87,7 @@ internal static class SubAgentTool
 
         var sb = new StringBuilder();
         await foreach (var turnEvent in scope.TurnProcessor.ProcessAsync(
-            agentId, task, chatOptions, ct))
+            agentId, task, chatOptions, ct, cwd))
         {
             if (turnEvent is TextChunkEvent tc)
                 sb.Append(tc.Chunk);
@@ -133,7 +134,7 @@ internal static class SubAgentTool
         string agentId, string task, bool isDryRun, bool saveMemory,
         SubAgentManager subAgentManager, IAgentScopeFactory scopeFactory,
         IAgentStore agentStore, IBlockStore blockStore, string currentSessionId,
-        string defaultModel, CancellationToken ct)
+        string defaultModel, CancellationToken ct, string? cwd = null)
     {
         var scopeErr = await EnsureScope(subAgentManager, scopeFactory, agentStore, agentId);
         if (scopeErr is not null) return scopeErr;
@@ -155,7 +156,7 @@ internal static class SubAgentTool
         {
             return await subAgentManager.RunAsync(agentId, async s =>
             {
-                var (output, blockCk) = await RunAgentTask(s, agentStore, blockStore, agentId, task, currentSessionId, defaultModel, ct, saveMemory);
+                var (output, blockCk) = await RunAgentTask(s, agentStore, blockStore, agentId, task, currentSessionId, defaultModel, ct, saveMemory, cwd);
                 if (isDryRun)
                 {
                     await agentStore.ClearUsageAsync(agentId);
@@ -195,7 +196,8 @@ internal static class SubAgentTool
         SubAgentManager subAgentManager, IAgentManager agentManager,
         IAgentScopeFactory scopeFactory, IAgentStore agentStore, IBlockStore blockStore,
         LlmOptions llm,
-        string currentSessionId, CancellationToken ct)
+        string currentSessionId, CancellationToken ct,
+        string? cwd = null)
     {
         if (validateName && !AgentManager.IsValidAgentName(agentId))
             return $"Error: Invalid agent name '{agentId}'.";
@@ -208,7 +210,7 @@ internal static class SubAgentTool
         try
         {
             return await RunSubAgentTaskAsync(agentId, task, isDryRun: false, saveMemory: false,
-                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct);
+                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
         }
         finally
         {
@@ -249,7 +251,7 @@ internal static class SubAgentTool
             if (name is not null && await agentStore.AgentExistsAsync(name))
             {
                 return await RunSubAgentTaskAsync(name, task, isDryRun: true, saveMemory: false,
-                    subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct);
+                    subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
             }
 
             // ── name provided + agent doesn't exist → create temp, run, delete ──
@@ -258,7 +260,7 @@ internal static class SubAgentTool
                 return await CreateAndRunSubAgentAsync(name, task, homePath, parentCwd,
                     validateName: true,
                     subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
-                    llm, currentSessionId, ct);
+                    llm, currentSessionId, ct, cwd);
             }
 
             // ── no name → auto-GUID, temp, run, delete ──
@@ -266,7 +268,7 @@ internal static class SubAgentTool
             return await CreateAndRunSubAgentAsync(guidId, task, homePath, parentCwd,
                 validateName: false,
                 subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
-                llm, currentSessionId, ct);
+                llm, currentSessionId, ct, cwd);
         },
         name: "subagent_run",
         description: "Run a one-shot task on an agent. Without a name: auto-GUID temp agent created then deleted. With a name and agent exists: dry-run (blocks cleaned after). With a name and no agent: temp agent with config created then deleted. Use mode=\"parallel\" for concurrent grouping."
@@ -307,7 +309,7 @@ internal static class SubAgentTool
             }
 
             return await RunSubAgentTaskAsync(name, task, isDryRun: false, saveMemory: true,
-                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct);
+                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
         },
         name: "subagent_use",
         description: "Execute a task on a named subagent (auto-creates if not found). Memory and context accumulate across calls — the agent persists. Usage delta recorded in main session."

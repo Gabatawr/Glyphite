@@ -99,6 +99,16 @@ public class SessionRepository : RepositoryBase, IAgentStore
             "SELECT home_path FROM sessions WHERE id = @id", new { id });
     }
 
+    public async Task SetAgentHomePathAsync(string id, string homePath)
+    {
+        await WithLockAsync(async () =>
+        {
+            await _conn.ExecuteAsync("""
+                UPDATE sessions SET home_path = @Path WHERE id = @Id
+                """, new { Id = id, Path = homePath });
+        });
+    }
+
     public async Task<string?> GetAgentCreatedAtAsync(string id)
     {
         using var conn = CreateReadConnection();

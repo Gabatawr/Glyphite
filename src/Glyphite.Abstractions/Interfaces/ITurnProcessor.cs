@@ -9,7 +9,8 @@ public interface ITurnProcessor
         string agentId,
         string input,
         ChatOptions chatOptions,
-        CancellationToken ct);
+        CancellationToken ct,
+        string? agentCwd = null);
 
     /// <summary>Last iteration's cumulative hit tokens (for prompt fallback after Escape).</summary>
     long LastIterationTotalHit { get; }

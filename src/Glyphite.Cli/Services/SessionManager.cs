@@ -16,7 +16,7 @@ public partial class SessionManager
     private readonly IConfigService _cfgService;
     private readonly ConsoleRenderer _renderer;
     private readonly InputHistory _inputHistory;
-    private readonly ConfigLoader _configLoader;
+    private readonly ISessionConfigLoader _sessionConfigLoader;
 
     private AgentScope? _currentScope;
     private readonly string _cwd;
@@ -29,7 +29,8 @@ public partial class SessionManager
         IAgentScopeFactory scopeFactory,
         IConfigService cfgService,
         ConsoleRenderer renderer,
-        InputHistory inputHistory)
+        InputHistory inputHistory,
+        ISessionConfigLoader sessionConfigLoader)
     {
         _agentStore = agentStore;
         _blockStore = blockStore;
@@ -38,7 +39,7 @@ public partial class SessionManager
         _cfgService = cfgService;
         _renderer = renderer;
         _inputHistory = inputHistory;
-        _configLoader = new ConfigLoader(cfgService, agentStore);
+        _sessionConfigLoader = sessionConfigLoader;
         _cwd = Directory.GetCurrentDirectory();
     }
 
@@ -111,15 +112,12 @@ public partial class SessionManager
             var defaultModel = await GetDefaultModelAsync();
             AgentId = await _agentManager.CreateAgentAsync(firstName, defaultModel, cwd);
             SwitchScope();
-            await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
+            await _sessionConfigLoader.LoadConfigAsync(AgentId, cwd, _cwd);
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"Agent '{firstName}' created.\n");
             Console.ResetColor();
             return CreateOrResumeResult.Ready;
         }
-
-        // Eager-load all agent configs in cwd
-        await _configLoader.LoadAllAgentConfigsAsync(cwd);
 
         // Try resume last active agent in this directory
         var lastActive = await _agentStore.GetLastActiveAgentAsync(cwd);
@@ -129,7 +127,7 @@ public partial class SessionManager
             // Resume directly
             AgentId = lastActive;
             SwitchScope();
-            await _configLoader.LoadAgentConfigAsync(AgentId, cwd);
+            await _sessionConfigLoader.LoadConfigAsync(AgentId, cwd, _cwd);
             if (await BlockMemory.GetAgentModelAsync(AgentId) is null)
             {
                 var defaultModel = await GetDefaultModelAsync();

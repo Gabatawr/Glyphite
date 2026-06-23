@@ -114,20 +114,27 @@ public class ConfigService : IConfigService
         // 1. Start with global config from IConfiguration (hot-reload)
         var merged = FlattenConfig(_appConfig);
 
-        // 2. Get DB keys: GetMergedConfigAsync returns global + session.
-        //    We need only session-scoped keys (agent-specific overrides).
-        //    Stale global keys from DB must NOT override fresh IConfiguration.
-        var dbAll = await _store.GetMergedConfigAsync(agentId);
-        var dbGlobal = await _store.GetMergedConfigAsync(null);
+        // 2. If overlay exists, it already includes DB session keys + file overrides
+        //    from SessionConfigLoader → skip loading DB session keys separately.
+        var hasOverlay = _overlays.ContainsKey(agentId);
 
-        // Apply only session-scoped keys (those NOT in global scope)
-        foreach (var (key, value) in dbAll)
+        if (!hasOverlay)
         {
-            if (!dbGlobal.ContainsKey(key))
-                merged[key] = value;
+            // Get DB keys: GetMergedConfigAsync returns global + session.
+            // We need only session-scoped keys (agent-specific overrides).
+            // Stale global keys from DB must NOT override fresh IConfiguration.
+            var dbAll = await _store.GetMergedConfigAsync(agentId);
+            var dbGlobal = await _store.GetMergedConfigAsync(null);
+
+            // Apply only session-scoped keys (those NOT in global scope)
+            foreach (var (key, value) in dbAll)
+            {
+                if (!dbGlobal.ContainsKey(key))
+                    merged[key] = value;
+            }
         }
 
-        // 3. Apply in-memory overlay (agent not at home, or from SubAgentConfigLoader)
+        // 3. Apply in-memory overlay (agent not at home, from SessionConfigLoader)
         if (_overlays.TryGetValue(agentId, out var overlay))
         {
             foreach (var (key, value) in overlay)
