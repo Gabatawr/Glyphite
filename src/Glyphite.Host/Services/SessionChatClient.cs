@@ -12,9 +12,9 @@ public sealed class SessionChatClient : DelegatingChatClient
     private readonly string _sessionId;
     private readonly string _model;
 
-    public SessionChatClient(IChatClient inner, string sessionId, string model) : base(inner)
+    public SessionChatClient(IChatClient inner, string agentId, string model) : base(inner)
     {
-        _sessionId = sessionId;
+        _sessionId = agentId;
         _model = model;
     }
 

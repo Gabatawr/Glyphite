@@ -242,13 +242,13 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         _defaultDirectory = defaultDirectory;
     }
 
-    public async Task<string> ExecuteAsync(string sessionId, string command, string? workdir = null, int? timeoutMs = null, CancellationToken ct = default)
+    public async Task<string> ExecuteAsync(string agentId, string command, string? workdir = null, int? timeoutMs = null, CancellationToken ct = default)
     {
         CleanupIdleSessions();
 
         // Load fresh BashOptions for new sessions — IOptions<T> singleton may be stale
         var freshOpts = await _cfgService.GetOptionsAsync<BashOptions>(BashOptions.Section);
-        var lazy = _sessions.GetOrAdd(sessionId, _ => new Lazy<BashSession>(() => BashSession.Start(freshOpts, _defaultDirectory)));
+        var lazy = _sessions.GetOrAdd(agentId, _ => new Lazy<BashSession>(() => BashSession.Start(freshOpts, _defaultDirectory)));
         BashSession session;
         try
         {
@@ -256,7 +256,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         }
         catch
         {
-            _sessions.TryRemove(sessionId, out _);
+            _sessions.TryRemove(agentId, out _);
             throw;
         }
 
@@ -266,15 +266,15 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         }
         catch (OperationCanceledException)
         {
-            _sessions.TryRemove(sessionId, out _);
+            _sessions.TryRemove(agentId, out _);
             session.Dispose();
             throw;
         }
     }
 
-    public void KillSession(string sessionId)
+    public void KillSession(string agentId)
     {
-        if (_sessions.TryRemove(sessionId, out var lazy) && lazy.IsValueCreated)
+        if (_sessions.TryRemove(agentId, out var lazy) && lazy.IsValueCreated)
             lazy.Value.Dispose();
     }
 

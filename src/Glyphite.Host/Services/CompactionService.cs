@@ -38,17 +38,17 @@ namespace Glyphite.Host.Services;
         }
 
         /// <summary>Fast check — no LLM calls. Determines if compaction is likely needed.</summary>
-        public async Task<bool> ShouldCompactAsync(string sessionId, int contextWindow)
+        public async Task<bool> ShouldCompactAsync(string agentId, int contextWindow)
         {
-            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, sessionId);
+            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
             if (!compOpts.AutoCompress)
                 return false;
 
-            var blocks = await _blockStore.LoadBlocksAsync(sessionId);
+            var blocks = await _blockStore.LoadBlocksAsync(agentId);
             if (blocks.Count <= 1)
                 return false;
 
-            var lastUsage = await _agentStore.GetLastUsageAsync(sessionId);
+            var lastUsage = await _agentStore.GetLastUsageAsync(agentId);
             var lastRequestTokens = lastUsage.LastHit + lastUsage.LastMiss;
             var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
 
@@ -70,10 +70,10 @@ namespace Glyphite.Host.Services;
             return turnGroups.Count > 1 && DistributeFibonacci(turnGroups).Count > 2;
         }
 
-        public async Task<bool> CompactAsync(string sessionId, int contextWindow)
+        public async Task<bool> CompactAsync(string agentId, int contextWindow)
         {
-            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, sessionId);
-            var blocks = await _blockStore.LoadBlocksAsync(sessionId);
+            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
+            var blocks = await _blockStore.LoadBlocksAsync(agentId);
             if (blocks.Count <= 1)
                 return false;
 
@@ -87,14 +87,14 @@ namespace Glyphite.Host.Services;
             if (zones.Count <= 2)
                 return false;
 
-            var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId);
+            var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId);
             var protectedTypes = new HashSet<BlockType>(
                 memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
 
             var isSubagentTool = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                 { "subagent_run", "subagent_use" };
 
-            var model = await _agentStore.GetAgentModelAsync(sessionId);
+            var model = await _agentStore.GetAgentModelAsync(agentId);
             var summarizeCount = zones.Count - 2;
 
             var allUnprotectedNums = new HashSet<double>();
@@ -120,7 +120,7 @@ namespace Glyphite.Host.Services;
             // Log compaction start
             var totalBlocks = blocks.Count;
             _logger.LogInformation("Compacting session {SessionId}: {TotalBlocks} blocks, {ZoneCount} old zones to summarize, threshold {Threshold}% of {ContextWindow}",
-                sessionId, totalBlocks, summarizeCount, compOpts.AutoThreshold, contextWindow);
+                agentId, totalBlocks, summarizeCount, compOpts.AutoThreshold, contextWindow);
 
             // 4. Summarize all old zones via LLM in parallel — each zone is independent.
             //    Run BEFORE deletion — if summarization fails, no data is lost.
@@ -128,7 +128,7 @@ namespace Glyphite.Host.Services;
             foreach (var zone in zoneProtectedBlocks)
             {
                 if (zone.Count == 0) continue;
-                zoneTasks.Add((zone, SummarizeSingleZoneAsync(sessionId, zone, model)));
+                zoneTasks.Add((zone, SummarizeSingleZoneAsync(agentId, zone, model)));
             }
 
             var summaries = new List<string>();
@@ -180,14 +180,14 @@ namespace Glyphite.Host.Services;
             //    hard-delete everything after agent_data, insert compacted history.
             //    All in one transaction — if anything fails, nothing is lost.
             await _blockStore.ReplaceBlocksSinceAsync(
-                sessionId,
+                agentId,
                 fromNumber: agentBlock.Number + 1,
                 newBlocks,
                 nextNumber,
                 softDeleteNums: allUnprotectedNums.Count > 0 ? allUnprotectedNums : null);
 
             _logger.LogInformation("Compacted session {SessionId}: {SummaryCount} summaries, {FallbackCount} fallback blocks, {PreservedCount} preserved, {SoftDeletedCount} soft-deleted",
-                sessionId, summaries.Count, summarizedFallback.Count, preserved.Count, allUnprotectedNums.Count);
+                agentId, summaries.Count, summarizedFallback.Count, preserved.Count, allUnprotectedNums.Count);
             return true;
         }
 
@@ -280,7 +280,7 @@ namespace Glyphite.Host.Services;
     }
 
 
-    private async Task<string?> SummarizeSingleZoneAsync(string sessionId, List<MemoryBlock> blocks, string? model)
+    private async Task<string?> SummarizeSingleZoneAsync(string agentId, List<MemoryBlock> blocks, string? model)
     {
         var sb = new StringBuilder();
         sb.AppendLine("Summarize this conversation zone, preserving key decisions, findings, code changes, important context. Pay attention to the volume of content — the more messages in the zone, the more detail is expected. Do not rush past important user requests, agent responses, tool results, or subagent outputs.");
@@ -318,7 +318,7 @@ namespace Glyphite.Host.Services;
                     {
                         var (hit, miss, output) = UsageParser.Parse(doc);
                         if (hit > 0 || miss > 0 || output > 0)
-                            await _agentStore.RecordUsageAsync(sessionId, hit, miss, output, model: model);
+                            await _agentStore.RecordUsageAsync(agentId, hit, miss, output, model: model);
                     }
                 }
                 catch { _logger.LogWarning("Failed to parse usage from summarization response"); }

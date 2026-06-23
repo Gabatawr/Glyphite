@@ -7,15 +7,15 @@ namespace Glyphite.Host.Memory;
 
 public partial class BlockMemoryProvider
 {
-    public async Task<List<ChatMessage>> BuildContextAsync(string sessionId, string? model = null, int? contextWindow = null)
+    public async Task<List<ChatMessage>> BuildContextAsync(string agentId, string? model = null, int? contextWindow = null)
     {
-        await _agentStore.EnsureSessionAsync(sessionId);
-        model ??= await _agentStore.GetAgentModelAsync(sessionId);
+        await _agentStore.EnsureSessionAsync(agentId);
+        model ??= await _agentStore.GetAgentModelAsync(agentId);
 
         // Fresh options this turn — IOptions<T> DI values may be stale
-        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId);
+        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId);
 
-        var blocks = await _blockStore.LoadBlocksAsync(sessionId);
+        var blocks = await _blockStore.LoadBlocksAsync(agentId);
         if (blocks.Count == 0)
         {
             var data = new Dictionary<string, object> { ["agent"] = _agentOpts.AgentName };
@@ -30,7 +30,7 @@ public partial class BlockMemoryProvider
             var agentData = MemoryBlock.Create(BlockType.agent_data, content, data: data);
             agentData.Number = 1;
             blocks.Add(agentData);
-            await _blockStore.AppendBlocksAsync(sessionId, blocks, 2);
+            await _blockStore.AppendBlocksAsync(agentId, blocks, 2);
         }
 
         // Peek blocks are cleaned by TurnProcessor before calling BuildContextAsync
@@ -67,7 +67,7 @@ public partial class BlockMemoryProvider
             if (agentBlock.Content != newContent)
             {
                 agentBlock.Content = newContent;
-                await _blockStore.UpdateBlockAsync(sessionId, agentBlock.Number, newContent, agentBlock.Data, modelStr);
+                await _blockStore.UpdateBlockAsync(agentId, agentBlock.Number, newContent, agentBlock.Data, modelStr);
             }
         }
 

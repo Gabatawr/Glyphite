@@ -14,7 +14,7 @@ public static class BashTool
         string? workdir,
         int? timeoutMs,
         IBashSessionManager manager,
-        string sessionId,
+        string agentId,
         ContentDedupOptions dedupOpts,
         BashOptions bashOpts,
         bool? peek = null,
@@ -49,7 +49,7 @@ public static class BashTool
         try
         {
             timeoutMs ??= bashOpts.DefaultTimeoutMs;
-            var output = await manager.ExecuteAsync(sessionId, command, workdir, timeoutMs, ct);
+            var output = await manager.ExecuteAsync(agentId, command, workdir, timeoutMs, ct);
             var compressed = ContentDedup.Compress(output, dedupOpts);
             return TruncateOutput(compressed, bashOpts.MaxOutputBytes);
         }
@@ -74,7 +74,7 @@ public static class BashTool
         return note + truncated;
     }
 
-    private sealed class BashInvoker(IBashSessionManager manager, string sessionId, IConfigService cfg)
+    private sealed class BashInvoker(IBashSessionManager manager, string agentId, IConfigService cfg)
     {
         [Description("Execute a bash command in a persistent shell session. Working directory and environment persist between commands. Output is auto-deduplicated (repeated lines compressed). Use `workdir` to run in a specific directory (preferred over cd). Use `timeoutMs` for long-running commands. Prefer non-interactive commands: use flags to disable pagers, auto-confirm prompts, provide input via flags rather than stdin.")]
         public async Task<string> Execute(
@@ -84,14 +84,14 @@ public static class BashTool
             bool? peek = null,
             CancellationToken ct = default)
         {
-            var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, sessionId);
-            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
-            return await ExecuteBash(command, workdir, timeoutMs, manager, sessionId, dedupOpts, bashOpts, peek, ct);
+            var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, agentId);
+            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, agentId);
+            return await ExecuteBash(command, workdir, timeoutMs, manager, agentId, dedupOpts, bashOpts, peek, ct);
         }
     }
 
-    public static AIFunction AsAIFunction(IBashSessionManager manager, string sessionId, IConfigService cfg)
+    public static AIFunction AsAIFunction(IBashSessionManager manager, string agentId, IConfigService cfg)
         => AIFunctionFactory.Create(
-            new BashInvoker(manager, sessionId, cfg).Execute,
+            new BashInvoker(manager, agentId, cfg).Execute,
             "execute_bash");
 }

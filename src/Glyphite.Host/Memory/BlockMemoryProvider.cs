@@ -58,34 +58,34 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
     public async Task<MemoryBlock?> GetBlockAsync(string id, double number, bool includeDeleted = false)
         => await _blockStore.GetBlockAsync(id, number, includeDeleted);
 
-    public async Task UpdateBlockDataAsync(string sessionId, double number, Dictionary<string, object>? data)
-        => await _blockStore.UpdateBlockDataAsync(sessionId, number, data);
+    public async Task UpdateBlockDataAsync(string agentId, double number, Dictionary<string, object>? data)
+        => await _blockStore.UpdateBlockDataAsync(agentId, number, data);
 
-    public async Task<int> RemoveBlocksAsync(string sessionId, Predicate<MemoryBlock> match)
-        => await _blockStore.RemoveBlocksAsync(sessionId, match);
+    public async Task<int> RemoveBlocksAsync(string agentId, Predicate<MemoryBlock> match)
+        => await _blockStore.RemoveBlocksAsync(agentId, match);
 
-    public async Task<string> DeleteBlocksAsync(string sessionId, double[] numbers, bool cascade = true)
+    public async Task<string> DeleteBlocksAsync(string agentId, double[] numbers, bool cascade = true)
     {
-        if (!await _agentStore.AgentExistsAsync(sessionId))
-            return $"Session '{sessionId}' not found";
+        if (!await _agentStore.AgentExistsAsync(agentId))
+            return $"Agent '{agentId}' not found";
 
-        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId);
+        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId);
         var protectedTypes = new HashSet<BlockType>(
             memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
-        var (removed, protectedNums) = await _blockStore.DeleteBlocksAsync(sessionId, numbers, protectedTypes, cascade);
+        var (removed, protectedNums) = await _blockStore.DeleteBlocksAsync(agentId, numbers, protectedTypes, cascade);
         var msg = $"Deleted {removed} block{(removed == 1 ? "" : "s")}";
         if (protectedNums.Count > 0)
             msg += $"; skipped protected block{(protectedNums.Count == 1 ? "" : "s")}: {string.Join(", ", protectedNums)}";
         return msg;
     }
 
-    public async Task<int> RecoverBlocksAsync(string sessionId, double[] numbers, bool cascade = false)
-        => await _blockStore.RecoverBlocksAsync(sessionId, numbers, cascade);
+    public async Task<int> RecoverBlocksAsync(string agentId, double[] numbers, bool cascade = false)
+        => await _blockStore.RecoverBlocksAsync(agentId, numbers, cascade);
 
-    public async Task<string> DeleteBlocksByFilterAsync(string sessionId, string[]? types, string? recent)
+    public async Task<string> DeleteBlocksByFilterAsync(string agentId, string[]? types, string? recent)
     {
-        if (!await _agentStore.AgentExistsAsync(sessionId))
-            return $"Agent '{sessionId}' not found";
+        if (!await _agentStore.AgentExistsAsync(agentId))
+            return $"Agent '{agentId}' not found";
 
         TimeSpan? ts = null;
         if (recent is not null)
@@ -103,40 +103,40 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
             };
         }
 
-        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId);
+        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId);
         var protectedTypes = new HashSet<BlockType>(
             memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
-        var removed = await _blockStore.DeleteBlocksByFilterAsync(sessionId, types, ts, protectedTypes);
+        var removed = await _blockStore.DeleteBlocksByFilterAsync(agentId, types, ts, protectedTypes);
         if (removed == 0)
             return "No matching blocks found to delete.";
         return $"Deleted {removed} block{(removed == 1 ? "" : "s")}.";
     }
 
-    public async Task<bool> AgentExistsAsync(string sessionId)
-        => await _agentStore.AgentExistsAsync(sessionId);
+    public async Task<bool> AgentExistsAsync(string agentId)
+        => await _agentStore.AgentExistsAsync(agentId);
 
-    public async Task<bool> SetAgentModelAsync(string sessionId, string model)
-        => await _agentStore.SetAgentModelAsync(sessionId, model);
+    public async Task<bool> SetAgentModelAsync(string agentId, string model)
+        => await _agentStore.SetAgentModelAsync(agentId, model);
 
-    public async Task<string?> GetAgentModelAsync(string sessionId)
-        => await _agentStore.GetAgentModelAsync(sessionId);
+    public async Task<string?> GetAgentModelAsync(string agentId)
+        => await _agentStore.GetAgentModelAsync(agentId);
 
     public async Task<string?> GetModelAsync(string id)
         => await _agentStore.GetAgentModelAsync(id) ?? _defaultModel;
 
     // ── Error storage ──
 
-    public async Task StoreErrorAsync(string sessionId, string error)
+    public async Task StoreErrorAsync(string agentId, string error)
     {
-        var nextNum = await _agentStore.GetNextNumberAsync(sessionId);
+        var nextNum = await _agentStore.GetNextNumberAsync(agentId);
         if (nextNum <= 0) nextNum = 1;
         var block = MemoryBlock.SystemError(error);
         block.Number = nextNum;
-        await _blockStore.AppendBlocksAsync(sessionId, [block], nextNum + 1);
+        await _blockStore.AppendBlocksAsync(agentId, [block], nextNum + 1);
     }
 
-    public async Task<(long Hit, long Miss, long Output)> GetUsageAsync(string sessionId)
-        => await _agentStore.GetUsageAsync(sessionId);
+    public async Task<(long Hit, long Miss, long Output)> GetUsageAsync(string agentId)
+        => await _agentStore.GetUsageAsync(agentId);
 
     // ── ID lifecycle ──
 

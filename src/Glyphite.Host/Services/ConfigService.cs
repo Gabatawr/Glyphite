@@ -37,9 +37,9 @@ public class ConfigService : IConfigService
 
     /// <summary>Hydrate a typed options object: global keys from IConfiguration (hot-reload),
     /// session-scoped keys from DB + overlay.</summary>
-    public async Task<T> GetOptionsAsync<T>(string sectionName, string? sessionId = null) where T : new()
+    public async Task<T> GetOptionsAsync<T>(string sectionName, string? agentId = null) where T : new()
     {
-        var all = await GetConfigAsync(sessionId);
+        var all = await GetConfigAsync(agentId);
         var filtered = new Dictionary<string, string?>();
         var prefix = sectionName + ":";
 
@@ -86,30 +86,30 @@ public class ConfigService : IConfigService
         }
     }
 
-    public void InvalidateCache(string? sessionId = null)
+    public void InvalidateCache(string? agentId = null)
     {
-        if (sessionId is null)
+        if (agentId is null)
             _configCache.Clear();
         else
-            _configCache.TryRemove(sessionId, out _);
+            _configCache.TryRemove(agentId, out _);
     }
 
-    public Task<Dictionary<string, string>> GetConfigAsync(string? sessionId = null)
+    public Task<Dictionary<string, string>> GetConfigAsync(string? agentId = null)
     {
-        if (sessionId is null)
+        if (agentId is null)
         {
             // Global config: read hot-reloaded IConfiguration directly (no DB round-trip)
             return Task.FromResult(FlattenConfig(_appConfig));
         }
 
         // Session-scoped config: DB + overlay
-        if (_configCache.TryGetValue(sessionId, out var cached))
+        if (_configCache.TryGetValue(agentId, out var cached))
             return Task.FromResult(cached);
 
-        return GetSessionConfigAsync(sessionId);
+        return GetSessionConfigAsync(agentId);
     }
 
-    private async Task<Dictionary<string, string>> GetSessionConfigAsync(string sessionId)
+    private async Task<Dictionary<string, string>> GetSessionConfigAsync(string agentId)
     {
         // 1. Start with global config from IConfiguration (hot-reload)
         var merged = FlattenConfig(_appConfig);
@@ -117,7 +117,7 @@ public class ConfigService : IConfigService
         // 2. Get DB keys: GetMergedConfigAsync returns global + session.
         //    We need only session-scoped keys (agent-specific overrides).
         //    Stale global keys from DB must NOT override fresh IConfiguration.
-        var dbAll = await _store.GetMergedConfigAsync(sessionId);
+        var dbAll = await _store.GetMergedConfigAsync(agentId);
         var dbGlobal = await _store.GetMergedConfigAsync(null);
 
         // Apply only session-scoped keys (those NOT in global scope)
@@ -128,20 +128,20 @@ public class ConfigService : IConfigService
         }
 
         // 3. Apply in-memory overlay (agent not at home, or from SubAgentConfigLoader)
-        if (_overlays.TryGetValue(sessionId, out var overlay))
+        if (_overlays.TryGetValue(agentId, out var overlay))
         {
             foreach (var (key, value) in overlay)
                 merged[key] = value;
         }
 
-        _configCache[sessionId] = merged;
+        _configCache[agentId] = merged;
         return merged;
     }
 
     public async Task<ConfigDiffResult> UpdateConfigAsync(
         Dictionary<string, string> changes,
         string scope = "global",
-        string? sessionId = null,
+        string? agentId = null,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -151,26 +151,26 @@ public class ConfigService : IConfigService
 
         foreach (var (key, newValue) in changes)
         {
-            var existing = await _store.GetConfigAsync(key, scope, sessionId);
+            var existing = await _store.GetConfigAsync(key, scope, agentId);
             if (existing == newValue)
             {
                 skipped[key] = newValue;
                 continue;
             }
 
-            await _store.UpsertConfigAsync(key, newValue, scope, sessionId);
+            await _store.UpsertConfigAsync(key, newValue, scope, agentId);
             updated[key] = newValue;
         }
 
-        InvalidateCache(sessionId);
+        InvalidateCache(agentId);
         return new ConfigDiffResult(updated, skipped);
     }
 
-    public async Task DeleteConfigAsync(string[] keys, string scope = "global", string? sessionId = null)
+    public async Task DeleteConfigAsync(string[] keys, string scope = "global", string? agentId = null)
     {
         foreach (var key in keys)
-            await _store.DeleteConfigAsync(key, scope, sessionId);
-        InvalidateCache(sessionId);
+            await _store.DeleteConfigAsync(key, scope, agentId);
+        InvalidateCache(agentId);
     }
 
     /// <summary>
@@ -179,12 +179,12 @@ public class ConfigService : IConfigService
     /// Use this instead of <see cref="UpdateConfigAsync"/> when the set of keys
     /// in a section has structurally changed (e.g. renamed MCP server names).
     /// </summary>
-    public async Task ReplaceSectionAsync(string sectionName, Dictionary<string, string> newKeys, string scope = "global", string? sessionId = null)
+    public async Task ReplaceSectionAsync(string sectionName, Dictionary<string, string> newKeys, string scope = "global", string? agentId = null)
     {
         var prefix = sectionName + ":";
 
         // Gather existing keys under this section
-        var all = await GetConfigAsync(sessionId);
+        var all = await GetConfigAsync(agentId);
         var staleKeys = all.Keys
             .Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -193,18 +193,18 @@ public class ConfigService : IConfigService
         foreach (var key in staleKeys)
         {
             if (!newKeys.ContainsKey(key))
-                await _store.DeleteConfigAsync(key, scope, sessionId);
+                await _store.DeleteConfigAsync(key, scope, agentId);
         }
 
         // Upsert new keys
         foreach (var (key, value) in newKeys)
         {
-            var existing = await _store.GetConfigAsync(key, scope, sessionId);
+            var existing = await _store.GetConfigAsync(key, scope, agentId);
             if (existing == value) continue;
-            await _store.UpsertConfigAsync(key, value, scope, sessionId);
+            await _store.UpsertConfigAsync(key, value, scope, agentId);
         }
 
-        InvalidateCache(sessionId);
+        InvalidateCache(agentId);
     }
 
     private void Log(string message)

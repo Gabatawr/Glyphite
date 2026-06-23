@@ -119,7 +119,7 @@ public class FilePatchToolTests : IDisposable
 
         var result = await FilePatchTool.PatchFile(path, "", "new content");
 
-        Assert.StartsWith("Error: oldString is required", result);
+        Assert.StartsWith("Error: 'old' is required", result);
         // File should remain unchanged
         var content = await File.ReadAllTextAsync(path);
         Assert.Equal("some content", content);
@@ -163,7 +163,7 @@ public class FilePatchToolTests : IDisposable
 
         var result = await FilePatchTool.PatchFile(path, "same content", "same content");
 
-        Assert.StartsWith("Error: oldString and newString are identical", result);
+        Assert.StartsWith("Error: 'old' and 'new' are identical", result);
     }
 
     [Fact]

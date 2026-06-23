@@ -10,14 +10,14 @@ public static class FilePatchTool
 {
     public static async Task<string> PatchFile(
         string path,
-        string oldString,
-        string newString,
+        string old,
+        string @new,
         bool replaceAll = false,
         bool? peek = null,
         string? defaultDirectory = null)
     {
-        if (string.IsNullOrEmpty(oldString))
-            return "Error: oldString is required. Use write_file to create a new file or append content.";
+        if (string.IsNullOrEmpty(old))
+            return "Error: 'old' is required. Use write_file to create a new file or append content.";
 
         path = OSHelper.NormalizePath(path);
         if (!Path.IsPathRooted(path))
@@ -26,14 +26,14 @@ public static class FilePatchTool
         if (!File.Exists(path))
             return $"Error: File not found: {path}";
 
-        if (oldString == newString)
-            return "Error: oldString and newString are identical вЂ” nothing to change.";
+        if (old == @new)
+            return "Error: 'old' and 'new' are identical вЂ” nothing to change.";
 
         var content = await File.ReadAllTextAsync(path);
         var lineEnding = DetectLineEnding(content);
         content = NormalizeLineEndings(content);
-        var oldNorm = NormalizeLineEndings(oldString);
-        var newNorm = NormalizeLineEndings(newString);
+        var oldNorm = NormalizeLineEndings(old);
+        var newNorm = NormalizeLineEndings(@new);
 
         var contentLines = content.Split('\n');
         var searchLines = oldNorm.Split('\n');
@@ -273,11 +273,11 @@ public static class FilePatchTool
         [Description("Replace text in a file using multi-strategy fuzzy matching. Supports 4 matching strategies (tried in order): exact match, trimmed match, whitespace-normalized, and indentation-flexible. Returns a unified diff of changes. Use for targeted edits; for large rewrites use `write_file`. Tip: when using Search/Replace blocks from a diff, copy the EXACT text from the file to avoid fuzzy fallback.")]
         public Task<string> Execute(
             string path,
-            [Description("Text to find. Try to match exact content from the file (including indentation). Fuzzy fallbacks handle minor whitespace differences.")] string oldString,
-            [Description("Replacement text")] string newString,
+            [Description("Text to find. Try to match exact content from the file (including indentation). Fuzzy fallbacks handle minor whitespace differences.")] string old,
+            [Description("Replacement text")] string @new,
             [Description("Replace ALL occurrences (default: false, replaces only first match). Use with caution.")] bool replaceAll = false,
             bool? peek = true)
-            => PatchFile(path, oldString, newString, replaceAll, peek, defaultDirectory);
+            => PatchFile(path, old, @new, replaceAll, peek, defaultDirectory);
     }
 
     public static AIFunction AsAIFunction(string? defaultDirectory = null)

@@ -38,7 +38,7 @@ public class SubAgentConfigLoader : ISubAgentConfigLoader
             // Full replace: clear old session keys then upsert new ones.
             // This prevents orphaned keys when the config file is renamed or structurally changed.
             await _configStore.DeleteConfigByScopeAsync("session", agentId);
-            await _cfgService.UpdateConfigAsync(merged, scope: "session", sessionId: agentId);
+            await _cfgService.UpdateConfigAsync(merged, scope: "session", agentId: agentId);
         }
         else
             _cfgService.SetSessionOverlay(agentId, merged);

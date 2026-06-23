@@ -22,7 +22,7 @@ public sealed class ConfigLoader
 
         var homePath = await _agentStore.GetAgentHomePathAsync(agentId);
         if (string.Equals(homePath, cwd, StringComparison.OrdinalIgnoreCase))
-            await _cfgService.UpdateConfigAsync(merge, scope: "session", sessionId: agentId);
+            await _cfgService.UpdateConfigAsync(merge, scope: "session", agentId: agentId);
         else
             _cfgService.SetSessionOverlay(agentId, merge);
     }
@@ -48,7 +48,7 @@ public sealed class ConfigLoader
             {
                 var homePath = await _agentStore.GetAgentHomePathAsync(agentName);
                 if (string.Equals(homePath, cwd, StringComparison.OrdinalIgnoreCase))
-                    await _cfgService.UpdateConfigAsync(merge, scope: "session", sessionId: agentName);
+                    await _cfgService.UpdateConfigAsync(merge, scope: "session", agentId: agentName);
                 else
                     _cfgService.SetSessionOverlay(agentName, merge);
             }

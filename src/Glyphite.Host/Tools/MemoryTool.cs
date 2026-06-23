@@ -14,7 +14,7 @@ public static class MemoryTool
         double[]? blocks,
         bool? cascade,
         IBlockMemoryProvider provider,
-        string sessionId,
+        string agentId,
         IConfigService? cfg = null)
     {
         switch (action.ToLowerInvariant())
@@ -23,19 +23,19 @@ public static class MemoryTool
             case "clean":
                 if (blocks is null || blocks.Length == 0)
                     return "No block numbers provided for deletion.";
-                return await provider.DeleteBlocksAsync(sessionId, blocks, cascade ?? true);
+                return await provider.DeleteBlocksAsync(agentId, blocks, cascade ?? true);
 
             case "recover":
                 if (blocks is null || blocks.Length == 0)
                     return "No block numbers provided for recovery.";
-                var recovered = await provider.RecoverBlocksAsync(sessionId, blocks, cascade ?? false);
+                var recovered = await provider.RecoverBlocksAsync(agentId, blocks, cascade ?? false);
                 return $"Recovered {recovered} block{(recovered == 1 ? "" : "s")}.";
 
             case "list":
             {
-                var allBlocks = await provider.GetBlocksAsync(sessionId);
+                var allBlocks = await provider.GetBlocksAsync(agentId);
                 var protectedSet = cfg is not null
-                    ? (await cfg.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, sessionId)).ProtectedBlockTypes
+                    ? (await cfg.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId)).ProtectedBlockTypes
                     : [];
                 var protectedTypes = new HashSet<string>(protectedSet, StringComparer.OrdinalIgnoreCase);
                 var blockLines = new List<string> { "── Memory Blocks ────────────────────────" };
@@ -59,7 +59,7 @@ public static class MemoryTool
             }
 
             case "stats":
-                var (totalBlocks, _, typeStats) = await provider.ComputeStatsAsync(sessionId);
+                var (totalBlocks, _, typeStats) = await provider.ComputeStatsAsync(agentId);
                 var lines = new List<string> { "── Memory Stats ─────────────────────────" };
                 foreach (var kv in typeStats.OrderByDescending(kv => kv.Value))
                 {
@@ -70,14 +70,14 @@ public static class MemoryTool
                 lines.Add($"  Blocks: {totalBlocks}");
 
                 // Model
-                var model = await provider.GetAgentModelAsync(sessionId);
+                var model = await provider.GetAgentModelAsync(agentId);
                 if (model is not null)
                     lines.Add($"  Model:  {model}");
 
                 // Real API usage + pricing
                 if (cfg is not null)
                 {
-                    var usage = await provider.GetUsageAsync(sessionId);
+                    var usage = await provider.GetUsageAsync(agentId);
                     if (usage.Hit + usage.Miss + usage.Output > 0)
                     {
                         lines.Add($"  Input:  {(usage.Hit + usage.Miss) / 1000.0:F1}K");
@@ -106,7 +106,7 @@ public static class MemoryTool
         }
     }
 
-    private sealed class Invoker(IBlockMemoryProvider provider, string sessionId, IConfigService? cfg)
+    private sealed class Invoker(IBlockMemoryProvider provider, string agentId, IConfigService? cfg)
     {
         [Description("Memory management tool. Actions: 'stats' — show block type distribution, token usage, cache stats, and cost; 'list' — show all blocks with numbers, types, and content previews (protected blocks marked [!]); 'clean' — soft-delete blocks by number (remove clutter from context); 'recover' — restore soft-deleted blocks by number.")]
         public Task<string> Execute(
@@ -114,11 +114,11 @@ public static class MemoryTool
             [Description("Block numbers for clean/recover, e.g. [5.0, 7.0, 9.0]. Not needed for 'stats' or 'list'.")] double[]? blocks = null,
             [Description("Cascade along parent chain: true=follow Data['parentNumber']. Default: true for clean, false for recover.")] bool? cascade = null,
             bool? peek = true)
-            => MemoryTool.Execute(action, blocks, cascade, provider, sessionId, cfg);
+            => MemoryTool.Execute(action, blocks, cascade, provider, agentId, cfg);
     }
 
-    public static AIFunction AsAIFunction(IBlockMemoryProvider provider, string sessionId, IConfigService? cfg = null)
+    public static AIFunction AsAIFunction(IBlockMemoryProvider provider, string agentId, IConfigService? cfg = null)
         => AIFunctionFactory.Create(
-            new Invoker(provider, sessionId, cfg).Execute,
+            new Invoker(provider, agentId, cfg).Execute,
             "memory");
 }

@@ -31,7 +31,7 @@ internal sealed class TurnContext
     {
         ["read_file"] = ["content"],
         ["write_file"] = ["content"],
-        ["patch_file"] = ["newString", "oldString"]
+        ["patch_file"] = ["new", "old"]
     };
 
     public TurnContext(

@@ -50,37 +50,37 @@ public class ToolRegistry : IToolRegistry
         _defaultDir = Directory.GetCurrentDirectory();
     }
 
-    public async Task<IReadOnlyList<AITool>> GetBuiltinToolsAsync(string sessionId, bool includeMemory = false)
+    public async Task<IReadOnlyList<AITool>> GetBuiltinToolsAsync(string agentId, bool includeMemory = false)
     {
         // Don't give subagent tools to subagents themselves — prevents recursive creation chaos
-        var isSubAgent = _subAgentManager.Exists(sessionId);
+        var isSubAgent = _subAgentManager.Exists(agentId);
 
         var tools = new List<AITool>
         {
-            BashTool.AsAIFunction(_bashManager, sessionId, _cfgService),
-            FileReadTool.AsAIFunction(_cfgService, _defaultDir, sessionId),
+            BashTool.AsAIFunction(_bashManager, agentId, _cfgService),
+            FileReadTool.AsAIFunction(_cfgService, _defaultDir, agentId),
             FileWriteTool.AsAIFunction(_defaultDir),
             FilePatchTool.AsAIFunction(_defaultDir),
-            TodoTool.AsTodoFunction(_agentStore, _blockStore, sessionId, _cfgService),
-            WebFetchTool.AsFetchFunction(_cfgService, sessionId),
-            SearchTools.AsGlobFunction(_cfgService, _defaultDir, sessionId, _logger),
-            SearchTools.AsGrepFunction(_cfgService, _defaultDir, sessionId, _logger),
+            TodoTool.AsTodoFunction(_agentStore, _blockStore, agentId, _cfgService),
+            WebFetchTool.AsFetchFunction(_cfgService, agentId),
+            SearchTools.AsGlobFunction(_cfgService, _defaultDir, agentId, _logger),
+            SearchTools.AsGrepFunction(_cfgService, _defaultDir, agentId, _logger),
         };
 
         // Memory tool: available for main agent, or for subagents with saveMemory=true
         if (!isSubAgent || includeMemory)
-            tools.Add(MemoryTool.AsAIFunction(_blockMemory, sessionId, _cfgService));
+            tools.Add(MemoryTool.AsAIFunction(_blockMemory, agentId, _cfgService));
 
         // MCP tools: available for all agents
-        var mcpTools = await _mcpService.GetToolsAsync(sessionId);
+        var mcpTools = await _mcpService.GetToolsAsync(agentId);
         tools.AddRange(mcpTools);
 
         // Subagent tools: only for main agent (prevents recursion)
         if (!isSubAgent)
         {
-            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _llmOpts, sessionId));
-            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _llmOpts, sessionId));
-            tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _agentStore, _blockStore, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _llmOpts, agentId));
+            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _llmOpts, agentId));
+            tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _agentStore, _blockStore, agentId));
         }
 
         return tools;

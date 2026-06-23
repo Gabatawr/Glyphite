@@ -25,17 +25,17 @@ public static class TodoTool
         TodoItem[]? items,
         IAgentStore agentStore,
         IBlockStore blockStore,
-        string sessionId,
+        string agentId,
         TodoOptions opts)
     {
         switch (action)
         {
             case "create":
-                return await Create(title, items, agentStore, blockStore, sessionId, opts);
+                return await Create(title, items, agentStore, blockStore, agentId, opts);
             case "update":
-                return await Update(title, items, agentStore, blockStore, sessionId, opts);
+                return await Update(title, items, agentStore, blockStore, agentId, opts);
             case "list":
-                return await List(title, blockStore, sessionId);
+                return await List(title, blockStore, agentId);
             default:
                 return $"Unknown action '{action}'. Use 'create', 'list', or 'update'.";
         }
@@ -46,12 +46,12 @@ public static class TodoTool
         TodoItem[]? items,
         IAgentStore agentStore,
         IBlockStore blockStore,
-        string sessionId,
+        string agentId,
         TodoOptions opts)
     {
         title ??= "Todo";
-        var nextNumber = await agentStore.GetNextNumberAsync(sessionId);
-        await agentStore.SetNextNumberAsync(sessionId, nextNumber + 1);
+        var nextNumber = await agentStore.GetNextNumberAsync(agentId);
+        await agentStore.SetNextNumberAsync(agentId, nextNumber + 1);
 
         items ??= [];
 
@@ -66,7 +66,7 @@ public static class TodoTool
         var block = MemoryBlock.Create(BlockType.todo, title, toolName: "todo", data: data);
         block.Number = nextNumber;
 
-        await blockStore.AppendBlocksAsync(sessionId, [block], nextNumber + 1);
+        await blockStore.AppendBlocksAsync(agentId, [block], nextNumber + 1);
 
         return title + "\n" + FormatItems(dictItems);
     }
@@ -76,16 +76,16 @@ public static class TodoTool
         TodoItem[]? items,
         IAgentStore agentStore,
         IBlockStore blockStore,
-        string sessionId,
+        string agentId,
         TodoOptions opts)
     {
         // Find by title (ID), fall back to latest if title is null
-        var existing = await FindTodoByTitle(title, blockStore, sessionId);
+        var existing = await FindTodoByTitle(title, blockStore, agentId);
         if (existing is null)
         {
             if (!string.IsNullOrEmpty(title))
                 return $"Todo list '{title}' not found. Create one with action='create' first.";
-            var todos = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo, 1, true);
+            var todos = await blockStore.LoadBlocksByTypeAsync(agentId, BlockType.todo, 1, true);
             if (todos.Count == 0)
                 return "No todo list found. Create one with action='create' first.";
             existing = todos[0];
@@ -189,7 +189,7 @@ public static class TodoTool
         // Update in-place — serialize items as JsonElement (avoids round-trip through object)
         var itemsElement = JsonSerializer.SerializeToElement(currentItems);
         var updatedData = new Dictionary<string, object> { ["items"] = itemsElement };
-        await blockStore.UpdateBlockDataAsync(sessionId, existing.Number, updatedData);
+        await blockStore.UpdateBlockDataAsync(agentId, existing.Number, updatedData);
 
         var displayTitle = existing.Content ?? "Updated";
         return displayTitle + "\n" + FormatItems(currentItems);
@@ -198,12 +198,12 @@ public static class TodoTool
     private static async Task<string> List(
         string? title,
         IBlockStore blockStore,
-        string sessionId)
+        string agentId)
     {
         // Show specific list by title
         if (!string.IsNullOrEmpty(title))
         {
-            var existing = await FindTodoByTitle(title, blockStore, sessionId);
+            var existing = await FindTodoByTitle(title, blockStore, agentId);
             if (existing is null)
                 return $"Todo list '{title}' not found. Create one with action='create' first.";
             var items = DeserializeItems(existing);
@@ -211,7 +211,7 @@ public static class TodoTool
         }
 
         // No title — show all lists
-        var all = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo, null, false);
+        var all = await blockStore.LoadBlocksByTypeAsync(agentId, BlockType.todo, null, false);
         if (all.Count == 0)
             return "No todo lists found. Create one with action='create' first.";
 
@@ -227,10 +227,10 @@ public static class TodoTool
     }
 
     /// <summary>Find a todo block by its title (Content field). Case-insensitive.</summary>
-    private static async Task<MemoryBlock?> FindTodoByTitle(string? title, IBlockStore blockStore, string sessionId)
+    private static async Task<MemoryBlock?> FindTodoByTitle(string? title, IBlockStore blockStore, string agentId)
     {
         if (string.IsNullOrEmpty(title)) return null;
-        var all = await blockStore.LoadBlocksByTypeAsync(sessionId, BlockType.todo, null, false);
+        var all = await blockStore.LoadBlocksByTypeAsync(agentId, BlockType.todo, null, false);
         return all.FirstOrDefault(b => string.Equals(b.Content, title, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -266,7 +266,7 @@ public static class TodoTool
         return sb.ToString().TrimEnd('\n', '\r');
     }
 
-    private sealed class TodoInvoker(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService cfg)
+    private sealed class TodoInvoker(IAgentStore agentStore, IBlockStore blockStore, string agentId, IConfigService cfg)
     {
         [Description("Create, update, or list a todo list to plan and track task progress. Each todo list is identified by its title (ID). 'create' makes a new list; 'update' modifies a specific list by title; 'list' shows a list by title (or all lists if title omitted). Statuses: pending, in_progress, done, cancelled, blocked. Priority: low, medium, high.")]
         public async Task<string> Invoke(
@@ -274,13 +274,13 @@ public static class TodoTool
             [Description("Title (ID) for the todo list. Required for create. For update: finds the list to modify. For list: which list to show. Omit for update/list to affect the latest list or show all.")] string? title = null,
             [Description("Items for the todo. For create: {text: string, status?: string, priority?: string}. For update: {index?: number, text?: string, status?: string, priority?: string, remove?: boolean}. Items without index are added; items with index are updated; items with remove=true are deleted. Not needed for 'list'.")] TodoItem[]? items = null)
         {
-            var opts = await cfg.GetOptionsAsync<TodoOptions>(TodoOptions.Section, sessionId);
-            return await Execute(action, title, items, agentStore, blockStore, sessionId, opts);
+            var opts = await cfg.GetOptionsAsync<TodoOptions>(TodoOptions.Section, agentId);
+            return await Execute(action, title, items, agentStore, blockStore, agentId, opts);
         }
     }
 
-    public static AIFunction AsTodoFunction(IAgentStore agentStore, IBlockStore blockStore, string sessionId, IConfigService cfg)
+    public static AIFunction AsTodoFunction(IAgentStore agentStore, IBlockStore blockStore, string agentId, IConfigService cfg)
         => AIFunctionFactory.Create(
-            new TodoInvoker(agentStore, blockStore, sessionId, cfg).Invoke,
+            new TodoInvoker(agentStore, blockStore, agentId, cfg).Invoke,
             "todo");
 }

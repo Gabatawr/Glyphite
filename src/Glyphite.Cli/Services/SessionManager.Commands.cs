@@ -10,6 +10,11 @@ public partial class SessionManager
     {
         if (name is null)
         {
+            // Flush any stale console input (left from previous ReadKey-based input reader)
+            await Task.Delay(50);
+            while (Console.KeyAvailable)
+                Console.ReadKey(intercept: true);
+
             Console.ForegroundColor = ConsoleColor.DarkYellow;
             Console.Write("Enter new agent name: ");
             Console.ResetColor();

@@ -8,6 +8,7 @@ public interface IAgentManager
     public static bool IsValidAgentName(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
+        if (name.Any(char.IsControl)) return false;
         var invalid = Path.GetInvalidFileNameChars();
         return !name.Any(c => invalid.Contains(c)) && name.Length <= 100;
     }

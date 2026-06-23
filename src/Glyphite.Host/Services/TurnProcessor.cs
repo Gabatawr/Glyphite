@@ -48,7 +48,7 @@ public class TurnProcessor : ITurnProcessor
     }
 
     public async IAsyncEnumerable<TurnEvent> ProcessAsync(
-        string sessionId,
+        string agentId,
         string input,
         ChatOptions chatOptions,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
@@ -56,50 +56,50 @@ public class TurnProcessor : ITurnProcessor
         // ── 1. PREPARATION: config, options, context ──
 
         var parentCwd = Directory.GetCurrentDirectory();
-        var agentCwd = await _agentStore.GetAgentHomePathAsync(sessionId) ?? parentCwd;
-        await _configLoader.LoadConfigAsync(sessionId, agentCwd, parentCwd);
+        var agentCwd = await _agentStore.GetAgentHomePathAsync(agentId) ?? parentCwd;
+        await _configLoader.LoadConfigAsync(agentId, agentCwd, parentCwd);
 
-        var llmOpts = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section, sessionId);
-        var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>(AgentOptions.Section, sessionId);
+        var llmOpts = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section, agentId);
+        var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>(AgentOptions.Section, agentId);
 
         var modelStr = chatOptions.ModelId ?? llmOpts.Model;
-        _logger.LogInformation("Turn start session {SessionId}, model {Model}", sessionId, modelStr);
+        _logger.LogInformation("Turn start session {SessionId}, model {Model}", agentId, modelStr);
 
-        var nextNum = await _agentStore.GetNextNumberAsync(sessionId);
+        var nextNum = await _agentStore.GetNextNumberAsync(agentId);
         if (nextNum <= 0) nextNum = 1;
 
         // Auto-compaction
         // 1. Fast check (no LLM) — yield event immediately so UI doesn't freeze
-        var shouldCompact = await _compactionService.ShouldCompactAsync(sessionId, llmOpts.ContextWindow);
+        var shouldCompact = await _compactionService.ShouldCompactAsync(agentId, llmOpts.ContextWindow);
 
         if (shouldCompact)
         {
-            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, sessionId);
+            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
             var compactArgs = $"{{\"AutoCompress\":true,\"AutoThreshold\":{compOpts.AutoThreshold}}}";
 
             // Yield to UI BEFORE summarization (avoids freeze)
             yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
 
             // 2. Actual compaction (slow — LLM summarization)
-            var compacted = await _compactionService.CompactAsync(sessionId, llmOpts.ContextWindow);
+            var compacted = await _compactionService.CompactAsync(agentId, llmOpts.ContextWindow);
 
             if (compacted)
             {
                 var compactBlock = MemoryBlock.AutoTool("compression", compactArgs, "", modelStr);
                 compactBlock.Number = nextNum++;
-                await _blockStore.AppendBlocksAsync(sessionId, [compactBlock], nextNum);
+                await _blockStore.AppendBlocksAsync(agentId, [compactBlock], nextNum);
             }
         }
 
         var isSubagent = chatOptions.AdditionalProperties?.ContainsKey("isSubagent") == true;
         var includeMemory = chatOptions.AdditionalProperties?.ContainsKey("saveMemory") == true;
-        chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(sessionId, includeMemory)).ToList();
+        chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(agentId, includeMemory)).ToList();
 
-        var peekStats = await _blockStore.GetPeekBlockStatsAsync(sessionId);
-        var peekCleaned = await _blockStore.RemovePeekBlocksAsync(sessionId);
+        var peekStats = await _blockStore.GetPeekBlockStatsAsync(agentId);
+        var peekCleaned = await _blockStore.RemovePeekBlocksAsync(agentId);
 
         var contextMessages = await _blockMemory.BuildContextAsync(
-            sessionId, modelStr, llmOpts.ContextWindow);
+            agentId, modelStr, llmOpts.ContextWindow);
 
         if (peekCleaned > 0)
         {
@@ -109,7 +109,7 @@ public class TurnProcessor : ITurnProcessor
 
             var autoBlock = MemoryBlock.AutoTool("peek_reasoning", cleanArgs, peekMsg, modelStr);
             autoBlock.Number = nextNum++;
-            await _blockStore.AppendBlocksAsync(sessionId, [autoBlock], nextNum);
+            await _blockStore.AppendBlocksAsync(agentId, [autoBlock], nextNum);
 
             contextMessages.Add(new ChatMessage(ChatRole.System, autoBlock.ToContextString()));
         }
@@ -118,7 +118,7 @@ public class TurnProcessor : ITurnProcessor
         initialMessages.AddRange(contextMessages);
         initialMessages.Add(new ChatMessage(ChatRole.User, input));
 
-        var sessionClient = new SessionChatClient(_chatClient, sessionId, modelStr);
+        var sessionClient = new SessionChatClient(_chatClient, agentId, modelStr);
         var failSafeClient = new FailSafeChatClient(
             sessionClient, agentOpts.MaxToolIterations, _logger);
 
@@ -131,20 +131,20 @@ public class TurnProcessor : ITurnProcessor
             LastIterationTotalOutput = failSafeClient.TotalOutputTokens;
             LastIterationLastHit = failSafeClient.LastHitTokens;
             LastIterationLastMiss = failSafeClient.LastMissTokens;
-            return _agentStore.RecordUsageAsync(sessionId, hit, miss, output, hit, miss, modelStr);
+            return _agentStore.RecordUsageAsync(agentId, hit, miss, output, hit, miss, modelStr);
         };
 
         _blockMemory.CurrentExecutedIds.Value = failSafeClient.ExecutedCallIds;
 
         var userBlock = isSubagent ? MemoryBlock.AgentTask(input) : MemoryBlock.UserMessage(input);
         userBlock.Number = nextNum++;
-        await _blockStore.AppendBlocksAsync(sessionId, [userBlock], nextNum);
+        await _blockStore.AppendBlocksAsync(agentId, [userBlock], nextNum);
 
         // ── 2. STREAMING: create TurnContext and process updates ──
 
         var ctx = new TurnContext(
             _blockStore, _agentStore, _logger,
-            sessionId, modelStr, nextNum,
+            agentId, modelStr, nextNum,
             contextMessages, failSafeClient, agentOpts);
 
         await foreach (var update in failSafeClient
@@ -169,7 +169,7 @@ public class TurnProcessor : ITurnProcessor
         await ctx.FlushAll(ctx.AgentOpts);
 
         _logger.LogInformation("Turn end session {SessionId}: hit={Hit} miss={Miss} out={Output} lastHit={LastHit} lastMiss={LastMiss}",
-            sessionId,
+            agentId,
             ctx.FailSafeClient.TotalCacheHitTokens,
             ctx.FailSafeClient.TotalCacheMissTokens,
             ctx.FailSafeClient.TotalOutputTokens,
@@ -177,13 +177,13 @@ public class TurnProcessor : ITurnProcessor
             ctx.FailSafeClient.LastMissTokens);
 
         // End-of-turn: clean peek markers on non-reasoning blocks (tool, auto_tool)
-        await _blockStore.ClearPeekMarkersAsync(sessionId, false);
+        await _blockStore.ClearPeekMarkersAsync(agentId, false);
 
         // Insert turn marker block with usage summary
         var turnBlock = MemoryBlock.TurnMarker(
             $"{{\"hit\":{ctx.FailSafeClient.TotalCacheHitTokens},\"miss\":{ctx.FailSafeClient.TotalCacheMissTokens},\"out\":{ctx.FailSafeClient.TotalOutputTokens}}}");
         turnBlock.Number = ctx.NextNum++;
-        await _blockStore.AppendBlocksAsync(sessionId, [turnBlock], ctx.NextNum);
+        await _blockStore.AppendBlocksAsync(agentId, [turnBlock], ctx.NextNum);
 
         yield return new TurnCompleteEvent();
     }

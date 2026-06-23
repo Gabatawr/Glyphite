@@ -30,9 +30,9 @@ public class ConsoleRenderer
     }
 
     /// <summary>Refresh ToolStreamingOptions from config. Call before rendering to pick up changes.</summary>
-    public async Task RefreshAsync(string sessionId)
+    public async Task RefreshAsync(string agentId)
     {
-        _streamOpts = await _cfgService.GetOptionsAsync<ToolStreamingOptions>(ToolStreamingOptions.Section, sessionId);
+        _streamOpts = await _cfgService.GetOptionsAsync<ToolStreamingOptions>(ToolStreamingOptions.Section, agentId);
     }
 
     public void RenderBlock(MemoryBlock block, ref RenderState s)
