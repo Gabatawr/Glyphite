@@ -25,5 +25,6 @@ public static class ToolCallHelper
         return toolName == "patch_file" || toolName == "write_file";
     }
 
-
+    /// <summary>Format a number to K notation: &lt;1000 raw, &gt;=1000 as X.YK (e.g. 133.2K).</summary>
+    public static string FormatK(long val) => val < 1000 ? val.ToString("N0") : $"{val / 1000.0:F1}K";
 }

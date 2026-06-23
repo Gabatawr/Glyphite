@@ -1,5 +1,6 @@
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Host.Services;
+using Glyphite.Host.Utils;
 
 namespace Glyphite.Cli.Services;
 
@@ -98,9 +99,11 @@ public partial class SessionManager
         {
             var isCurrent = string.Equals(sessions[i], AgentId, StringComparison.Ordinal);
             var blockCount = await _blockStore.GetBlockCountAsync(sessions[i]);
+            var usage = await _agentStore.GetLastUsageAsync(sessions[i]);
+            var ctx = ToolCallHelper.FormatK(usage.LastHit + usage.LastMiss);
             var marker = isCurrent ? " ← current" : "";
             Console.ForegroundColor = isCurrent ? ConsoleColor.Green : ConsoleColor.Gray;
-            Console.WriteLine($"  [{i + 1}] {sessions[i]} ({blockCount} blocks){marker}");
+            Console.WriteLine($"  [{i + 1}] {sessions[i]} ({blockCount} blocks, {ctx} ctx){marker}");
         }
 
         Console.ResetColor();
@@ -168,6 +171,8 @@ public partial class SessionManager
             var agentHome = await _agentStore.GetAgentHomePathAsync(sessions[i]) ?? "";
             var createdAt = await _agentStore.GetAgentCreatedAtAsync(sessions[i]) ?? "";
             var blockCount = await _blockStore.GetBlockCountAsync(sessions[i]);
+            var usage = await _agentStore.GetLastUsageAsync(sessions[i]);
+            var ctx = ToolCallHelper.FormatK(usage.LastHit + usage.LastMiss);
             var lastLaunch = await _agentStore.GetLastLaunchPathAsync(sessions[i]);
 
             var marker = isCurrent ? " ← current" : "";
@@ -176,7 +181,7 @@ public partial class SessionManager
             var lastStr = lastLaunch is not null ? $" last: {lastLaunch}" : "";
 
             Console.ForegroundColor = isCurrent ? ConsoleColor.Green : ConsoleColor.Gray;
-            Console.WriteLine($"  [{i + 1}] {sessions[i]} ({blockCount} blocks, {createdDate}){atHome}{lastStr}{marker}");
+            Console.WriteLine($"  [{i + 1}] {sessions[i]} ({blockCount} blocks, {ctx} ctx, {createdDate}){atHome}{lastStr}{marker}");
         }
 
         Console.ResetColor();
@@ -240,10 +245,12 @@ public partial class SessionManager
         for (int i = 0; i < others.Count; i++)
         {
             var blockCount = await _blockStore.GetBlockCountAsync(others[i]);
+            var usage = await _agentStore.GetLastUsageAsync(others[i]);
+            var ctx = ToolCallHelper.FormatK(usage.LastHit + usage.LastMiss);
             var createdAt = await _agentStore.GetAgentCreatedAtAsync(others[i]) ?? "";
             var createdDate = createdAt.Length >= 10 ? createdAt[..10] : "";
             Console.ForegroundColor = ConsoleColor.Gray;
-            Console.WriteLine($"  [{i + 1}] {others[i]} ({blockCount} blocks, {createdDate})");
+            Console.WriteLine($"  [{i + 1}] {others[i]} ({blockCount} blocks, {ctx} ctx, {createdDate})");
         }
 
         Console.ResetColor();
@@ -452,9 +459,11 @@ public partial class SessionManager
         {
             var homePath = await _agentStore.GetAgentHomePathAsync(agents[i]) ?? "";
             var blockCount = await _blockStore.GetBlockCountAsync(agents[i]);
+            var usage = await _agentStore.GetLastUsageAsync(agents[i]);
+            var ctx = ToolCallHelper.FormatK(usage.LastHit + usage.LastMiss);
             var createdAt = (await _agentStore.GetAgentCreatedAtAsync(agents[i]) ?? "")[..10];
             Console.ForegroundColor = ConsoleColor.Gray;
-            Console.WriteLine($"  [{i + 1}] {agents[i]} ({blockCount} blocks, {createdAt})");
+            Console.WriteLine($"  [{i + 1}] {agents[i]} ({blockCount} blocks, {ctx} ctx, {createdAt})");
         }
         Console.ResetColor();
         Console.Write($"\nSelect agent [1-{agents.Count}]: ");
@@ -482,8 +491,10 @@ public partial class SessionManager
         for (int i = 0; i < agents.Count; i++)
         {
             var blockCount = await _blockStore.GetBlockCountAsync(agents[i]);
+            var usage = await _agentStore.GetLastUsageAsync(agents[i]);
+            var ctx = ToolCallHelper.FormatK(usage.LastHit + usage.LastMiss);
             Console.ForegroundColor = ConsoleColor.Gray;
-            Console.WriteLine($"  [{i + 1}] {agents[i]} ({blockCount} blocks)");
+            Console.WriteLine($"  [{i + 1}] {agents[i]} ({blockCount} blocks, {ctx} ctx)");
         }
         Console.ResetColor();
         Console.Write($"Select source [1-{agents.Count}]: ");

@@ -4,6 +4,7 @@ using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.DI;
 using Glyphite.Host.Services;
+using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 
@@ -371,8 +372,8 @@ internal static class SubAgentTool
                 lines.Add($"    Model:    {model}");
                 lines.Add($"    Blocks:   {blockCount}");
                 lines.Add($"    Created:  {createdAt}");
-                lines.Add($"    Cache:    {usage.LastHit:N0} hit / {usage.LastMiss:N0} miss (last turn)");
-                lines.Add($"    Context:  ~{usage.Hit + usage.Miss:N0} total tokens");
+                lines.Add($"    Cache:    {ToolCallHelper.FormatK(usage.LastHit)} hit / {ToolCallHelper.FormatK(usage.LastMiss)} miss (last turn)");
+                lines.Add($"    Context:  ~{ToolCallHelper.FormatK(usage.LastHit + usage.LastMiss)} (last turn)");
                 if (isSub) lines.Add($"    Status:   active (scope loaded)");
                 lines.Add("");
             }
