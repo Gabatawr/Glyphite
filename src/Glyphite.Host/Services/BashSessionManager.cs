@@ -192,7 +192,7 @@ public class BashSession : IDisposable
 
             var effectiveCommand = string.IsNullOrEmpty(workdir)
                 ? command
-                : $"(cd \"{workdir.Replace("\"", "\\\"")}\" && {command})";
+                : $"(cd '{workdir.Replace("'", "'\\''")}' && {command})";
 
             await _stdin.WriteLineAsync($"{effectiveCommand} 2>&1");
             await _stdin.WriteLineAsync($"echo");

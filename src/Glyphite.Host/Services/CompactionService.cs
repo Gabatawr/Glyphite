@@ -151,7 +151,12 @@ namespace Glyphite.Host.Services;
                 return false;
 
             // 6. Find agent_data block
-            var agentBlock = blocks.First(b => b.Type == BlockType.agent_data);
+            var agentBlock = blocks.FirstOrDefault(b => b.Type == BlockType.agent_data);
+            if (agentBlock is null)
+            {
+                _logger.LogWarning("Compaction failed for session {SessionId}: agent_data block not found", agentId);
+                return false;
+            }
 
             // Build compacted history: summaries (old zones) + summary failure fallback + preserved original blocks
             var nextNumber = agentBlock.Number + 1;

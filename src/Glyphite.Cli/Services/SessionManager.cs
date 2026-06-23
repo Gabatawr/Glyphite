@@ -87,7 +87,6 @@ public partial class SessionManager
     /// </summary>
     public async Task<CreateOrResumeResult> CreateOrResumeAgentAsync(string cwd)
     {
-        _cfgService.LogAction = msg => Serilog.Log.Information("{ConfigMessage}", msg);
         await _cfgService.InitializeAsync(replaceSections: ["McpServers"]);
 
         var agents = await _agentStore.ListAgentsAsync();

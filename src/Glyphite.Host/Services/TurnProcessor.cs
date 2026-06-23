@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Tools;
@@ -84,7 +85,7 @@ public class TurnProcessor : ITurnProcessor
         if (shouldCompact)
         {
             var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
-            var compactArgs = $"{{\"AutoCompress\":true,\"AutoThreshold\":{compOpts.AutoThreshold}}}";
+            var compactArgs = JsonSerializer.Serialize(new { AutoCompress = true, AutoThreshold = compOpts.AutoThreshold });
 
             // Yield to UI BEFORE summarization (avoids freeze)
             yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
@@ -113,7 +114,7 @@ public class TurnProcessor : ITurnProcessor
         if (peekCleaned > 0)
         {
             var peekMsg = TurnContext.BuildPeekCleanMessage(peekCleaned, peekStats);
-            var cleanArgs = $"{{\"count\":{peekCleaned}}}";
+            var cleanArgs = JsonSerializer.Serialize(new { count = peekCleaned });
             yield return new AutoToolTurnEvent("peek_reasoning", cleanArgs, false, "");
 
             var autoBlock = MemoryBlock.AutoTool("peek_reasoning", cleanArgs, peekMsg, modelStr);
@@ -190,7 +191,7 @@ public class TurnProcessor : ITurnProcessor
 
         // Insert turn marker block with usage summary
         var turnBlock = MemoryBlock.TurnMarker(
-            $"{{\"hit\":{ctx.FailSafeClient.TotalCacheHitTokens},\"miss\":{ctx.FailSafeClient.TotalCacheMissTokens},\"out\":{ctx.FailSafeClient.TotalOutputTokens}}}");
+            JsonSerializer.Serialize(new { hit = ctx.FailSafeClient.TotalCacheHitTokens, miss = ctx.FailSafeClient.TotalCacheMissTokens, out_ = ctx.FailSafeClient.TotalOutputTokens }));
         turnBlock.Number = ctx.NextNum++;
         await _blockStore.AppendBlocksAsync(agentId, [turnBlock], ctx.NextNum);
 

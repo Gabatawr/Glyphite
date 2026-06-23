@@ -14,8 +14,6 @@ public class ConfigService : IConfigService
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _overlays = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _configCache = new(StringComparer.OrdinalIgnoreCase);
 
-    public Action<string>? LogAction { get; set; }
-
     public ConfigService(IConfigStore store, IConfiguration appConfig, ILogger<ConfigService>? logger = null)
     {
         _store = store;
@@ -217,7 +215,6 @@ public class ConfigService : IConfigService
     private void Log(string message)
     {
         _logger.LogInformation("{ConfigMessage}", message);
-        LogAction?.Invoke(message);
     }
 
     private static string MaskValue(string key, string value)

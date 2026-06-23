@@ -33,7 +33,7 @@ public class MemoryBlock
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    [JsonPropertyOrder(2)]
+    [JsonPropertyOrder(8)]
     public DateTime? UpdatedAt { get; set; }
 
     [JsonPropertyOrder(3)]
@@ -121,9 +121,9 @@ public class MemoryBlock
                     extra += $"\nItems: {summary}";
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                Console.Error.WriteLine($"[MemoryBlock] Failed to parse items in ToContextString: {ex.Message}");
+                // Silently ignore — malformed todo items just render without formatting
             }
         }
 

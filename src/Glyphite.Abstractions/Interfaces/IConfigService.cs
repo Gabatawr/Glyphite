@@ -7,7 +7,6 @@ public record ConfigDiffResult(
 
 public interface IConfigService
 {
-    Action<string>? LogAction { get; set; }
     Task<T> GetOptionsAsync<T>(string sectionName, string? agentId = null) where T : new();
     Task InitializeAsync(HashSet<string>? replaceSections = null);
     Task<Dictionary<string, string>> GetConfigAsync(string? agentId = null);
