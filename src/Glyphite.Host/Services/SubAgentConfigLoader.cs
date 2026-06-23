@@ -22,26 +22,35 @@ public class SubAgentConfigLoader : ISubAgentConfigLoader
 
     public async Task LoadConfigAsync(string agentId, string agentCwd, string parentCwd)
     {
-        var merged = new Dictionary<string, string>();
-
+        // Load all configs from parent directory
+        var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         await ReadAndFlattenConfigFileAsync(Path.Combine(parentCwd, "Glyphite.json"), merged);
         await ReadAndFlattenConfigFileAsync(Path.Combine(parentCwd, $"Glyphite.{agentId}.json"), merged);
 
+        // Load configs from agent working directory (if different)
         if (!string.Equals(agentCwd, parentCwd, StringComparison.OrdinalIgnoreCase))
+        {
+            // Agent-specific configs override parent configs
+            await ReadAndFlattenConfigFileAsync(Path.Combine(agentCwd, "Glyphite.json"), merged);
             await ReadAndFlattenConfigFileAsync(Path.Combine(agentCwd, $"Glyphite.{agentId}.json"), merged);
+        }
 
         if (merged.Count == 0) return;
 
         var homePath = await _agentStore.GetAgentHomePathAsync(agentId);
-        if (string.Equals(homePath, agentCwd, StringComparison.OrdinalIgnoreCase))
+
+        if (string.Equals(agentCwd, homePath, StringComparison.OrdinalIgnoreCase))
         {
-            // Full replace: clear old session keys then upsert new ones.
-            // This prevents orphaned keys when the config file is renamed or structurally changed.
+            // Agent is at home → persist to DB (full replace session-scoped keys)
+            // merged includes parent + agent configs with agent taking priority
             await _configStore.DeleteConfigByScopeAsync("session", agentId);
             await _cfgService.UpdateConfigAsync(merged, scope: "session", agentId: agentId);
         }
         else
+        {
+            // Agent is NOT at home → in-memory overlay only
             _cfgService.SetSessionOverlay(agentId, merged);
+        }
     }
 
     private static async Task ReadAndFlattenConfigFileAsync(string filePath, Dictionary<string, string> target)
