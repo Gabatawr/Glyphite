@@ -34,6 +34,10 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     public IReadOnlyList<ChatMessage>? LastMessages { get; private set; }
     public Action<long, long, long>? OnUsage { get; set; }
 
+    /// <summary>Called after each iteration's usage is recorded, with per-iteration delta values.
+    /// Fires immediately so the caller can persist usage before the next iteration (or crash).</summary>
+    public Func<long, long, long, Task>? OnIterationRecorded { get; set; }
+
     /// <summary>Called after each batch of tool executions completes. Returns text to append to tool results (or null).</summary>
     public Func<Task<string?>>? OnBatchComplete { get; set; }
 
@@ -100,6 +104,10 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                 var chatResponse = allUpdates.ToChatResponse();
                 _usageTracker.RecordUsage(allUpdates);
 
+                // Persist per-iteration usage immediately — survives crash/Escape
+                if (OnIterationRecorded is not null)
+                    await OnIterationRecorded(_usageTracker.LastHitTokens, _usageTracker.LastMissTokens, _usageTracker.LastOutputTokens);
+
                 _logger.LogInformation("Completed in {Iteration} iteration(s): hit={Hit} miss={Miss} out={Output}",
                     iteration + 1, _usageTracker.TotalCacheHitTokens, _usageTracker.TotalCacheMissTokens, _usageTracker.TotalOutputTokens);
                 var finalAssistant = chatResponse.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
@@ -127,6 +135,10 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
             // Record usage for tool-calling iteration
             _usageTracker.RecordUsage(allUpdates);
+
+            // Persist per-iteration usage immediately — survives crash/Escape
+            if (OnIterationRecorded is not null)
+                await OnIterationRecorded(_usageTracker.LastHitTokens, _usageTracker.LastMissTokens, _usageTracker.LastOutputTokens);
 
             var toolResponse = allUpdates.ToChatResponse();
             var toolAssistant = toolResponse.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);

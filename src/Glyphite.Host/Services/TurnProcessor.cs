@@ -18,6 +18,13 @@ public class TurnProcessor : ITurnProcessor
     private readonly ILogger _logger;
     private readonly ISubAgentConfigLoader _configLoader;
 
+    // Last per-iteration usage (for ChatRepl fallback after Escape/crash)
+    public long LastIterationTotalHit { get; private set; }
+    public long LastIterationTotalMiss { get; private set; }
+    public long LastIterationTotalOutput { get; private set; }
+    public long LastIterationLastHit { get; private set; }
+    public long LastIterationLastMiss { get; private set; }
+
     public TurnProcessor(
         IAgentStore agentStore,
         IBlockStore blockStore,
@@ -114,6 +121,18 @@ public class TurnProcessor : ITurnProcessor
         var failSafeClient = new FailSafeChatClient(
             sessionClient, agentOpts.MaxToolIterations, _logger);
 
+        // Subscribe: write per-iteration usage immediately — survives crash/Escape
+        failSafeClient.OnIterationRecorded = (hit, miss, output) =>
+        {
+            // Save for ChatRepl fallback (used when UsageTurnEvent doesn't arrive due to Escape)
+            LastIterationTotalHit = failSafeClient.TotalCacheHitTokens;
+            LastIterationTotalMiss = failSafeClient.TotalCacheMissTokens;
+            LastIterationTotalOutput = failSafeClient.TotalOutputTokens;
+            LastIterationLastHit = failSafeClient.LastHitTokens;
+            LastIterationLastMiss = failSafeClient.LastMissTokens;
+            return _agentStore.RecordUsageAsync(sessionId, hit, miss, output, hit, miss, modelStr);
+        };
+
         _blockMemory.CurrentExecutedIds.Value = failSafeClient.ExecutedCallIds;
 
         var userBlock = MemoryBlock.UserMessage(input);
@@ -136,17 +155,9 @@ public class TurnProcessor : ITurnProcessor
                 yield return e;
         }
 
-        // ── 3. FINISH: persist usage, flush remaining, cleanup ──
+        // ── 3. FINISH: flush remaining, cleanup ──
 
-        // Persist usage from all iterations
-        await _agentStore.RecordUsageAsync(
-            sessionId,
-            ctx.FailSafeClient.TotalCacheHitTokens,
-            ctx.FailSafeClient.TotalCacheMissTokens,
-            ctx.FailSafeClient.TotalOutputTokens,
-            ctx.FailSafeClient.LastHitTokens,
-            ctx.FailSafeClient.LastMissTokens,
-            model: modelStr);
+        // Usage already written per-iteration via OnIterationRecorded — no batch write needed.
         yield return new UsageTurnEvent(
             ctx.FailSafeClient.TotalCacheHitTokens,
             ctx.FailSafeClient.TotalCacheMissTokens,

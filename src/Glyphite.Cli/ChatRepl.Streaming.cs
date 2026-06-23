@@ -270,12 +270,18 @@ public partial class ChatRepl
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine("\n[!] Operation cancelled by user.");
             Console.ResetColor();
+
+            // Per-iteration usage was written to DB by OnIterationRecorded.
+            // Update prompt state from last completed iteration (more accurate than stale values).
+            UpdateFromLastIteration();
         }
         catch (Exception ex)
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"\n[!] Error: {ex.Message}");
             Console.ResetColor();
+
+            UpdateFromLastIteration();
         }
     }
 }

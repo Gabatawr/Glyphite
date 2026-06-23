@@ -13,6 +13,7 @@ public sealed class UsageTracker
 
     public long LastHitTokens { get; private set; }
     public long LastMissTokens { get; private set; }
+    public long LastOutputTokens { get; private set; }
 
     /// <summary>Called after each iteration's usage is recorded.</summary>
     public event Action<long, long, long>? OnUsage;
@@ -28,6 +29,7 @@ public sealed class UsageTracker
             TotalOutputTokens += output;
             LastHitTokens = hit;
             LastMissTokens = miss;
+            LastOutputTokens = output;
             OnUsage?.Invoke(hit, miss, output);
         }
     }

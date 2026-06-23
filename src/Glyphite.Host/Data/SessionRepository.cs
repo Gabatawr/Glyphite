@@ -38,6 +38,12 @@ public class SessionRepository : RepositoryBase, IAgentStore
                 last_request_miss INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS pending_runs (
+                agent_id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                block_checkpoint REAL,
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS schema_version (
                 version INTEGER NOT NULL,
                 applied_at TEXT NOT NULL
@@ -320,5 +326,36 @@ public class SessionRepository : RepositoryBase, IAgentStore
         {
             await _conn.ExecuteAsync("DELETE FROM session_usage WHERE agent_id = @sid", new { sid = agentId });
         });
+    }
+
+    // ── Pending runs (crash-safe tracking) ──
+
+    public async Task SetPendingRunAsync(string agentId, string mode, double? blockCheckpoint = null)
+    {
+        await WithLockAsync(async () =>
+        {
+            var now = DateTime.UtcNow.ToString("O");
+            await _conn.ExecuteAsync("""
+                INSERT INTO pending_runs (agent_id, mode, block_checkpoint, created_at)
+                VALUES (@Id, @Mode, @Ck, @Now)
+                ON CONFLICT(agent_id) DO UPDATE SET mode = @Mode, block_checkpoint = @Ck, created_at = @Now
+                """, new { Id = agentId, Mode = mode, Ck = blockCheckpoint, Now = now });
+        });
+    }
+
+    public async Task ClearPendingRunAsync(string agentId)
+    {
+        await WithLockAsync(async () =>
+        {
+            await _conn.ExecuteAsync("DELETE FROM pending_runs WHERE agent_id = @Id", new { Id = agentId });
+        });
+    }
+
+    public async Task<List<(string AgentId, string Mode, double? BlockCheckpoint)>> GetPendingRunsAsync()
+    {
+        using var conn = CreateReadConnection();
+        var rows = await conn.QueryAsync<(string AgentId, string Mode, double? BlockCheckpoint)>(
+            "SELECT agent_id, mode, block_checkpoint FROM pending_runs");
+        return rows.AsList();
     }
 }

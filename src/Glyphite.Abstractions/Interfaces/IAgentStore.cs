@@ -27,4 +27,9 @@ public interface IAgentStore
     Task<List<(string Model, long Hit, long Miss, long Output)>> GetUsageByModelAsync(string agentId);
     Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> GetLastUsageAsync(string agentId);
     Task ClearUsageAsync(string agentId);
+
+    // Pending run tracking (crash-safe: survives process kill)
+    Task SetPendingRunAsync(string agentId, string mode, double? blockCheckpoint = null);
+    Task ClearPendingRunAsync(string agentId);
+    Task<List<(string AgentId, string Mode, double? BlockCheckpoint)>> GetPendingRunsAsync();
 }

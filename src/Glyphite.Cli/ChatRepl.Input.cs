@@ -84,6 +84,16 @@ public partial class ChatRepl
         _lastTurnLastMiss = lastMiss;
     }
 
+    /// <summary>After Escape/error, update prompt state from last completed iteration (not total turn — but more accurate than stale values).</summary>
+    private void UpdateFromLastIteration()
+    {
+        var tp = TurnProcessor;
+        if (tp.LastIterationTotalHit > 0 || tp.LastIterationTotalMiss > 0 || tp.LastIterationTotalOutput > 0)
+            UpdatePromptInline(
+                tp.LastIterationTotalHit, tp.LastIterationTotalMiss, tp.LastIterationTotalOutput,
+                tp.LastIterationLastHit, tp.LastIterationLastMiss);
+    }
+
     private (double? MissPrice, double? HitPrice, double? OutputPrice) GetPricing(string model)
     {
         foreach (var entry in _models)
