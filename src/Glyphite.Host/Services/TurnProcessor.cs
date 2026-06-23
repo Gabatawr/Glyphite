@@ -91,6 +91,7 @@ public class TurnProcessor : ITurnProcessor
             }
         }
 
+        var isSubagent = chatOptions.AdditionalProperties?.ContainsKey("isSubagent") == true;
         var includeMemory = chatOptions.AdditionalProperties?.ContainsKey("saveMemory") == true;
         chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(sessionId, includeMemory)).ToList();
 
@@ -135,7 +136,7 @@ public class TurnProcessor : ITurnProcessor
 
         _blockMemory.CurrentExecutedIds.Value = failSafeClient.ExecutedCallIds;
 
-        var userBlock = MemoryBlock.UserMessage(input);
+        var userBlock = isSubagent ? MemoryBlock.AgentTask(input) : MemoryBlock.UserMessage(input);
         userBlock.Number = nextNum++;
         await _blockStore.AppendBlocksAsync(sessionId, [userBlock], nextNum);
 

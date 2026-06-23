@@ -193,7 +193,7 @@ namespace Glyphite.Host.Services;
 
     /// <summary>
     /// Group blocks into turns. The first group contains agent_data alone.
-    /// Each subsequent group starts at a user_message or turn marker and ends at the next turn marker or end.
+    /// Each subsequent group starts at a user_message/agent_task or turn marker and ends at the next turn marker or end.
     /// </summary>
     private static List<List<MemoryBlock>> GroupByTurns(List<MemoryBlock> blocks)
     {

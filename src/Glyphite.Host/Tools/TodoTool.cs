@@ -113,21 +113,35 @@ public static class TodoTool
                 var removed = currentItems[item.Index.Value]["text"]?.ToString() ?? "?";
                 currentItems.RemoveAt(item.Index.Value);
                 results.Add($"remove: '{removed}' at [{item.Index}]");
+                continue;
             }
-            else if (item.Index is not null)
+
+            // Resolve target index: by explicit index, or by matching text
+            int? targetIdx = item.Index;
+            if (targetIdx is null && !string.IsNullOrWhiteSpace(item.Text))
             {
-                if (item.Index < 0 || item.Index >= currentItems.Count)
+                // Try to find existing item with matching text (case-insensitive)
+                var match = currentItems
+                    .Select((dict, idx) => (dict, idx))
+                    .FirstOrDefault(x => string.Equals(x.dict["text"]?.ToString(), item.Text, StringComparison.OrdinalIgnoreCase));
+                if (match.dict is not null)
+                    targetIdx = match.idx;
+            }
+
+            if (targetIdx is not null)
+            {
+                if (targetIdx < 0 || targetIdx >= currentItems.Count)
                 {
-                    results.Add($"update: index {item.Index} out of range");
+                    results.Add($"update: index {targetIdx} out of range");
                     continue;
                 }
-                var target = currentItems[item.Index.Value];
+                var target = currentItems[targetIdx.Value];
                 var changed = false;
 
                 if (item.Text is not null)
                 {
                     target["text"] = item.Text;
-                    results.Add($"[{item.Index}] text changed");
+                    results.Add($"[{targetIdx}] text changed");
                     changed = true;
                 }
                 if (item.Status is not null)
@@ -136,7 +150,7 @@ public static class TodoTool
                     {
                         var old = target["status"]?.ToString() ?? "?";
                         target["status"] = item.Status;
-                        results.Add($"[{item.Index}] status {old}→{item.Status}");
+                        results.Add($"[{targetIdx}] status {old}→{item.Status}");
                         changed = true;
                     }
                     else
@@ -148,11 +162,11 @@ public static class TodoTool
                 {
                     var old = target["priority"]?.ToString() ?? "?";
                     target["priority"] = item.Priority;
-                    results.Add($"[{item.Index}] priority {old}→{item.Priority}");
+                    results.Add($"[{targetIdx}] priority {old}→{item.Priority}");
                     changed = true;
                 }
                 if (!changed)
-                    results.Add($"update: no fields to change for index {item.Index}");
+                    results.Add($"update: no fields to change for index {targetIdx}");
             }
             else
             {

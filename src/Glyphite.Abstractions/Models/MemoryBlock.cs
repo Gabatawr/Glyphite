@@ -16,6 +16,7 @@ public enum BlockType
     tool,
     todo,
     todo_update,
+    agent_task,
     auto_tool,
     turn
 }
@@ -70,6 +71,9 @@ public class MemoryBlock
 
     public static MemoryBlock UserMessage(string content)
         => Create(BlockType.user_message, content);
+
+    public static MemoryBlock AgentTask(string content)
+        => Create(BlockType.agent_task, content);
 
     public static MemoryBlock AgentMessage(string content, string? model = null)
         => Create(BlockType.agent_message, content, model: model);

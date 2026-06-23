@@ -17,6 +17,7 @@ public static class BlockTypeIcon
         ["todo_write"] = "📋",
         ["system_info"] = "ℹ️",
         ["agent_data"] = "📁",
+        ["agent_task"] = "📋",
         ["turn"] = "🔄",
     }.ToFrozenDictionary();
 

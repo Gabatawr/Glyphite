@@ -52,6 +52,19 @@ public class ConsoleRenderer
                 s.wasTool = s.wasReasoning = s.wasText = false;
                 s.lineStart = true;
                 break;
+            case BlockType.agent_task:
+                if (s.wasReasoning || s.wasTool || s.wasText || !s.lineStart)
+                {
+                    if (!s.lineStart) Console.WriteLine();
+                    Console.WriteLine();
+                }
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"> {block.Content}");
+                Console.ResetColor();
+                Console.WriteLine();
+                s.wasTool = s.wasReasoning = s.wasText = false;
+                s.lineStart = true;
+                break;
             case BlockType.agent_message:
                 if ((s.wasReasoning || s.wasTool) && !s.lineStart)
                 {

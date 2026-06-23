@@ -72,9 +72,10 @@ internal static class SubAgentTool
         {
             ModelId = resolvedModel,
         };
+        chatOptions.AdditionalProperties ??= [];
+        chatOptions.AdditionalProperties["isSubagent"] = "true";
         if (saveMemory)
         {
-            chatOptions.AdditionalProperties ??= [];
             chatOptions.AdditionalProperties["saveMemory"] = "true";
         }
         chatOptions.Tools = (await scope.ToolRegistry.GetBuiltinToolsAsync(agentId)).ToList();
