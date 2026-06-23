@@ -4,4 +4,7 @@
     <Project Path="src/Glyphite.Host/Glyphite.Host.csproj" />
     <Project Path="src/Glyphite.Cli/Glyphite.Cli.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Glyphite.Tests.Unit/Glyphite.Tests.Unit.csproj" />
+  </Folder>
 </Solution>

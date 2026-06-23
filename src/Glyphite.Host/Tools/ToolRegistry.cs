@@ -18,7 +18,7 @@ public class ToolRegistry : IToolRegistry
     private readonly SubAgentManager _subAgentManager;
     private readonly IAgentManager _agentManager;
     private readonly IAgentScopeFactory _scopeFactory;
-    private readonly IOptions<DeepSeekOptions> _deepseekOpts;
+    private readonly IOptions<LlmOptions> _llmOpts;
     private readonly McpService _mcpService;
     private readonly ILogger _logger;
     private readonly string _defaultDir;
@@ -32,7 +32,7 @@ public class ToolRegistry : IToolRegistry
         SubAgentManager subAgentManager,
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
-        IOptions<DeepSeekOptions> deepseekOpts,
+        IOptions<LlmOptions> llmOpts,
         McpService mcpService,
         ILogger<ToolRegistry> logger)
     {
@@ -44,7 +44,7 @@ public class ToolRegistry : IToolRegistry
         _subAgentManager = subAgentManager;
         _agentManager = agentManager;
         _scopeFactory = scopeFactory;
-        _deepseekOpts = deepseekOpts;
+        _llmOpts = llmOpts;
         _mcpService = mcpService;
         _logger = logger;
         _defaultDir = Directory.GetCurrentDirectory();
@@ -78,8 +78,8 @@ public class ToolRegistry : IToolRegistry
         // Subagent tools: only for main agent (prevents recursion)
         if (!isSubAgent)
         {
-            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _deepseekOpts, sessionId));
-            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _deepseekOpts, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _llmOpts, sessionId));
+            tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _llmOpts, sessionId));
             tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _agentStore, _blockStore, sessionId));
         }
 

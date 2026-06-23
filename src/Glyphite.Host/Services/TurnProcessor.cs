@@ -52,10 +52,10 @@ public class TurnProcessor : ITurnProcessor
         var agentCwd = await _agentStore.GetAgentHomePathAsync(sessionId) ?? parentCwd;
         await _configLoader.LoadConfigAsync(sessionId, agentCwd, parentCwd);
 
-        var deepseekOpts = await _cfgService.GetOptionsAsync<DeepSeekOptions>(DeepSeekOptions.Section, sessionId);
+        var llmOpts = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section, sessionId);
         var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>(AgentOptions.Section, sessionId);
 
-        var modelStr = chatOptions.ModelId ?? deepseekOpts.Model;
+        var modelStr = chatOptions.ModelId ?? llmOpts.Model;
         _logger.LogInformation("Turn start session {SessionId}, model {Model}", sessionId, modelStr);
 
         var nextNum = await _agentStore.GetNextNumberAsync(sessionId);
@@ -63,7 +63,7 @@ public class TurnProcessor : ITurnProcessor
 
         // Auto-compaction
         // 1. Fast check (no LLM) — yield event immediately so UI doesn't freeze
-        var shouldCompact = await _compactionService.ShouldCompactAsync(sessionId, deepseekOpts.ContextWindow);
+        var shouldCompact = await _compactionService.ShouldCompactAsync(sessionId, llmOpts.ContextWindow);
 
         if (shouldCompact)
         {
@@ -74,7 +74,7 @@ public class TurnProcessor : ITurnProcessor
             yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
 
             // 2. Actual compaction (slow — LLM summarization)
-            var compacted = await _compactionService.CompactAsync(sessionId, deepseekOpts.ContextWindow);
+            var compacted = await _compactionService.CompactAsync(sessionId, llmOpts.ContextWindow);
 
             if (compacted)
             {
@@ -91,7 +91,7 @@ public class TurnProcessor : ITurnProcessor
         var peekCleaned = await _blockStore.RemovePeekBlocksAsync(sessionId);
 
         var contextMessages = await _blockMemory.BuildContextAsync(
-            sessionId, modelStr, deepseekOpts.ContextWindow);
+            sessionId, modelStr, llmOpts.ContextWindow);
 
         if (peekCleaned > 0)
         {
@@ -110,7 +110,7 @@ public class TurnProcessor : ITurnProcessor
         initialMessages.AddRange(contextMessages);
         initialMessages.Add(new ChatMessage(ChatRole.User, input));
 
-        var sessionClient = new SessionChatClient(_chatClient, sessionId);
+        var sessionClient = new SessionChatClient(_chatClient, sessionId, modelStr);
         var failSafeClient = new FailSafeChatClient(
             sessionClient, agentOpts.MaxToolIterations, _logger);
 

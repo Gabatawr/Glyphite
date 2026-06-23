@@ -20,7 +20,7 @@ public partial class SessionManager
 
     private AgentScope? _currentScope;
     private readonly string _cwd;
-    private DeepSeekOptions? _cachedDeepSeek;
+    private LlmOptions? _cachedLlm;
 
     public SessionManager(
         IAgentStore agentStore,
@@ -46,18 +46,18 @@ public partial class SessionManager
     public string AgentName => AgentId;
     public AgentScope? CurrentScope => _currentScope;
 
-    /// <summary>Load fresh DeepSeekOptions from config (hot-reloaded).</summary>
-    public async Task<DeepSeekOptions> GetDeepSeekOptsAsync()
+    /// <summary>Load fresh LlmOptions from config (hot-reloaded).</summary>
+    public async Task<LlmOptions> GetLlmOptsAsync()
     {
-        if (_cachedDeepSeek is null)
-            _cachedDeepSeek = await _cfgService.GetOptionsAsync<DeepSeekOptions>(DeepSeekOptions.Section);
-        return _cachedDeepSeek;
+        if (_cachedLlm is null)
+            _cachedLlm = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section);
+        return _cachedLlm;
     }
 
     /// <summary>Get the default model from config.</summary>
     public async Task<string> GetDefaultModelAsync()
     {
-        var opts = await GetDeepSeekOptsAsync();
+        var opts = await GetLlmOptsAsync();
         return opts.Model;
     }
 
@@ -72,7 +72,7 @@ public partial class SessionManager
     {
         _currentScope?.Dispose();
         _currentScope = _scopeFactory.CreateScope();
-        _cachedDeepSeek = null; // invalidate — will reload on next access
+        _cachedLlm = null; // invalidate — will reload on next access
     }
 
     public async Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> ResetSessionStateAsync()

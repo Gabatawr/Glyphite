@@ -24,7 +24,7 @@ public static class HostServiceCollectionExtensions
         var glConfig = configuration.GetSection("Glyphite");
 
         // ── Options (consumed via IOptions<T>) ──
-        RegisterOptions<DeepSeekOptions>(services, glConfig, o => o.Validate());
+        RegisterOptions<LlmOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<AgentOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<MemoryOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<BashOptions>(services, glConfig, o => o.Validate());
@@ -51,11 +51,11 @@ public static class HostServiceCollectionExtensions
         // ── IChatClient ──
         services.AddSingleton<IChatClient>(sp =>
         {
-            var deepseek = sp.GetRequiredService<IOptions<DeepSeekOptions>>().Value;
+            var llm = sp.GetRequiredService<IOptions<LlmOptions>>().Value;
             var client = new OpenAIClient(
-                new ApiKeyCredential(deepseek.ApiKey),
-                new OpenAIClientOptions { Endpoint = new Uri(deepseek.Endpoint) });
-            return client.GetChatClient(deepseek.Model).AsIChatClient();
+                new ApiKeyCredential(llm.ApiKey),
+                new OpenAIClientOptions { Endpoint = new Uri(llm.Endpoint) });
+            return client.GetChatClient(llm.Model).AsIChatClient();
         });
 
         // ── Services ──
@@ -99,9 +99,9 @@ public static class HostServiceCollectionExtensions
             var cfgService = sp.GetRequiredService<IConfigService>();
             var memOpts = sp.GetRequiredService<IOptions<MemoryOptions>>().Value;
             var agentOpts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-            var deepseek = sp.GetRequiredService<IOptions<DeepSeekOptions>>().Value;
+            var llm = sp.GetRequiredService<IOptions<LlmOptions>>().Value;
             var compOpts = sp.GetRequiredService<IOptions<CompressionOptions>>().Value;
-            return new BlockMemoryProvider(agentStore, blockStore, cfgService, memOpts, agentOpts, deepseek.Model, compOpts);
+            return new BlockMemoryProvider(agentStore, blockStore, cfgService, memOpts, agentOpts, llm.Model, compOpts);
         });
         services.AddScoped<IToolRegistry, ToolRegistry>();
 

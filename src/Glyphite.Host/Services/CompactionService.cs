@@ -51,8 +51,19 @@ namespace Glyphite.Host.Services;
             var lastUsage = await _agentStore.GetLastUsageAsync(sessionId);
             var lastRequestTokens = lastUsage.LastHit + lastUsage.LastMiss;
             var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
-            if (lastRequestTokens < threshold)
+
+            // If usage tracking returned 0 (unknown provider / parsing failed),
+            // fall back to an estimate based on block content length.
+            if (lastRequestTokens == 0)
+            {
+                var estimatedTokens = blocks.Sum(b => (b.Content?.Length ?? 0) / 4);
+                if (estimatedTokens < threshold)
+                    return false;
+            }
+            else if (lastRequestTokens < threshold)
+            {
                 return false;
+            }
 
             // Group + zone check (still fast — in-memory)
             var turnGroups = GroupByTurns(blocks);

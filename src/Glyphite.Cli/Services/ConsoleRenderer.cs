@@ -327,7 +327,8 @@ public class ConsoleRenderer
             Console.WriteLine($"  Output:    {FormatTokenCount(cumOutput)}");
             var cumRate = (int)(cumHit * 100.0 / (cumHit + cumMiss + cumOutput));
             Console.WriteLine($"  Cache:     {FormatTokenCount(cumHit)} hit / {FormatTokenCount(cumMiss)} miss ({cumRate}%)");
-            Console.WriteLine($"  Cost:      ${totalCost / 1_000_000.0:F2}");
+            var costStr = totalCost > 0 ? $"${totalCost / 1_000_000.0:F2}" : "$?";
+            Console.WriteLine($"  Cost:      {costStr}");
         }
 
         Console.ResetColor();

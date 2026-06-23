@@ -116,18 +116,18 @@ public static class SubAgentTool
         bool validateName,
         SubAgentManager subAgentManager, IAgentManager agentManager,
         IAgentScopeFactory scopeFactory, IAgentStore agentStore, IBlockStore blockStore,
-        DeepSeekOptions deepseek,
+        LlmOptions llm,
         string currentSessionId)
     {
         if (validateName && !AgentManager.IsValidAgentName(agentId))
             return $"Error: Invalid agent name '{agentId}'.";
 
-        await agentManager.CreateAgentAsync(agentId, deepseek.Model, homePath, recordLaunch: false);
+        await agentManager.CreateAgentAsync(agentId, llm.Model, homePath, recordLaunch: false);
 
         try
         {
             return await RunSubAgentTaskAsync(agentId, task, isDryRun: false, saveMemory: false,
-                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, deepseek.Model);
+                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model);
         }
         finally
         {
@@ -144,10 +144,10 @@ public static class SubAgentTool
         IAgentScopeFactory scopeFactory,
         IAgentStore agentStore,
         IBlockStore blockStore,
-        IOptions<DeepSeekOptions> deepseekOpts,
+        IOptions<LlmOptions> llmOpts,
         string currentSessionId)
     {
-        var deepseek = deepseekOpts.Value;
+        var llm = llmOpts.Value;
 
         return AIFunctionFactory.Create(async (
             [Description("Initial task/instruction for the subagent.")] string task,
@@ -163,7 +163,7 @@ public static class SubAgentTool
             if (name is not null && await agentStore.AgentExistsAsync(name))
             {
                 return await RunSubAgentTaskAsync(name, task, isDryRun: true, saveMemory: false,
-                    subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, deepseek.Model);
+                    subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model);
             }
 
             // ── name provided + agent doesn't exist → create temp, run, delete ──
@@ -172,7 +172,7 @@ public static class SubAgentTool
                 return await CreateAndRunSubAgentAsync(name, task, homePath, parentCwd,
                     validateName: true,
                     subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
-                    deepseek, currentSessionId);
+                    llm, currentSessionId);
             }
 
             // ── no name → auto-GUID, temp, run, delete ──
@@ -180,7 +180,7 @@ public static class SubAgentTool
             return await CreateAndRunSubAgentAsync(guidId, task, homePath, parentCwd,
                 validateName: false,
                 subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
-                deepseek, currentSessionId);
+                llm, currentSessionId);
         },
         name: "subagent_run",
         description: "Run a one-shot task on an agent. Without a name: auto-GUID temp agent created then deleted. With a name and agent exists: dry-run (blocks cleaned after). With a name and no agent: temp agent with config created then deleted. Use mode=\"parallel\" for concurrent grouping."
@@ -193,10 +193,10 @@ public static class SubAgentTool
         IAgentScopeFactory scopeFactory,
         IAgentStore agentStore,
         IBlockStore blockStore,
-        IOptions<DeepSeekOptions> deepseekOpts,
+        IOptions<LlmOptions> llmOpts,
         string currentSessionId)
     {
-        var deepseek = deepseekOpts.Value;
+        var llm = llmOpts.Value;
 
         return AIFunctionFactory.Create(async (
             [Description("Name of the subagent to execute the task on. Auto-created if not found.")] string name,
@@ -213,11 +213,11 @@ public static class SubAgentTool
                 var parentCwd = await agentStore.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
                 var homePath = cwd ?? parentCwd;
 
-                await agentManager.CreateAgentAsync(name, deepseek.Model, homePath, recordLaunch: false);
+                await agentManager.CreateAgentAsync(name, llm.Model, homePath, recordLaunch: false);
             }
 
             return await RunSubAgentTaskAsync(name, task, isDryRun: false, saveMemory: true,
-                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, deepseek.Model);
+                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model);
         },
         name: "subagent_use",
         description: "Execute a task on a named subagent (auto-creates if not found). Memory and context accumulate across calls — the agent persists. Usage delta recorded in main session."

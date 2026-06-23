@@ -1,31 +1,30 @@
 namespace Glyphite.Abstractions.Models;
 
-public class DeepSeekOptions
+public class LlmOptions
 {
-    public const string Section = "DeepSeek";
+    public const string Section = "LLM";
     public string Endpoint { get; set; } = string.Empty;
     public string ApiKey { get; set; } = string.Empty;
     public string Model { get; set; } = string.Empty;
-    public DeepSeekModel[] Models { get; set; } = [];
+    public LlmModel[] Models { get; set; } = [];
     public int ContextWindow { get; set; }
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Endpoint))
-            throw new InvalidOperationException("DeepSeek:Endpoint is not configured.");
+            throw new InvalidOperationException("LLM:Endpoint is not configured.");
         if (string.IsNullOrWhiteSpace(Model))
-            throw new InvalidOperationException("DeepSeek:Model is not configured.");
+            throw new InvalidOperationException("LLM:Model is not configured.");
         if (ContextWindow <= 0)
-            throw new InvalidOperationException("DeepSeek:ContextWindow must be > 0.");
+            throw new InvalidOperationException("LLM:ContextWindow must be > 0.");
         if (Models.Length == 0)
-            throw new InvalidOperationException("DeepSeek:Models must have at least one model entry.");
+            throw new InvalidOperationException("LLM:Models must have at least one model entry.");
         if (string.IsNullOrWhiteSpace(ApiKey))
             throw new InvalidOperationException(
-                "DeepSeek API key is not configured. Set DEEPSEEK_API_KEY environment variable " +
-                "or configure it in appsettings.json under DeepSeek:ApiKey.");
+                "LLM API key is not configured. Configure it in Glyphite.json under LLM:ApiKey.");
     }
 }
 
-public class DeepSeekModel
+public class LlmModel
 {
     public string Name { get; set; } = string.Empty;
     public double Miss { get; set; }
@@ -210,4 +209,3 @@ public class CompressionOptions
             throw new InvalidOperationException("Compression:CostSignificantThreshold must be non-negative.");
     }
 }
-

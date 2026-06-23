@@ -44,20 +44,7 @@ public static class Bootstrapper
                     cfg.AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)));
                 }
 
-                // 2. Переменная окружения DEEPSEEK_API_KEY
-                var envKey = Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY");
-                if (!string.IsNullOrEmpty(envKey))
-                    cfg.AddInMemoryCollection(new Dictionary<string, string?>
-                    {
-                        ["Glyphite:DeepSeek:ApiKey"] = envKey
-                    });
-
-                // 3. appsettings.Development.json рядом с бинарём
-                var devJson = Path.Combine(AppContext.BaseDirectory, "appsettings.Development.json");
-                if (File.Exists(devJson))
-                    cfg.AddJsonFile(devJson, optional: false, reloadOnChange: false);
-
-                // 4. Glyphite.json в рабочей директории — hot-reload
+                // 2. Glyphite.json в рабочей директории — hot-reload
                 var cwdJson = Path.Combine(Directory.GetCurrentDirectory(), "Glyphite.json");
                 if (File.Exists(cwdJson))
                     cfg.AddJsonFile(cwdJson, optional: false, reloadOnChange: true);

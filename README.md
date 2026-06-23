@@ -13,7 +13,7 @@
 
 ## Features
 
-- **Conversational AI interface** — chat with AI (DeepSeek / OpenAI) directly in the terminal
+- **Conversational AI interface** — chat with AI (any LLM provider) directly in the terminal
 - **Agent-oriented architecture** — named agents instead of GUID sessions. Each agent has its own history, home directory, and config
 - **SessionManager** centralizes agent lifecycle — create, clone, switch, delete agents; persist/resume sessions; hot-reload config per agent
 - **InputHistory** shared between sessions — user messages and commands accessible across agent switches
@@ -53,7 +53,7 @@
 ### Requirements
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- DeepSeek or OpenAI API key
+- API key for your LLM provider (tested with DeepSeek, should work with any OpenAI-compatible API)
 
 ### Installation & setup
 
@@ -61,8 +61,8 @@
 git clone https://github.com/Gabatawr/Glyphite.git
 cd Glyphite
 
-# Configure your API key via Glyphite.json or environment variable:
-# export DeepSeek__ApiKey="sk-..."
+# Configure your API key via Glyphite.json under the LLM section
+# (see appsettings.json for the default structure)
 
 # Run (development mode)
 dotnet run --project src/Glyphite.Cli
@@ -75,7 +75,6 @@ dotnet run --project src/Glyphite.Cli
 ./publish.sh
 
 # Add an alias to ~/.bashrc:
-export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 alias glyphite='~/.glyphite/glyphite'
 
 # Run from any directory
@@ -84,7 +83,7 @@ glyphite
 
 On first launch, Glyphite will ask for an agent name. On subsequent launches, it resumes the last active agent for the current directory.
 
-Configuration is loaded in cascading order: `appsettings.json` (embedded) → `Glyphite.json` (global) → `Glyphite.{agentName}.json` (agent-specific). All keys can also be set via environment variables (e.g. `DeepSeek__ApiKey`).
+Configuration is loaded in cascading order: `appsettings.json` (embedded) → `Glyphite.json` (global) → `Glyphite.{agentName}.json` (agent-specific). All keys can also be set via environment variables (e.g. `Glyphite__LLM__ApiKey` for the API key).
 
 ## Commands
 
@@ -224,7 +223,7 @@ All configuration is reloaded from disk every turn — no `/reload` command need
 
 | Section | Applied to | Refresh mechanism |
 |---------|-----------|-------------------|
-| `DeepSeek.*` | Model, context window | per-turn via `TurnProcessor` |
+| `LLM.*` | Model, context window, API key, endpoint | per-turn via `TurnProcessor` |
 | `Agent.*` | Max tool iterations, peek settings | per-turn via `TurnProcessor` |
 | `ToolStreaming.ToolMaxLength` | Per-tool output display | per-turn via `ConsoleRenderer.RefreshAsync` |
 | `McpServers.*` | MCP server connections | hash-based reconnect via `McpService` |
@@ -289,10 +288,15 @@ Use `memory recover blocks=[5, 7]` to restore soft-deleted blocks.
 
 ## Models
 
-Supported:
-- **DeepSeek** — v4-flash, v4-pro (via DeepSeek API with cache metrics)
-- **OpenAI** — via Microsoft.Extensions.AI
-- Any models compatible with Microsoft.Extensions.AI
+Glyphite uses the OpenAI-compatible API via `Microsoft.Extensions.AI.OpenAI`. Any provider that speaks the OpenAI protocol works — just configure the endpoint, API key, and model in `Glyphite.json`.
+
+**Tested with:**
+- **DeepSeek** — v4-flash, v4-pro (cache metrics via `Usage.InputTokenDetails.CachedTokenCount`)
+
+**Should work (format parsers included):**
+- **OpenAI** — cache via `usage.prompt_tokens_details.cached_tokens`
+- **Anthropic** — cache via `usage.cache_read_input_tokens`
+- **Google Gemini** — cache via `usageMetadata.cachedContentTokenCount` (also offers an OpenAI-compatible endpoint)
 
 ## Logging
 
@@ -321,13 +325,13 @@ Key log events:
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
 
 ```bash
-glyphite -v       # → 0.7.77
-/version          # → Glyphite v0.7.77
+glyphite -v       # → 1.0.0
+/version          # → Glyphite v1.0.0
 ```
 
 The greeting shows the version and agent name:
 ```
-Glyphite CLI v0.7.77 — MainAgent 🏠
+Glyphite CLI v1.0.0 — MainAgent 🏠
 ```
 
 ## Publishing and backups
@@ -345,12 +349,12 @@ Use `./publish.sh` to publish:
 
 Rollback:
 ```bash
-cp ~/.glyphite/backup/glyphite.v0.7.77 ~/.glyphite/glyphite
+cp ~/.glyphite/backup/glyphite.v1.0.0 ~/.glyphite/glyphite
 ```
 
 ## Testing
 
-Tests directory (`tests/Glyphite.Tests.Unit/`) is referenced in the solution but not yet created — planned for future iterations.
+Tests are in the `tests/Glyphite.Tests.Unit/` directory with 119 tests covering configuration validation, data layer (SessionRepository, BlockRepository), ConfigService, and FilePatchTool — written with xUnit + NSubstitute.
 
 ## License
 

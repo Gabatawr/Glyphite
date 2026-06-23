@@ -86,8 +86,8 @@ public static class MemoryTool
                         lines.Add($"  Cache:  {usage.Hit / 1000.0:F1}K hit / {usage.Miss / 1000.0:F1}K miss ({rate}%)");
                     }
 
-                    var deepseekOpts = await cfg.GetOptionsAsync<DeepSeekOptions>(DeepSeekOptions.Section);
-                    var modelPricing = deepseekOpts.Models.FirstOrDefault(m =>
+                    var llmOpts = await cfg.GetOptionsAsync<LlmOptions>(LlmOptions.Section);
+                    var modelPricing = llmOpts.Models.FirstOrDefault(m =>
                         string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase));
                     if (modelPricing is not null)
                     {

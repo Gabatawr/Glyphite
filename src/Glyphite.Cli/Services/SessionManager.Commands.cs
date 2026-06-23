@@ -267,8 +267,8 @@ public partial class SessionManager
 
     public async Task ShowModelSelectionAsync()
     {
-        var deepseek = await GetDeepSeekOptsAsync();
-        var models = deepseek.Models.Select(m => m.Name).Distinct().ToArray();
+        var llm = await GetLlmOptsAsync();
+        var models = llm.Models.Select(m => m.Name).Distinct().ToArray();
         if (models.Length == 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;

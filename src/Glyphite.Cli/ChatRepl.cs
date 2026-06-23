@@ -17,9 +17,9 @@ public partial class ChatRepl
     private readonly InputHistory _inputHistory;
     private readonly ConsoleRenderer _renderer;
 
-    // DeepSeek config — refreshed each turn via UpdatePromptPrefixAsync
+    // LLM config — refreshed each turn via UpdatePromptPrefixAsync
     private int _contextWindow;
-    private DeepSeekModel[] _models = [];
+    private LlmModel[] _models = [];
 
     // Usage state — updated by streaming, read by prompt rendering
     private long _lastTurnHit;

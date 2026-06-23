@@ -23,9 +23,9 @@ public partial class ChatRepl
     private async Task UpdatePromptPrefixAsync()
     {
         // Fresh config each turn (hot-reload)
-        var deepseek = await _cfgService.GetOptionsAsync<DeepSeekOptions>(DeepSeekOptions.Section);
-        _contextWindow = deepseek.ContextWindow;
-        _models = deepseek.Models;
+        var llm = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section);
+        _contextWindow = llm.ContextWindow;
+        _models = llm.Models;
 
         var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, AgentId);
 
@@ -44,6 +44,8 @@ public partial class ChatRepl
         // Cumulative cost (per-model pricing)
         var currentCost = await GetCurrentCumulativeCostAsync();
         var cumCost = currentCost >= 0.01 ? $"${currentCost:F2}" : currentCost > 0 ? $"${currentCost:F6}" : "";
+        if (string.IsNullOrEmpty(cumCost) && _lastTurnHit + _lastTurnMiss > 0)
+            cumCost = "$?"; // usage exists but model pricing unknown
         if (!string.IsNullOrEmpty(cumCost))
             _promptSegments.Add((cumCost, def));
 
