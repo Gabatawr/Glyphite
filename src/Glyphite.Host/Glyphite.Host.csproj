@@ -31,4 +31,8 @@
     <ProjectReference Include="..\Glyphite.Abstractions\Glyphite.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="system-prompt.md" />
+  </ItemGroup>
+
 </Project>

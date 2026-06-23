@@ -103,7 +103,12 @@ public class MemoryOptions
 {
     public const string Section = "Memory";
     public string[] ProtectedBlockTypes { get; set; } = [];
-    public bool ReloadAgentFile { get; set; } = false;
+    /// <summary>If true, cascade-read AGENTS.md (home → parentCwd → agentCwd) and append to system prompt.</summary>
+    public bool ReadAgentsFile { get; set; } = false;
+    /// <summary>If true, re-read AGENTS.md from disk on every turn. If false, cache in memory.</summary>
+    public bool TurnReloadAgentsFile { get; set; } = false;
+    /// <summary>If true, re-read Glyphite.{agentId}.md from disk on every turn. If false, cache in memory.</summary>
+    public bool TurnReloadNameFile { get; set; } = false;
     public void Validate()
     {
         if (ProtectedBlockTypes.Length == 0)

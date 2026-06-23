@@ -174,9 +174,6 @@ public partial class SessionManager
         // Record this launch for the current agent
         await _agentStore.RecordLaunchAsync(AgentId, cwd);
 
-        var agentsPath = Path.Combine(cwd, "AGENTS.md");
-        BlockMemory.AgentFilePath = File.Exists(agentsPath) ? agentsPath : null;
-
         await _renderer.ReplayBlocksAsync(AgentId, _blockStore);
 
         // Load existing user messages into input history
@@ -191,20 +188,9 @@ public partial class SessionManager
                 _inputHistory.Add(cmd);
         }
 
-        // Load system prompt from embedded resource
-        var assembly = System.Reflection.Assembly.GetExecutingAssembly();
-        var systemPrompt = "You are Glyphite, an expert software engineer and coding agent. You are precise, thorough, and efficient.";
-        using (var stream = assembly.GetManifestResourceStream("Glyphite.Cli.system-prompt.md"))
-        {
-            if (stream is not null)
-                using (var reader = new StreamReader(stream))
-                    systemPrompt = reader.ReadToEnd().Trim();
-        }
-
         var defaultModel = await GetDefaultModelAsync();
         var chatOptions = new ChatOptions
         {
-            Instructions = systemPrompt,
             ModelId = await BlockMemory.GetAgentModelAsync(AgentId) ?? defaultModel,
         };
 

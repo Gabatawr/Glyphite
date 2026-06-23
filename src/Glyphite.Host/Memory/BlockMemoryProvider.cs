@@ -29,8 +29,6 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
 
     public AsyncLocal<HashSet<string>?> CurrentExecutedIds { get; } = new();
 
-    public string? AgentFilePath { get; set; }
-
     public BlockMemoryProvider(IAgentStore agentStore, IBlockStore blockStore, IConfigService cfgService, MemoryOptions memOpts, AgentOptions agentOpts, string? defaultModel = null, CompressionOptions? compOpts = null)
     {
         _agentStore = agentStore;

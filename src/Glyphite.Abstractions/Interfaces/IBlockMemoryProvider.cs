@@ -6,7 +6,6 @@ namespace Glyphite.Abstractions.Interfaces;
 public interface IBlockMemoryProvider
 {
     AsyncLocal<HashSet<string>?> CurrentExecutedIds { get; }
-    string? AgentFilePath { get; set; }
 
     Task<List<ChatMessage>> BuildContextAsync(string agentId, string? model = null, int? contextWindow = null);
     Task<IReadOnlyList<MemoryBlock>> GetBlocksAsync(string id);

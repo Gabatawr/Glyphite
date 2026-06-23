@@ -17,6 +17,7 @@ public class TurnProcessor : ITurnProcessor
     private readonly CompactionService _compactionService;
     private readonly ILogger _logger;
     private readonly ISessionConfigLoader _configLoader;
+    private readonly IInstructionProvider _instructionProvider;
 
     // Last per-iteration usage (for ChatRepl fallback after Escape/crash)
     public long LastIterationTotalHit { get; private set; }
@@ -34,6 +35,7 @@ public class TurnProcessor : ITurnProcessor
         IConfigService cfgService,
         CompactionService compactionService,
         ISessionConfigLoader configLoader,
+        IInstructionProvider instructionProvider,
         ILogger<TurnProcessor> logger)
     {
         _agentStore = agentStore;
@@ -44,6 +46,7 @@ public class TurnProcessor : ITurnProcessor
         _cfgService = cfgService;
         _compactionService = compactionService;
         _configLoader = configLoader;
+        _instructionProvider = instructionProvider;
         _logger = logger;
     }
 
@@ -65,6 +68,11 @@ public class TurnProcessor : ITurnProcessor
 
         var modelStr = chatOptions.ModelId ?? llmOpts.Model;
         _logger.LogInformation("Turn start session {SessionId}, model {Model}", agentId, modelStr);
+
+        // ── Build system instructions (system-prompt.md + AGENTS.md + Glyphite.{agentId}.md) ──
+        var homePath = await _agentStore.GetAgentHomePathAsync(agentId);
+        chatOptions.Instructions = await _instructionProvider.BuildInstructionsAsync(
+            agentId, homePath, parentCwd, agentCwd);
 
         var nextNum = await _agentStore.GetNextNumberAsync(agentId);
         if (nextNum <= 0) nextNum = 1;

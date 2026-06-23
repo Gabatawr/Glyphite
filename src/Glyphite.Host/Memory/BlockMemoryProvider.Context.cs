@@ -1,4 +1,3 @@
-using System.IO;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Extensions.AI;
@@ -12,20 +11,11 @@ public partial class BlockMemoryProvider
         await _agentStore.EnsureSessionAsync(agentId);
         model ??= await _agentStore.GetAgentModelAsync(agentId);
 
-        // Fresh options this turn — IOptions<T> DI values may be stale
-        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId);
-
         var blocks = await _blockStore.LoadBlocksAsync(agentId);
         if (blocks.Count == 0)
         {
             var data = new Dictionary<string, object> { ["agent"] = _agentOpts.AgentName };
-            var content = BuildAgentContent("agent", _agentOpts.AgentName, null);
-
-            if (AgentFilePath is not null && File.Exists(AgentFilePath))
-            {
-                data["agent_file"] = await File.ReadAllTextAsync(AgentFilePath);
-                data["agent_file_path"] = AgentFilePath;
-            }
+            var content = BuildAgentContent("agent", _agentOpts.AgentName);
 
             var agentData = MemoryBlock.Create(BlockType.agent_data, content, data: data);
             agentData.Number = 1;
@@ -42,27 +32,7 @@ public partial class BlockMemoryProvider
             agentBlock.Data ??= [];
             agentBlock.Data["model"] = modelStr;
 
-            var newContent = BuildAgentContent("agent", _agentOpts.AgentName, agentBlock.Data);
-
-            if (memOpts.ReloadAgentFile && AgentFilePath is not null)
-            {
-                if (File.Exists(AgentFilePath))
-                {
-                    var fileTime = File.GetLastWriteTimeUtc(AgentFilePath);
-                    if (agentBlock.UpdatedAt is null || fileTime > agentBlock.UpdatedAt.Value)
-                    {
-                        agentBlock.Data["agent_file"] = await File.ReadAllTextAsync(AgentFilePath);
-                        agentBlock.Data["agent_file_path"] = AgentFilePath;
-                    }
-                }
-                else if (agentBlock.Data.ContainsKey("agent_file"))
-                {
-                    agentBlock.Data.Remove("agent_file");
-                    agentBlock.Data.Remove("agent_file_path");
-                }
-
-                newContent = BuildAgentContent("agent", _agentOpts.AgentName, agentBlock.Data);
-            }
+            var newContent = BuildAgentContent("agent", _agentOpts.AgentName);
 
             if (agentBlock.Content != newContent)
             {
@@ -77,11 +47,8 @@ public partial class BlockMemoryProvider
         return messages;
     }
 
-    private static string BuildAgentContent(string key, string value, Dictionary<string, object>? data)
+    private static string BuildAgentContent(string key, string value)
     {
-        var content = $"{key}: {value}";
-        if (data?.ContainsKey("agent_file") == true)
-            content += "; AgentFile: AGENTS.md";
-        return content;
+        return $"{key}: {value}";
     }
 }
