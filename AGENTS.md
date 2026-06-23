@@ -53,6 +53,63 @@ Step 3 ─ Overlay?
 - One loader for CLI agents and subagents
 - Auto-migrate home if original directory was deleted
 
+### System instructions (`IInstructionProvider`)
+
+Instructions are built **every turn** as a single string and set via `ChatOptions.Instructions` (for all agents — CLI and subagent).
+
+**Merge order** (each appended in order):
+1. **`system-prompt.md`** (embedded in Glyphite.Host) — always present, cached forever
+2. **`AGENTS.md`** (cascade: home → parentCwd → agentCwd, top wins) — only if `Memory:ReadAgentsFile: true`
+3. **`Glyphite.{agentId}.md`** (cascade: home → parentCwd → agentCwd, top wins) — always if file exists
+
+Configuration (`Memory` section):
+| Option | Default | Description |
+|--------|---------|-------------|
+| `ReadAgentsFile` | `false` | If true, cascade-read `AGENTS.md` and append to instructions |
+| `TurnReloadAgentsFile` | `false` | If true, re-read `AGENTS.md` from disk every turn |
+| `TurnReloadNameFile` | `false` | If true, re-read `Glyphite.{id}.md` from disk every turn |
+
+**Example usage:**
+
+```json
+{
+  "Glyphite": {
+    "Memory": {
+      "ReadAgentsFile": true,
+      "TurnReloadNameFile": true
+    }
+  }
+}
+```
+
+Create `Glyphite.my-agent.md` in your project root (or agent's home dir):
+
+```markdown
+# My Agent Instructions
+
+You are a specialized QA agent. Always run tests before and after changes.
+```
+
+> `Glyphite.*.md` files are gitignored — they are per-developer agent settings.
+> Example files are in [`agents/`](./agents/) — copy to `Glyphite.{name}.md`.
+
+**Available examples** (inspired by [gstack](https://github.com/garrytan/gstack)):
+
+| File | Role | Focus |
+|------|------|-------|
+| [`example-qa-agent.md`](./agents/example-qa-agent.md) | QA Engineer | Testing, bug finding, regression verification |
+| [`example-review-agent.md`](./agents/example-review-agent.md) | Code Reviewer | PR review, correctness, safety, maintainability |
+| [`example-release-agent.md`](./agents/example-release-agent.md) | Release Manager | Version bumps, changelog, publishing |
+| [`example-doc-agent.md`](./agents/example-doc-agent.md) | Doc Engineer | README, API docs, architecture docs |
+| [`example-arch-agent.md`](./agents/example-arch-agent.md) | Software Architect | Design, ADR, diagrams, migration plans |
+| [`example-ceo-agent.md`](./agents/example-ceo-agent.md) | Tech Lead | Strategy, priorities, decision framework |
+| [`example-security-agent.md`](./agents/example-security-agent.md) | CSO | OWASP, STRIDE, vulnerability audit |
+| [`example-spec-agent.md`](./agents/example-spec-agent.md) | Spec Writer | Requirements, design docs, specs |
+| [`example-investigate-agent.md`](./agents/example-investigate-agent.md) | Debugger | Root cause analysis, systematic debugging |
+| [`example-refactor-agent.md`](./agents/example-refactor-agent.md) | Refactoring | Code cleanup, safe incremental restructuring |
+| [`example-perf-agent.md`](./agents/example-perf-agent.md) | Performance | Profiling, optimization, benchmarking |
+| [`example-onboard-agent.md`](./agents/example-onboard-agent.md) | Mentor | Onboarding, codebase tour, learning
+
 ## Session state (Jun 23 — v1.0.16)
 
 ### Latest changes — subagent escape handling, crash-safe pending_runs, agent_task block type, todo match-by-text

@@ -14,3 +14,4 @@ repos/
 node_modules/
 docker-compose.override.yml
 .codegraph/
+Glyphite.*.md

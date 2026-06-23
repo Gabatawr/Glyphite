@@ -26,7 +26,6 @@
 
   <ItemGroup>
     <EmbeddedResource Include="appsettings.json" />
-    <EmbeddedResource Include="system-prompt.md" />
     <None Update="appsettings.Development.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
