@@ -495,10 +495,79 @@ public class ConfigurationValidationTests
         var opts = new CompressionOptions
         {
             AutoThreshold = 50,
+            Strategies = new() { ["fibo-parts"] = true },
             CacheHitRateThreshold = 80,
             CostSignificantThreshold = 0.01
         };
         opts.Validate();
+    }
+
+    [Fact]
+    public void CompressionOptions_StructCutStrategy_Valid()
+    {
+        var opts = new CompressionOptions
+        {
+            AutoThreshold = 50,
+            Strategies = new() { ["struct-cut"] = true },
+            CacheHitRateThreshold = 80,
+            CostSignificantThreshold = 0.01
+        };
+        opts.Validate();
+    }
+
+    [Fact]
+    public void CompressionOptions_BothStrategiesEnabled_Valid()
+    {
+        var opts = new CompressionOptions
+        {
+            AutoThreshold = 50,
+            Strategies = new() { ["fibo-parts"] = true, ["struct-cut"] = true },
+            CacheHitRateThreshold = 80,
+            CostSignificantThreshold = 0.01
+        };
+        opts.Validate();
+    }
+
+    [Fact]
+    public void CompressionOptions_InvalidStrategyKey_Throws()
+    {
+        var opts = new CompressionOptions
+        {
+            AutoThreshold = 50,
+            Strategies = new() { ["unknown"] = true },
+            CacheHitRateThreshold = 80,
+            CostSignificantThreshold = 0.01
+        };
+        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
+        Assert.Contains("unknown", ex.Message);
+    }
+
+    [Fact]
+    public void CompressionOptions_NoneEnabled_Throws()
+    {
+        var opts = new CompressionOptions
+        {
+            AutoThreshold = 50,
+            Strategies = new() { ["fibo-parts"] = false, ["struct-cut"] = false },
+            CacheHitRateThreshold = 80,
+            CostSignificantThreshold = 0.01
+        };
+        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
+        Assert.Contains("Strategies", ex.Message);
+    }
+
+    [Fact]
+    public void CompressionOptions_EmptyStrategies_Throws()
+    {
+        var opts = new CompressionOptions
+        {
+            AutoThreshold = 50,
+            Strategies = new(),
+            CacheHitRateThreshold = 80,
+            CostSignificantThreshold = 0.01
+        };
+        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
+        Assert.Contains("Strategies", ex.Message);
     }
 
     [Fact]

@@ -78,32 +78,37 @@ public class TurnProcessor : ITurnProcessor
         var nextNum = await _agentStore.GetNextNumberAsync(agentId);
         if (nextNum <= 0) nextNum = 1;
 
-        // Auto-compaction
-        // 1. Fast check (no LLM) — yield event immediately so UI doesn't freeze
-        var shouldCompact = await _compactionService.ShouldCompactAsync(agentId, llmOpts.ContextWindow);
+        // Auto-compaction: skip for ephemeral agents (subagent_run — transient, no benefit)
+        var isEphemeral = chatOptions.AdditionalProperties?.ContainsKey("ephemeral") == true;
 
-        if (shouldCompact)
+        if (!isEphemeral)
         {
-            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
-            var compactArgs = JsonSerializer.Serialize(new { AutoCompress = true, AutoThreshold = compOpts.AutoThreshold });
+            // 1. Fast check (no LLM) — yield event immediately so UI doesn't freeze
+            var shouldCompact = await _compactionService.ShouldCompactAsync(agentId, llmOpts.ContextWindow);
 
-            // Yield to UI BEFORE summarization (avoids freeze)
-            yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
-
-            // 2. Actual compaction (slow — LLM summarization)
-            var compacted = await _compactionService.CompactAsync(agentId, llmOpts.ContextWindow);
-
-            if (compacted)
+            if (shouldCompact)
             {
-                var compactBlock = MemoryBlock.AutoTool("compression", compactArgs, "", modelStr);
-                compactBlock.Number = nextNum++;
-                await _blockStore.AppendBlocksAsync(agentId, [compactBlock], nextNum);
+                var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
+                var pickedStrategy = CompactionService.PickStrategy(compOpts);
+                var compactArgs = JsonSerializer.Serialize(new { AutoCompress = true, AutoThreshold = compOpts.AutoThreshold, Strategy = pickedStrategy, Strategies = compOpts.Strategies });
+
+                // Yield to UI BEFORE summarization (avoids freeze)
+                yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
+
+                // 2. Actual compaction (slow — LLM summarization)
+                var compacted = await _compactionService.CompactAsync(agentId, llmOpts.ContextWindow);
+
+                if (compacted)
+                {
+                    var compactBlock = MemoryBlock.AutoTool("compression", compactArgs, "", modelStr);
+                    compactBlock.Number = nextNum++;
+                    await _blockStore.AppendBlocksAsync(agentId, [compactBlock], nextNum);
+                }
             }
         }
 
         var isSubagent = chatOptions.AdditionalProperties?.ContainsKey("isSubagent") == true;
-        var includeMemory = chatOptions.AdditionalProperties?.ContainsKey("saveMemory") == true;
-        chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(agentId, includeMemory)).ToList();
+        chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(agentId, !isEphemeral)).ToList();
 
         var peekStats = await _blockStore.GetPeekBlockStatsAsync(agentId);
         var peekCleaned = await _blockStore.RemovePeekBlocksAsync(agentId);

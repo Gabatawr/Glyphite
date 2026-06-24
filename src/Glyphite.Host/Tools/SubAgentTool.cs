@@ -63,9 +63,9 @@ internal static class SubAgentTool
     /// <summary>Shared runner: saves usage + block checkpoints, executes task, records delta cost into main
     /// session's usage, returns subagent's text response and block checkpoint (for caller to clean blocks
     /// that were created during this task).</summary>
-    private static async Task<(string Result, double BlockCheckpoint)> RunAgentTask(
+    private static async Task<(string Result, double BlockCheckpoint, long CkHit, long CkMiss, long CkOutput)> RunAgentTask(
         AgentScope scope, IAgentStore agentStore, IBlockStore blockStore, string agentId, string task,
-        string mainSessionId, string defaultModel, CancellationToken ct, bool saveMemory = false,
+        string mainSessionId, string defaultModel, CancellationToken ct, bool ephemeral,
         string? cwd = null)
     {
         var resolvedModel = await agentStore.GetAgentModelAsync(agentId) ?? defaultModel;
@@ -75,11 +75,8 @@ internal static class SubAgentTool
         };
         chatOptions.AdditionalProperties ??= [];
         chatOptions.AdditionalProperties["isSubagent"] = "true";
-        if (saveMemory)
-        {
-            chatOptions.AdditionalProperties["saveMemory"] = "true";
-        }
-        chatOptions.Tools = (await scope.ToolRegistry.GetBuiltinToolsAsync(agentId)).ToList();
+        chatOptions.AdditionalProperties["ephemeral"] = ephemeral ? "true" : "false";
+        chatOptions.Tools = (await scope.ToolRegistry.GetBuiltinToolsAsync(agentId, !ephemeral)).ToList();
 
         // ── Checkpoint: save block number + usage before task ──
         var blockCk = await agentStore.GetNextNumberAsync(agentId);
@@ -105,7 +102,7 @@ internal static class SubAgentTool
             await agentStore.RecordUsageAsync(mainSessionId, dHit, dMiss, dOutput,
                 model: resolvedModel);
 
-        return (sb.ToString().Trim(), blockCk);
+        return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput);
     }
 
     /// <summary>Ensure a scope is registered for the given agent, creating one if needed.</summary>
@@ -131,7 +128,7 @@ internal static class SubAgentTool
     /// Passes CancellationToken through so Escape from parent interrupts subagent promptly.
     /// </summary>
     private static async Task<string> RunSubAgentTaskAsync(
-        string agentId, string task, bool isDryRun, bool saveMemory,
+        string agentId, string task, bool ephemeral,
         SubAgentManager subAgentManager, IAgentScopeFactory scopeFactory,
         IAgentStore agentStore, IBlockStore blockStore, string currentSessionId,
         string defaultModel, CancellationToken ct, string? cwd = null)
@@ -140,11 +137,13 @@ internal static class SubAgentTool
         if (scopeErr is not null) return scopeErr;
 
         // Record pending run — crash-safe: if process dies, this persists in DB
-        var mode = isDryRun ? "run-dry" : "use";
+        var mode = ephemeral ? "run-dry" : "use";
         double? dryCk = null;
-        if (isDryRun)
+        long ckHit = 0, ckMiss = 0, ckOutput = 0;
+        if (ephemeral)
         {
             dryCk = await agentStore.GetNextNumberAsync(agentId);
+            (ckHit, ckMiss, ckOutput) = await agentStore.GetUsageAsync(agentId);
             await agentStore.SetPendingRunAsync(agentId, mode, dryCk);
         }
         else
@@ -156,10 +155,13 @@ internal static class SubAgentTool
         {
             return await subAgentManager.RunAsync(agentId, async s =>
             {
-                var (output, blockCk) = await RunAgentTask(s, agentStore, blockStore, agentId, task, currentSessionId, defaultModel, ct, saveMemory, cwd);
-                if (isDryRun)
+                var (output, blockCk, ckHit, ckMiss, ckOutput) = await RunAgentTask(s, agentStore, blockStore, agentId, task, currentSessionId, defaultModel, ct, ephemeral, cwd);
+                if (ephemeral)
                 {
+                    // Restore usage to checkpoint (before the run) instead of clearing everything
                     await agentStore.ClearUsageAsync(agentId);
+                    if (ckHit > 0 || ckMiss > 0 || ckOutput > 0)
+                        await agentStore.RecordUsageAsync(agentId, ckHit, ckMiss, ckOutput);
                     await blockStore.DeleteBlocksSinceAsync(agentId, blockCk);
                 }
                 return output;
@@ -168,9 +170,11 @@ internal static class SubAgentTool
         catch (OperationCanceledException)
         {
             // Clean up delta blocks even on cancellation — blocks from partial run persist otherwise
-            if (isDryRun && dryCk.HasValue)
+            if (ephemeral && dryCk.HasValue)
             {
                 await agentStore.ClearUsageAsync(agentId);
+                if (ckHit > 0 || ckMiss > 0 || ckOutput > 0)
+                    await agentStore.RecordUsageAsync(agentId, ckHit, ckMiss, ckOutput);
                 await blockStore.DeleteBlocksSinceAsync(agentId, dryCk.Value);
             }
             throw;
@@ -214,7 +218,7 @@ internal static class SubAgentTool
         try
         {
             subAgentManager.SetEphemeral(agentId, true);
-            return await RunSubAgentTaskAsync(agentId, task, isDryRun: false, saveMemory: false,
+            return await RunSubAgentTaskAsync(agentId, task, ephemeral: true,
                 subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
         }
         finally
@@ -260,7 +264,7 @@ internal static class SubAgentTool
                 configService.ClearSessionOverlay(name);
                 KVStoreTool.ClearEphemeralVault(name);
                 subAgentManager.SetEphemeral(name, true);
-                return await RunSubAgentTaskAsync(name, task, isDryRun: true, saveMemory: false,
+                return await RunSubAgentTaskAsync(name, task, ephemeral: true,
                     subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
             }
 
@@ -320,7 +324,7 @@ internal static class SubAgentTool
                 await agentManager.CreateAgentAsync(name, llm.Model, homePath, recordLaunch: false);
             }
 
-            return await RunSubAgentTaskAsync(name, task, isDryRun: false, saveMemory: true,
+            return await RunSubAgentTaskAsync(name, task, ephemeral: false,
                 subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
         },
         name: "subagent_use",
