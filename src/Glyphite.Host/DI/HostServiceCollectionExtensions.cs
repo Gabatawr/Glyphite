@@ -42,6 +42,12 @@ public static class HostServiceCollectionExtensions
         var dataDir = Path.Combine(baseDir, dataOpts.Directory);
         Directory.CreateDirectory(dataDir);
 
+        // ── Tmp directory for full bash output (cleaned on each startup) ──
+        var tmpDir = Path.Combine(baseDir, "tmp");
+        if (Directory.Exists(tmpDir))
+            Directory.Delete(tmpDir, recursive: true);
+        Directory.CreateDirectory(tmpDir);
+
         // ── Data ──
         var connStr = $"Data Source={Path.Combine(dataDir, dataOpts.DatabaseFileName)}";
         services.AddSingleton<IAgentStore>(_ => new SessionRepository(connStr));

@@ -13,6 +13,7 @@ public static class FileReadTool
     public static async Task<string> ReadFile(
         string path,
         ContentDedupOptions dedupOpts,
+        int maxReadChars,
         int? offset = null,
         int? limit = null,
         bool? compress = null,
@@ -37,7 +38,11 @@ public static class FileReadTool
         {
             var raw = string.Join('\n', lines);
             var deduped = ContentDedup.Compress(raw, dedupOpts);
-            return $"[File: {path}, {lines.Length} lines total, dedup]\n{deduped}";
+            var header = $"[File: {path}, {lines.Length} lines total, dedup]\n";
+            var result = header + deduped;
+            if (result.Length > maxReadChars)
+                return $"Error: File too large ({result.Length} chars > {maxReadChars} limit). Use `offset`+`limit` to read specific sections.";
+            return result;
         }
 
         var start = Math.Max(0, (offset ?? 1) - 1);
@@ -61,12 +66,17 @@ public static class FileReadTool
         meta += "]";
 
         sb.Insert(0, meta + "\n");
-        return sb.ToString().TrimEnd();
+        var output = sb.ToString().TrimEnd();
+
+        if (output.Length > maxReadChars)
+            return $"Error: Result too large ({output.Length} chars > {maxReadChars} limit). Use `offset`+`limit` to read a smaller section.";
+
+        return output;
     }
 
     private sealed class ReadInvoker(IConfigService cfg, string? defaultDirectory, string? sessionId)
     {
-        [Description("Read a file with optional line range and auto-dedup. Returns content with line numbers and file metadata (total lines, skipped, remaining). Lines are 1-indexed. Use `offset`+`limit` to read specific sections. Auto-deduplicates repeated lines for .log files (can be overridden with `compress`). Prefer this over bash `cat`/`head`/`tail` for file reading.")]
+        [Description("Read a file with optional line range and auto-dedup. Returns content with line numbers and file metadata (total lines, skipped, remaining). Lines are 1-indexed. Use `offset`+`limit` to read specific sections. Auto-deduplicates repeated lines for .log files (can be overridden with `compress`). Prefer this over bash `cat`/`head`/`tail` for file reading. Large files (>100K chars) will return an error — use offset+limit for those.")]
         public async Task<string> Execute(
             string path,
             [Description("Starting line number, 1-indexed. Omit to read from beginning.")] int? offset = null,
@@ -75,7 +85,8 @@ public static class FileReadTool
             bool? peek = null)
         {
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
-            return await ReadFile(path, dedupOpts, offset, limit, compress, peek, dedupOpts.AutoDedupExtensions, defaultDirectory);
+            var searchOpts = await cfg.GetOptionsAsync<SearchOptions>(SearchOptions.Section, sessionId);
+            return await ReadFile(path, dedupOpts, searchOpts.MaxReadChars, offset, limit, compress, peek, dedupOpts.AutoDedupExtensions, defaultDirectory);
         }
     }
 

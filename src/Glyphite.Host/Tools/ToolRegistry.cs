@@ -23,6 +23,7 @@ public class ToolRegistry : IToolRegistry
     private readonly McpService _mcpService;
     private readonly ILogger _logger;
     private readonly string _defaultDir;
+    private readonly string _tmpDir;
 
     public ToolRegistry(
         IBashSessionManager bashManager,
@@ -51,6 +52,7 @@ public class ToolRegistry : IToolRegistry
         _mcpService = mcpService;
         _logger = logger;
         _defaultDir = Directory.GetCurrentDirectory();
+        _tmpDir = Path.Combine(AppContext.BaseDirectory, "tmp");
     }
 
     public async Task<IReadOnlyList<AITool>> GetBuiltinToolsAsync(string agentId, bool includeMemory = false)
@@ -60,12 +62,12 @@ public class ToolRegistry : IToolRegistry
 
         var tools = new List<AITool>
         {
-            BashTool.AsAIFunction(_bashManager, agentId, _cfgService),
+            BashTool.AsAIFunction(_bashManager, agentId, _cfgService, _tmpDir),
             FileReadTool.AsAIFunction(_cfgService, _defaultDir, agentId),
             FileWriteTool.AsAIFunction(_defaultDir),
             FilePatchTool.AsAIFunction(_defaultDir),
             TodoTool.AsTodoFunction(_agentStore, _blockStore, agentId, _cfgService),
-            WebFetchTool.AsFetchFunction(_cfgService, agentId),
+            WebFetchTool.AsFetchFunction(_cfgService, agentId, _tmpDir),
             SearchTools.AsGlobFunction(_cfgService, _defaultDir, agentId, _logger),
             SearchTools.AsGrepFunction(_cfgService, _defaultDir, agentId, _logger),
             KVStoreTool.AsKvStoreFunction(_kvStore, _cfgService, _subAgentManager, agentId),

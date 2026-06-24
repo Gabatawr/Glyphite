@@ -82,7 +82,8 @@ public class BashOptions
     public string DefaultDirectory { get; set; } = string.Empty;
     public int DiscoveryTimeoutMs { get; set; }
     public int DefaultTimeoutMs { get; set; }
-    public int MaxOutputBytes { get; set; }
+    /// <summary>Max output chars for bash. Truncated to 1/3+2/3 with full output saved to tmp/.</summary>
+    public int MaxOutput { get; set; } = 100_000;
     public string[] AllowedExecutables { get; set; } = [];
     public string[] ForbiddenCommands { get; set; } = [];
     public string[] ForbiddenDirectories { get; set; } = [];
@@ -94,8 +95,8 @@ public class BashOptions
             throw new InvalidOperationException("Bash:DiscoveryTimeoutMs must be > 0.");
         if (DefaultTimeoutMs <= 0)
             throw new InvalidOperationException("Bash:DefaultTimeoutMs must be > 0.");
-        if (MaxOutputBytes <= 0)
-            throw new InvalidOperationException("Bash:MaxOutputBytes must be > 0.");
+        if (MaxOutput <= 0)
+            throw new InvalidOperationException("Bash:MaxOutput must be > 0.");
     }
 }
 
@@ -161,6 +162,8 @@ public class SearchOptions
     public int MaxLineLength { get; set; }
     public int DetectBinarySampleSize { get; set; }
     public int MaxEnumerationFiles { get; set; } = 50000;
+    /// <summary>Max output characters for read_file before returning a size-hint error.</summary>
+    public int MaxReadChars { get; set; } = 100_000;
     public void Validate()
     {
         if (MaxResultCount <= 0)
@@ -173,6 +176,8 @@ public class SearchOptions
             throw new InvalidOperationException("Search:DetectBinarySampleSize must be > 0.");
         if (MaxEnumerationFiles <= 0)
             throw new InvalidOperationException("Search:MaxEnumerationFiles must be > 0.");
+        if (MaxReadChars <= 0)
+            throw new InvalidOperationException("Search:MaxReadChars must be > 0.");
     }
 }
 

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text;
 using System.Text.RegularExpressions;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
@@ -8,9 +9,9 @@ namespace Glyphite.Host.Tools;
 
 public static partial class WebFetchTool
 {
-    private sealed class FetchInvoker(IConfigService cfg, string? sessionId)
+    private sealed class FetchInvoker(IConfigService cfg, string? sessionId, string tmpDir)
     {
-        [Description("Fetch the content of a web page by URL. Returns content as plain text (default) or markdown. Handles redirects automatically. Use for reading documentation, API specs, or any online resource needed for the task.")]
+        [Description("Fetch the content of a web page by URL. Returns content as plain text (default) or markdown. Handles redirects automatically. Large responses are truncated (showing 1/3 from top + 2/3 from bottom) and the full content is saved to a temp file for later reading. Use for reading documentation, API specs, or any online resource needed for the task.")]
         public async Task<string> Execute(
             [Description("URL to fetch (must start with http:// or https://)")] string url,
             [Description("Output format: 'text' (default, strips HTML) or 'markdown'")] string? format = null,
@@ -23,13 +24,13 @@ public static partial class WebFetchTool
             http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", opts.UserAgent);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(opts.TimeoutSeconds));
-            return await FetchUrl(url, format ?? opts.DefaultFormat, http, opts.MaxContentLength, peek, timeoutCts.Token);
+            return await FetchUrl(url, format ?? opts.DefaultFormat, http, opts.MaxContentLength, tmpDir, sessionId, peek, timeoutCts.Token);
         }
     }
 
-    public static AIFunction AsFetchFunction(IConfigService cfg, string? sessionId = null)
+    public static AIFunction AsFetchFunction(IConfigService cfg, string? sessionId = null, string tmpDir = "")
         => AIFunctionFactory.Create(
-            new FetchInvoker(cfg, sessionId).Execute,
+            new FetchInvoker(cfg, sessionId, tmpDir).Execute,
             "fetch_web");
 
     internal static async Task<string> FetchUrl(
@@ -37,6 +38,8 @@ public static partial class WebFetchTool
         string format,
         HttpClient http,
         int maxContentLength,
+        string tmpDir,
+        string? agentId = null,
         bool? peek = null,
         CancellationToken ct = default
     )
@@ -55,19 +58,33 @@ public static partial class WebFetchTool
             var content = await response.Content.ReadAsStringAsync(ct);
             var trimmed = content.Trim();
 
-            if (trimmed.Length > maxContentLength)
-                trimmed = trimmed[..maxContentLength] + $"\n\n... (truncated at {maxContentLength} characters)";
-
             if (format == "markdown")
-            {
                 trimmed = StripHtmlToMarkdown(trimmed);
-            }
             else
-            {
                 trimmed = StripHtmlTags(trimmed);
-            }
 
-            return trimmed;
+            if (trimmed.Length <= maxContentLength)
+                return trimmed;
+
+            // Save full content to tmp file
+            var agentTmp = Path.Combine(tmpDir, SanitizeForPath(agentId ?? "unknown"));
+            Directory.CreateDirectory(agentTmp);
+            var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+            var outPath = Path.Combine(agentTmp, $"fetch_{timestamp}.out");
+            File.WriteAllText(outPath, content);
+
+            // Build truncated view: 1/3 from top + truncation notice + 2/3 from bottom
+            var topChars = maxContentLength / 3;
+            var bottomChars = maxContentLength - topChars;
+
+            ReadOnlySpan<char> span = trimmed.AsSpan();
+            var top = span[..topChars];
+            var bottom = span[^bottomChars..];
+
+            var note = $"[Output truncated: showing 1/3 ({topChars} chars) and 2/3 ({bottomChars} chars) of {trimmed.Length} total]\n" +
+                       $"[Full content saved to: {outPath}]\n";
+
+            return string.Concat(top.ToString(), "\n", note, bottom.ToString());
         }
         catch (HttpRequestException ex)
         {
@@ -90,6 +107,15 @@ public static partial class WebFetchTool
     {
         var text = StripHtmlTags(html);
         return text;
+    }
+
+    private static string SanitizeForPath(string input)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sb = new StringBuilder(input.Length);
+        foreach (var ch in input)
+            sb.Append(invalid.Contains(ch) ? '_' : ch);
+        return sb.ToString();
     }
 
     [GeneratedRegex("<[^>]*>", RegexOptions.Compiled)]

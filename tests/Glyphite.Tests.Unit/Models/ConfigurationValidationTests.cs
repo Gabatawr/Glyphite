@@ -265,7 +265,7 @@ public class ConfigurationValidationTests
             ExecutablePath = "/bin/bash",
             DiscoveryTimeoutMs = 5000,
             DefaultTimeoutMs = 30000,
-            MaxOutputBytes = 1048576
+            MaxOutput = 100000
         };
         opts.Validate();
     }
@@ -273,7 +273,7 @@ public class ConfigurationValidationTests
     [Fact]
     public void BashOptions_EmptyExecutablePath_Throws()
     {
-        var opts = new BashOptions { ExecutablePath = "", DiscoveryTimeoutMs = 5000, DefaultTimeoutMs = 30000, MaxOutputBytes = 1048576 };
+        var opts = new BashOptions { ExecutablePath = "", DiscoveryTimeoutMs = 5000, DefaultTimeoutMs = 30000, MaxOutput = 100000 };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("ExecutablePath", ex.Message);
     }
@@ -281,7 +281,7 @@ public class ConfigurationValidationTests
     [Fact]
     public void BashOptions_DiscoveryTimeoutMsZero_Throws()
     {
-        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 0, DefaultTimeoutMs = 30000, MaxOutputBytes = 1048576 };
+        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 0, DefaultTimeoutMs = 30000, MaxOutput = 100000 };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("DiscoveryTimeoutMs", ex.Message);
     }
@@ -289,17 +289,17 @@ public class ConfigurationValidationTests
     [Fact]
     public void BashOptions_DefaultTimeoutMsZero_Throws()
     {
-        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 5000, DefaultTimeoutMs = 0, MaxOutputBytes = 1048576 };
+        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 5000, DefaultTimeoutMs = 0, MaxOutput = 100000 };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("DefaultTimeoutMs", ex.Message);
     }
 
     [Fact]
-    public void BashOptions_MaxOutputBytesZero_Throws()
+    public void BashOptions_MaxOutputZero_Throws()
     {
-        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 5000, DefaultTimeoutMs = 30000, MaxOutputBytes = 0 };
+        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 5000, DefaultTimeoutMs = 30000, MaxOutput = 0 };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
-        Assert.Contains("MaxOutputBytes", ex.Message);
+        Assert.Contains("MaxOutput", ex.Message);
     }
 
     // ── MemoryOptions ──
@@ -408,7 +408,8 @@ public class ConfigurationValidationTests
             MaxTextFileSize = 1048576,
             MaxLineLength = 500,
             DetectBinarySampleSize = 512,
-            MaxEnumerationFiles = 50000
+            MaxEnumerationFiles = 50000,
+            MaxReadChars = 100000
         };
         opts.Validate();
     }
@@ -451,6 +452,14 @@ public class ConfigurationValidationTests
         var opts = new SearchOptions { MaxResultCount = 1, MaxTextFileSize = 1, MaxLineLength = 1, DetectBinarySampleSize = 1, MaxEnumerationFiles = 0 };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("MaxEnumerationFiles", ex.Message);
+    }
+
+    [Fact]
+    public void SearchOptions_MaxReadCharsZero_Throws()
+    {
+        var opts = new SearchOptions { MaxResultCount = 1, MaxTextFileSize = 1, MaxLineLength = 1, DetectBinarySampleSize = 1, MaxEnumerationFiles = 1, MaxReadChars = 0 };
+        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
+        Assert.Contains("MaxReadChars", ex.Message);
     }
 
     // ── DataOptions ──

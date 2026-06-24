@@ -84,7 +84,7 @@ public class ConfigServiceTests
             ["Bash:ExecutablePath"] = "/bin/bash",
             ["Bash:DiscoveryTimeoutMs"] = "5000",
             ["Bash:DefaultTimeoutMs"] = "30000",
-            ["Bash:MaxOutputBytes"] = "1048576"
+            ["Bash:MaxOutput"] = "100000"
         });
 
         var service = new ConfigService(store, config);
@@ -94,7 +94,7 @@ public class ConfigServiceTests
         Assert.Equal("/bin/bash", options.ExecutablePath);
         Assert.Equal(5000, options.DiscoveryTimeoutMs);
         Assert.Equal(30000, options.DefaultTimeoutMs);
-        Assert.Equal(1048576, options.MaxOutputBytes);
+        Assert.Equal(100000, options.MaxOutput);
     }
 
     [Fact]
@@ -107,7 +107,8 @@ public class ConfigServiceTests
             ["Search:MaxTextFileSize"] = "1048576",
             ["Search:MaxLineLength"] = "500",
             ["Search:DetectBinarySampleSize"] = "512",
-            ["Search:MaxEnumerationFiles"] = "50000"
+            ["Search:MaxEnumerationFiles"] = "50000",
+            ["Search:MaxReadChars"] = "100000"
         });
 
         var service = new ConfigService(store, config);
@@ -119,6 +120,7 @@ public class ConfigServiceTests
         Assert.Equal(500, options.MaxLineLength);
         Assert.Equal(512, options.DetectBinarySampleSize);
         Assert.Equal(50000, options.MaxEnumerationFiles);
+        Assert.Equal(100000, options.MaxReadChars);
     }
 
     [Fact]
