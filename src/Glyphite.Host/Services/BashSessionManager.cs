@@ -360,7 +360,11 @@ public class BashSessionManager : IBashSessionManager, IDisposable
     public BackgroundTaskInfo[] ListBackgroundTasks(string agentId)
     {
         return _background
-            .Select(kv => new BackgroundTaskInfo(kv.Key, kv.Value.Command))
+            .Select(kv =>
+            {
+                var status = kv.Value.Status;
+                return new BackgroundTaskInfo(kv.Key, kv.Value.Command, status.Exited, status.ExitCode);
+            })
             .ToArray();
     }
 
