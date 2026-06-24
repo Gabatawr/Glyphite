@@ -237,11 +237,13 @@ public class BashSession : IDisposable
 public class BashSessionManager : IBashSessionManager, IDisposable
 {
     private readonly ConcurrentDictionary<string, Lazy<BashSession>> _sessions = new();
+    private readonly ConcurrentDictionary<string, BackgroundProcessEntry> _background = new();
     private readonly IConfigService _cfgService;
     private readonly ILogger _logger;
     private readonly BashOptions _opts;
     private readonly string? _defaultDirectory;
     private static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
+    private long _taskSeq;
 
     public BashSessionManager(IConfigService cfgService, BashOptions opts, ILogger<BashSessionManager> logger, string? defaultDirectory = null)
     {
@@ -310,6 +312,54 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         }
     }
 
+    // ── Background processes ──
+
+    public string StartBackgroundAsync(string agentId, string command, string? workdir = null, int? timeoutMs = null)
+    {
+        var taskId = $"bg_{Interlocked.Increment(ref _taskSeq)}_{Guid.NewGuid():N[0..8]}";
+        var entry = new BackgroundProcessEntry(command, workdir, timeoutMs ?? _opts.DefaultTimeoutMs, _logger);
+        _background[taskId] = entry;
+        entry.Start();
+        _logger.LogDebug("Background process '{TaskId}' started for agent '{AgentId}': {Command}", taskId, agentId, command);
+        return taskId;
+    }
+
+    public async Task<(string Output, bool Completed, int? ExitCode)> GetBackgroundOutputAsync(string taskId, bool wait, int? timeoutMs = null, int? partLines = null)
+    {
+        if (!_background.TryGetValue(taskId, out var entry))
+            return ("Background task not found: " + taskId, true, null);
+
+        if (wait)
+        {
+            var completed = await entry.WaitAsync(timeoutMs ?? _opts.DefaultTimeoutMs);
+            if (!completed)
+            {
+                // Timeout — kill and return what we have
+                entry.Kill();
+                _background.TryRemove(taskId, out _);
+            }
+        }
+
+        var output = entry.GetOutput(partLines);
+        var status = entry.Status;
+        if (status.Exited)
+            _background.TryRemove(taskId, out _);
+
+        return (output, status.Exited, status.ExitCode);
+    }
+
+    public void KillBackground(string taskId)
+    {
+        if (_background.TryRemove(taskId, out var entry))
+        {
+            entry.Kill();
+            _logger.LogDebug("Killed background process '{TaskId}'", taskId);
+        }
+    }
+
+    public string[] GetBackgroundTasks(string agentId) =>
+        _background.Where(kv => kv.Value.AgentId == agentId).Select(kv => kv.Key).ToArray();
+
     public void Dispose()
     {
         foreach (var lazy in _sessions.Values)
@@ -318,5 +368,175 @@ public class BashSessionManager : IBashSessionManager, IDisposable
                 lazy.Value.Dispose();
         }
         _sessions.Clear();
+
+        foreach (var entry in _background.Values)
+            entry.Kill();
+        _background.Clear();
+    }
+
+    // ── Background process entry ──
+
+    private sealed class BackgroundProcessEntry
+    {
+        public string AgentId { get; }
+        private readonly string _command;
+        private readonly string? _workdir;
+        private readonly int _timeoutMs;
+        private readonly ILogger _logger;
+        private Process? _process;
+        private readonly StringBuilder _output = new();
+        private readonly TaskCompletionSource<bool> _exitTcs = new();
+        private int _exited;
+
+        public ProcessStatus Status
+        {
+            get
+            {
+                if (_process is null) return new ProcessStatus(true, null);
+                try { _process.Refresh(); return new ProcessStatus(_process.HasExited, _process.HasExited ? _process.ExitCode : null); }
+                catch { return new ProcessStatus(true, null); }
+            }
+        }
+
+        public record struct ProcessStatus(bool Exited, int? ExitCode);
+
+        public BackgroundProcessEntry(string command, string? workdir, int timeoutMs, ILogger logger)
+        {
+            _command = command;
+            _workdir = workdir;
+            _timeoutMs = timeoutMs;
+            _logger = logger;
+            AgentId = "shared";
+        }
+
+        public void Start()
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "bash",
+                Arguments = "-c",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+
+            if (!string.IsNullOrEmpty(_workdir))
+                psi.WorkingDirectory = _workdir;
+
+            // Build the command: wrap in cd if workdir is set
+            var effectiveCommand = string.IsNullOrEmpty(_workdir)
+                ? _command
+                : $"(cd '{_workdir.Replace("'", "'\\''")}' && {_command})";
+
+#if NET
+            psi.ArgumentList.Add(effectiveCommand);
+#else
+            psi.Arguments = $"-c \"{effectiveCommand.Replace("\"", "\\\"")}\"";
+#endif
+
+            _process = new Process { StartInfo = psi };
+            _process.Start();
+
+            // Read stdout
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var buf = new char[4096];
+                    var reader = _process.StandardOutput;
+                    int charsRead;
+                    while ((charsRead = await reader.ReadAsync(buf, 0, buf.Length)) > 0)
+                    {
+                        lock (_output)
+                        {
+                            _output.Append(buf, 0, charsRead);
+                        }
+                    }
+                }
+                catch { }
+            });
+
+            // Read stderr
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var buf = new char[4096];
+                    var reader = _process.StandardError;
+                    int charsRead;
+                    while ((charsRead = await reader.ReadAsync(buf, 0, buf.Length)) > 0)
+                    {
+                        lock (_output)
+                        {
+                            _output.Append(buf, 0, charsRead);
+                        }
+                    }
+                }
+                catch { }
+            });
+
+            // Wait for exit
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    _process.WaitForExit(_timeoutMs);
+                }
+                catch { }
+                Interlocked.Exchange(ref _exited, 1);
+                _exitTcs.TrySetResult(true);
+            });
+        }
+
+        public async Task<bool> WaitAsync(int timeoutMs)
+        {
+            using var cts = new CancellationTokenSource(timeoutMs);
+            try
+            {
+                await _exitTcs.Task.WaitAsync(cts.Token);
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                return false;
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
+        }
+
+        public string GetOutput(int? partLines = null)
+        {
+            lock (_output)
+            {
+                var text = _output.ToString();
+                if (partLines is > 0)
+                {
+                    var lines = text.Split('\n');
+                    if (lines.Length <= partLines.Value)
+                        return text;
+                    return string.Join('\n', lines[^partLines.Value..]);
+                }
+                return text;
+            }
+        }
+
+        public void Kill()
+        {
+            if (_process is null) return;
+            try
+            {
+                if (!_process.HasExited)
+                    _process.Kill(entireProcessTree: true);
+            }
+            catch { }
+            _process.Dispose();
+            _process = null;
+            _exitTcs.TrySetResult(true);
+        }
     }
 }
