@@ -9,12 +9,28 @@ namespace Glyphite.Host.Services;
 public sealed class SubAgentManager
 {
     private readonly ConcurrentDictionary<string, AgentScopeEntry> _entries = new();
+    private readonly ConcurrentDictionary<string, bool> _ephemeralFlags = new(StringComparer.OrdinalIgnoreCase);
     private readonly ILogger _logger;
 
     public SubAgentManager(ILogger<SubAgentManager>? logger = null)
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<SubAgentManager>.Instance;
     }
+
+    /// <summary>Mark an agent as ephemeral (temp agent from subagent_run).
+    /// Ephemeral agents' config changes should NOT be persisted to DB.</summary>
+    public void SetEphemeral(string agentId, bool ephemeral = true)
+    {
+        if (ephemeral)
+            _ephemeralFlags[agentId] = true;
+        else
+            _ephemeralFlags.TryRemove(agentId, out _);
+        _logger.LogDebug("Agent '{AgentId}' ephemeral={Ephemeral}", agentId, ephemeral);
+    }
+
+    /// <summary>Check if an agent is marked ephemeral (temp / run-mode subagent).</summary>
+    public bool IsEphemeral(string agentId) =>
+        _ephemeralFlags.TryGetValue(agentId, out var eph) && eph;
 
     // ── Scope management ──
 
@@ -40,6 +56,7 @@ public sealed class SubAgentManager
         {
             entry.Scope.Dispose();
             entry.Semaphore.Dispose();
+            _ephemeralFlags.TryRemove(agentId, out _);
             _logger.LogDebug("Removed scope for subagent '{AgentId}'", agentId);
         }
     }

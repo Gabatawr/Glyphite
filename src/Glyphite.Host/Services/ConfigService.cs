@@ -167,6 +167,14 @@ public class ConfigService : IConfigService
             updated[key] = newValue;
         }
 
+        // Если есть overlay (агент не в home), применяем изменения сразу — иначе
+        // в этом же турне они не видны, пока не перезагрузится сессия.
+        if (agentId is not null && _overlays.TryGetValue(agentId, out var overlay))
+        {
+            foreach (var (key, value) in updated)
+                overlay[key] = value;
+        }
+
         InvalidateCache(agentId);
         return new ConfigDiffResult(updated, skipped);
     }

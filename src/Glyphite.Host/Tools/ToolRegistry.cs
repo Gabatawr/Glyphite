@@ -15,6 +15,7 @@ public class ToolRegistry : IToolRegistry
     private readonly IAgentStore _agentStore;
     private readonly IBlockStore _blockStore;
     private readonly IBlockMemoryProvider _blockMemory;
+    private readonly IKVStore _kvStore;
     private readonly SubAgentManager _subAgentManager;
     private readonly IAgentManager _agentManager;
     private readonly IAgentScopeFactory _scopeFactory;
@@ -29,6 +30,7 @@ public class ToolRegistry : IToolRegistry
         IAgentStore agentStore,
         IBlockStore blockStore,
         IBlockMemoryProvider blockMemory,
+        IKVStore kvStore,
         SubAgentManager subAgentManager,
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
@@ -41,6 +43,7 @@ public class ToolRegistry : IToolRegistry
         _agentStore = agentStore;
         _blockStore = blockStore;
         _blockMemory = blockMemory;
+        _kvStore = kvStore;
         _subAgentManager = subAgentManager;
         _agentManager = agentManager;
         _scopeFactory = scopeFactory;
@@ -65,6 +68,7 @@ public class ToolRegistry : IToolRegistry
             WebFetchTool.AsFetchFunction(_cfgService, agentId),
             SearchTools.AsGlobFunction(_cfgService, _defaultDir, agentId, _logger),
             SearchTools.AsGrepFunction(_cfgService, _defaultDir, agentId, _logger),
+            KVStoreTool.AsKvStoreFunction(_kvStore, _cfgService, _subAgentManager, agentId),
         };
 
         // Memory tool: available for main agent, or for subagents with saveMemory=true
@@ -78,7 +82,7 @@ public class ToolRegistry : IToolRegistry
         // Subagent tools: only for main agent (prevents recursion)
         if (!isSubAgent)
         {
-            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _llmOpts, agentId));
+            tools.Add(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _cfgService, _llmOpts, agentId));
             tools.Add(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _llmOpts, agentId));
             tools.Add(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _agentStore, _blockStore, agentId));
         }

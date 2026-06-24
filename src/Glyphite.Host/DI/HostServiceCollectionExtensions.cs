@@ -47,6 +47,7 @@ public static class HostServiceCollectionExtensions
         services.AddSingleton<IAgentStore>(_ => new SessionRepository(connStr));
         services.AddSingleton<IBlockStore>(_ => new BlockRepository(connStr));
         services.AddSingleton<IConfigStore>(_ => new ConfigRepository(connStr));
+        services.AddSingleton<IKVStore>(_ => new KVStoreRepository(connStr));
 
         // ── IChatClient ──
         services.AddSingleton<IChatClient>(sp =>

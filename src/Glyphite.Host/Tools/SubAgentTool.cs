@@ -195,12 +195,16 @@ internal static class SubAgentTool
         bool validateName,
         SubAgentManager subAgentManager, IAgentManager agentManager,
         IAgentScopeFactory scopeFactory, IAgentStore agentStore, IBlockStore blockStore,
+        IConfigService configService,
         LlmOptions llm,
         string currentSessionId, CancellationToken ct,
         string? cwd = null)
     {
         if (validateName && !AgentManager.IsValidAgentName(agentId))
             return $"Error: Invalid agent name '{agentId}'.";
+
+        // Clean any config overlay from a previous run with this name
+        configService.ClearSessionOverlay(agentId);
 
         await agentManager.CreateAgentAsync(agentId, llm.Model, homePath, recordLaunch: false);
 
@@ -209,12 +213,14 @@ internal static class SubAgentTool
 
         try
         {
+            subAgentManager.SetEphemeral(agentId, true);
             return await RunSubAgentTaskAsync(agentId, task, isDryRun: false, saveMemory: false,
                 subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
         }
         finally
         {
             await agentStore.ClearPendingRunAsync(agentId);
+            KVStoreTool.ClearEphemeralVault(agentId);
             subAgentManager.Remove(agentId);
             await agentStore.DeleteSessionAsync(agentId);
         }
@@ -228,6 +234,7 @@ internal static class SubAgentTool
         IAgentScopeFactory scopeFactory,
         IAgentStore agentStore,
         IBlockStore blockStore,
+        IConfigService configService,
         IOptions<LlmOptions> llmOpts,
         string currentSessionId)
     {
@@ -250,6 +257,9 @@ internal static class SubAgentTool
             // ── name provided + agent exists → dry-run with cleanup ──
             if (name is not null && await agentStore.AgentExistsAsync(name))
             {
+                configService.ClearSessionOverlay(name);
+                KVStoreTool.ClearEphemeralVault(name);
+                subAgentManager.SetEphemeral(name, true);
                 return await RunSubAgentTaskAsync(name, task, isDryRun: true, saveMemory: false,
                     subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
             }
@@ -260,6 +270,7 @@ internal static class SubAgentTool
                 return await CreateAndRunSubAgentAsync(name, task, homePath, parentCwd,
                     validateName: true,
                     subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
+                    configService,
                     llm, currentSessionId, ct, cwd);
             }
 
@@ -268,6 +279,7 @@ internal static class SubAgentTool
             return await CreateAndRunSubAgentAsync(guidId, task, homePath, parentCwd,
                 validateName: false,
                 subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
+                configService,
                 llm, currentSessionId, ct, cwd);
         },
         name: "subagent_run",
