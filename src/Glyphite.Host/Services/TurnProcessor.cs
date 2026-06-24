@@ -67,6 +67,14 @@ public class TurnProcessor : ITurnProcessor
         var llmOpts = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section, agentId);
         var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>(AgentOptions.Section, agentId);
 
+        // Apply reasoning effort from config (None = suppress, null = let provider decide)
+        if (llmOpts.ReasoningEffort is { } effortStr
+            && Enum.TryParse<ReasoningEffort>(effortStr, ignoreCase: true, out var parsedEffort))
+        {
+            chatOptions.Reasoning ??= new ReasoningOptions();
+            chatOptions.Reasoning.Effort = parsedEffort;
+        }
+
         var modelStr = chatOptions.ModelId ?? llmOpts.Model;
         _logger.LogInformation("Turn start session {SessionId}, model {Model}", agentId, modelStr);
 

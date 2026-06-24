@@ -10,6 +10,8 @@ public class LlmOptions
     public string Model { get; set; } = string.Empty;
     public LlmModel[] Models { get; set; } = [];
     public int ContextWindow { get; set; }
+    /// <summary>Reasoning effort level: None, Low, Medium, High, ExtraHigh. Case-insensitive.</summary>
+    public string? ReasoningEffort { get; set; }
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Endpoint))
