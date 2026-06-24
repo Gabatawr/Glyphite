@@ -112,7 +112,7 @@ public class BashSession : IDisposable
         var psi = new ProcessStartInfo
         {
             FileName = opts.ExecutablePath,
-            Arguments = opts.Arguments,
+            Arguments = "--noediting +H",
             WorkingDirectory = !string.IsNullOrEmpty(opts.DefaultDirectory)
                 ? opts.DefaultDirectory
                 : defaultDirectory ?? "",
@@ -131,7 +131,7 @@ public class BashSession : IDisposable
             AutoFlush = true,
             NewLine = "\n"
         };
-        stdin.WriteLine(opts.InitCommand);
+        stdin.WriteLine("export PS1='' PS2=''");
         logger.LogDebug("Bash session started (pid: {Pid})", process.Id);
         return new BashSession(process, stdin, logger);
     }
@@ -318,7 +318,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
     {
         ct.ThrowIfCancellationRequested();
         var taskId = $"bg_{Interlocked.Increment(ref _taskSeq)}_{Guid.NewGuid().ToString("N")[..8]}";
-        var entry = new BackgroundProcessEntry(agentId, command, workdir, timeoutMs ?? _opts.DefaultTimeoutMs, _logger);
+        var entry = new BackgroundProcessEntry(agentId, command, workdir, timeoutMs ?? _opts.DefaultTimeoutMs, _opts.ExecutablePath, _logger);
         _background[taskId] = entry;
         entry.Start();
         _logger.LogDebug("Background process '{TaskId}' started for agent '{AgentId}': {Command}", taskId, agentId, command);
@@ -409,6 +409,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         private readonly string _command;
         private readonly string? _workdir;
         private readonly int _timeoutMs;
+        private readonly string _executablePath;
         private readonly ILogger _logger;
         private Process? _process;
         private readonly StringBuilder _output = new();
@@ -427,12 +428,13 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
         public record struct ProcessStatus(bool Exited, int? ExitCode);
 
-        public BackgroundProcessEntry(string agentId, string command, string? workdir, int timeoutMs, ILogger logger)
+        public BackgroundProcessEntry(string agentId, string command, string? workdir, int timeoutMs, string executablePath, ILogger logger)
         {
             AgentId = agentId;
             _command = command;
             _workdir = workdir;
             _timeoutMs = timeoutMs;
+            _executablePath = executablePath;
             _logger = logger;
         }
 
@@ -444,7 +446,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
             var psi = new ProcessStartInfo
             {
-                FileName = "bash",
+                FileName = _executablePath,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,

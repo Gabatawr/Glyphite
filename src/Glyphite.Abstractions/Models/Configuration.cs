@@ -79,8 +79,6 @@ public class BashOptions
 {
     public const string Section = "Bash";
     public string ExecutablePath { get; set; } = string.Empty;
-    public string Arguments { get; set; } = string.Empty;
-    public string InitCommand { get; set; } = string.Empty;
     public string DefaultDirectory { get; set; } = string.Empty;
     public int DiscoveryTimeoutMs { get; set; }
     public int DefaultTimeoutMs { get; set; }
