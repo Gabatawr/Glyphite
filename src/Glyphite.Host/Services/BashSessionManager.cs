@@ -316,7 +316,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
     public string StartBackgroundAsync(string agentId, string command, string? workdir = null, int? timeoutMs = null)
     {
-        var taskId = $"bg_{Interlocked.Increment(ref _taskSeq)}_{Guid.NewGuid():N[0..8]}";
+        var taskId = $"bg_{Interlocked.Increment(ref _taskSeq)}_{Guid.NewGuid().ToString("N")[..8]}";
         var entry = new BackgroundProcessEntry(command, workdir, timeoutMs ?? _opts.DefaultTimeoutMs, _logger);
         _background[taskId] = entry;
         entry.Start();
@@ -420,10 +420,13 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
         public void Start()
         {
+            var effectiveCommand = string.IsNullOrEmpty(_workdir)
+                ? _command
+                : $"(cd '{_workdir.Replace("'", "'\\''")}' && {_command})";
+
             var psi = new ProcessStartInfo
             {
                 FileName = "bash",
-                Arguments = "-c",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -435,12 +438,8 @@ public class BashSessionManager : IBashSessionManager, IDisposable
             if (!string.IsNullOrEmpty(_workdir))
                 psi.WorkingDirectory = _workdir;
 
-            // Build the command: wrap in cd if workdir is set
-            var effectiveCommand = string.IsNullOrEmpty(_workdir)
-                ? _command
-                : $"(cd '{_workdir.Replace("'", "'\\''")}' && {_command})";
-
 #if NET
+            psi.ArgumentList.Add("-c");
             psi.ArgumentList.Add(effectiveCommand);
 #else
             psi.Arguments = $"-c \"{effectiveCommand.Replace("\"", "\\\"")}\"";
