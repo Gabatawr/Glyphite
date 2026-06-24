@@ -8,7 +8,7 @@ namespace Glyphite.Host.Tools;
 
 public static class BashBackTool
 {
-    private sealed class BashBackInvoker(IBashSessionManager manager, IConfigService cfg)
+    private sealed class BashBackInvoker(IBashSessionManager manager, IConfigService cfg, string tmpDir)
     {
         [Description("Retrieve output from a background bash process started with `back=true`. Action 'wait' blocks until the process finishes (or timeout — then kills it). Action 'partial' returns whatever output is available so far without blocking (timeout just returns what's there). Use `partLines` to get only the last N lines of output.")]
         public async Task<string> Execute(
@@ -25,7 +25,11 @@ public static class BashBackTool
 
             // Apply dedup compression (same as foreground execute_bash)
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section);
-            var result = ContentDedup.Compress(raw, dedupOpts);
+            var compressed = ContentDedup.Compress(raw, dedupOpts);
+
+            // Apply truncation (same as execute_bash — 1/3 + 2/3 with full output saved)
+            var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section);
+            var result = BashTool.TruncateOutput(compressed, bashOpts.MaxOutput, tmpDir, "bg");
 
             if (completed)
             {
@@ -45,8 +49,8 @@ public static class BashBackTool
         }
     }
 
-    public static AIFunction AsAIFunction(IBashSessionManager manager, IConfigService cfg)
+    public static AIFunction AsAIFunction(IBashSessionManager manager, IConfigService cfg, string tmpDir)
         => AIFunctionFactory.Create(
-            new BashBackInvoker(manager, cfg).Execute,
+            new BashBackInvoker(manager, cfg, tmpDir).Execute,
             "bash_back");
 }

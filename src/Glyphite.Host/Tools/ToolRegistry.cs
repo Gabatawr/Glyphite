@@ -63,7 +63,7 @@ public class ToolRegistry : IToolRegistry
         var tools = new List<AITool>
         {
             BashTool.AsAIFunction(_bashManager, agentId, _cfgService, _tmpDir),
-            BashBackTool.AsAIFunction(_bashManager, _cfgService),
+            BashBackTool.AsAIFunction(_bashManager, _cfgService, _tmpDir),
             FileReadTool.AsAIFunction(_cfgService, _defaultDir, agentId),
             FileWriteTool.AsAIFunction(_defaultDir),
             FilePatchTool.AsAIFunction(_defaultDir),
