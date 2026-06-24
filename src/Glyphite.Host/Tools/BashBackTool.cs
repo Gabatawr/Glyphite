@@ -16,7 +16,8 @@ public static class BashBackTool
             [Description("Task ID (ignored for action='list').")] string taskId,
             [Description("'list' — show all tasks. 'wait' — blocks until done (kills on timeout). 'partial' — returns current output, no kill on timeout.")] string action,
             [Description("Timeout in ms for wait/partial. For 'wait': kills on timeout. For 'partial': returns whatever is available.")] int? timeoutMs = null,
-            [Description("Return only the last N lines of output (from bottom).")] int? partLines = null)
+            [Description("Return only the last N lines of output (from bottom).")] int? partLines = null,
+            CancellationToken ct = default)
         {
             try
             {
@@ -43,7 +44,7 @@ public static class BashBackTool
 
                 var wait = act == "wait";
 
-                var (output, completed, exitCode) = await manager.GetBackgroundOutputAsync(taskId, wait, timeoutMs, partLines);
+                var (output, completed, exitCode) = await manager.GetBackgroundOutputAsync(taskId, wait, timeoutMs, partLines, ct);
 
                 var raw = output ?? "";
 

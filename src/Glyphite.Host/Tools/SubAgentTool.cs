@@ -199,7 +199,7 @@ internal static class SubAgentTool
         bool validateName,
         SubAgentManager subAgentManager, IAgentManager agentManager,
         IAgentScopeFactory scopeFactory, IAgentStore agentStore, IBlockStore blockStore,
-        IConfigService configService,
+        IConfigService configService, IBashSessionManager bashManager,
         LlmOptions llm,
         string currentSessionId, CancellationToken ct,
         string? cwd = null)
@@ -223,6 +223,7 @@ internal static class SubAgentTool
         }
         finally
         {
+            bashManager.KillAgentBackgrounds(agentId);
             await agentStore.ClearPendingRunAsync(agentId);
             KVStoreTool.ClearEphemeralVault(agentId);
             subAgentManager.Remove(agentId);
@@ -239,6 +240,7 @@ internal static class SubAgentTool
         IAgentStore agentStore,
         IBlockStore blockStore,
         IConfigService configService,
+        IBashSessionManager bashManager,
         IOptions<LlmOptions> llmOpts,
         string currentSessionId)
     {
@@ -264,8 +266,15 @@ internal static class SubAgentTool
                 configService.ClearSessionOverlay(name);
                 KVStoreTool.ClearEphemeralVault(name);
                 subAgentManager.SetEphemeral(name, true);
-                return await RunSubAgentTaskAsync(name, task, ephemeral: true,
-                    subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
+                try
+                {
+                    return await RunSubAgentTaskAsync(name, task, ephemeral: true,
+                        subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
+                }
+                finally
+                {
+                    bashManager.KillAgentBackgrounds(name);
+                }
             }
 
             // ── name provided + agent doesn't exist → create temp, run, delete ──
@@ -274,7 +283,7 @@ internal static class SubAgentTool
                 return await CreateAndRunSubAgentAsync(name, task, homePath, parentCwd,
                     validateName: true,
                     subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
-                    configService,
+                    configService, bashManager,
                     llm, currentSessionId, ct, cwd);
             }
 
@@ -283,7 +292,7 @@ internal static class SubAgentTool
             return await CreateAndRunSubAgentAsync(guidId, task, homePath, parentCwd,
                 validateName: false,
                 subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
-                configService,
+                configService, bashManager,
                 llm, currentSessionId, ct, cwd);
         },
         name: "subagent_run",

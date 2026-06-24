@@ -314,27 +314,28 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
     // ── Background processes ──
 
-    public string StartBackgroundAsync(string agentId, string command, string? workdir = null, int? timeoutMs = null)
+    public string StartBackgroundAsync(string agentId, string command, string? workdir = null, int? timeoutMs = null, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var taskId = $"bg_{Interlocked.Increment(ref _taskSeq)}_{Guid.NewGuid().ToString("N")[..8]}";
-        var entry = new BackgroundProcessEntry(command, workdir, timeoutMs ?? _opts.DefaultTimeoutMs, _logger);
+        var entry = new BackgroundProcessEntry(agentId, command, workdir, timeoutMs ?? _opts.DefaultTimeoutMs, _logger);
         _background[taskId] = entry;
         entry.Start();
         _logger.LogDebug("Background process '{TaskId}' started for agent '{AgentId}': {Command}", taskId, agentId, command);
         return taskId;
     }
 
-    public async Task<(string Output, bool Completed, int? ExitCode)> GetBackgroundOutputAsync(string taskId, bool wait, int? timeoutMs = null, int? partLines = null)
+    public async Task<(string Output, bool Completed, int? ExitCode)> GetBackgroundOutputAsync(string taskId, bool wait, int? timeoutMs = null, int? partLines = null, CancellationToken ct = default)
     {
         if (!_background.TryGetValue(taskId, out var entry))
             return ("Background task not found: " + taskId, true, null);
 
         if (wait)
         {
-            var completed = await entry.WaitAsync(timeoutMs ?? _opts.DefaultTimeoutMs);
+            var completed = await entry.WaitAsync(timeoutMs ?? _opts.DefaultTimeoutMs, ct);
             if (!completed)
             {
-                // Timeout — kill and return what we have
+                // Timeout / cancelled — kill and return what we have
                 entry.Kill();
                 _background.TryRemove(taskId, out _);
             }
@@ -354,6 +355,23 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         {
             entry.Kill();
             _logger.LogDebug("Killed background process '{TaskId}'", taskId);
+        }
+    }
+
+    public void KillAgentBackgrounds(string agentId)
+    {
+        var toRemove = _background
+            .Where(kv => kv.Value.AgentId == agentId)
+            .Select(kv => kv.Key)
+            .ToList();
+
+        foreach (var taskId in toRemove)
+        {
+            if (_background.TryRemove(taskId, out var entry))
+            {
+                entry.Kill();
+                _logger.LogDebug("Killed background process '{TaskId}' for agent '{AgentId}'", taskId, agentId);
+            }
         }
     }
 
@@ -409,13 +427,13 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
         public record struct ProcessStatus(bool Exited, int? ExitCode);
 
-        public BackgroundProcessEntry(string command, string? workdir, int timeoutMs, ILogger logger)
+        public BackgroundProcessEntry(string agentId, string command, string? workdir, int timeoutMs, ILogger logger)
         {
+            AgentId = agentId;
             _command = command;
             _workdir = workdir;
             _timeoutMs = timeoutMs;
             _logger = logger;
-            AgentId = "shared";
         }
 
         public void Start()
@@ -499,12 +517,13 @@ public class BashSessionManager : IBashSessionManager, IDisposable
             });
         }
 
-        public async Task<bool> WaitAsync(int timeoutMs)
+        public async Task<bool> WaitAsync(int timeoutMs, CancellationToken ct = default)
         {
-            using var cts = new CancellationTokenSource(timeoutMs);
+            using var timeoutCts = new CancellationTokenSource(timeoutMs);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
             try
             {
-                await _exitTcs.Task.WaitAsync(cts.Token);
+                await _exitTcs.Task.WaitAsync(linkedCts.Token);
                 return true;
             }
             catch (TimeoutException)
@@ -513,7 +532,10 @@ public class BashSessionManager : IBashSessionManager, IDisposable
             }
             catch (OperationCanceledException)
             {
-                return false;
+                // If external cancellation, rethrow so the caller knows
+                if (ct.IsCancellationRequested)
+                    throw;
+                return false; // timeout
             }
         }
 
