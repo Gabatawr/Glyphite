@@ -110,7 +110,8 @@ All tools are available to the AI agent and can be invoked in conversation:
 
 | Tool | Description |
 |------|-------------|
-| `bash` | Execute shell commands with timeout and output limits |
+| `bash` | Execute shell commands with timeout and output limits. `back=true` runs as background process, returns taskId immediately |
+| `bash_back` | Manage background bash tasks: `list` (show all tasks), `wait` (block until done, kills on timeout), `partial` (poll current output without killing) |
 | `read_file` | Read file contents with line numbers, offset/limit for partial reads, and auto-dedup for logs |
 | `write_file` | Create / overwrite a file |
 | `patch_file` | Partially modify a file (with diff highlighting) |
