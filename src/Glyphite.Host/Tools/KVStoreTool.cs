@@ -357,12 +357,12 @@ public static class KVStoreTool
 
     private sealed class KVInvoker(IKVStore kvStore, IConfigService configService, SubAgentManager subAgentManager, string agentId)
     {
-        [Description("Key-value store for reading and writing per-agent data. Supports two scopes: 'vault' (default, persistent key-value table per agent) and 'config' (current agent config with session overrides). Keys support wildcards: * (any sequence) and ? (single char). Use 'set' with a wildcard to do a masked update — it will first dry-run (show matching keys) and require 'accept' to confirm. Calling 'get' or 'set' without a wildcard clears any pending accept.")]
+        [Description("Key-value store for reading and writing per-agent data. Supports two scopes: 'vault' (default, persistent key-value table per agent) and 'config' (current agent config with session overrides). Keys support wildcards: * (any sequence) and ? (single char). Empty value = delete key. Use 'set' with a wildcard to do a masked update — it will first dry-run (show matching keys) and require 'accept' to confirm. Calling 'get' or 'set' without a wildcard clears any pending accept.")]
         public async Task<string> Invoke(
-            [Description("Action: 'get' to read keys, 'set' to write a key, 'accept' to confirm a masked set.")] string action,
+            [Description("Action: 'get' to read keys, 'set' to write/delete a key (empty value = delete), 'accept' to confirm a masked set.")] string action,
             [Description("Scope: 'vault' (default, per-agent key-value table) or 'config' (agent config with overrides).")] string scope = "vault",
-            [Description("Key name. Supports wildcards: * for any sequence, ? for single char. For 'get': lists matching keys. For 'set' with wildcard: shows dry-run and requires 'accept'.")] string? key = null,
-            [Description("Value to set (for 'set' action).")] string? value = null,
+            [Description("Key name. Supports wildcards: * for any sequence, ? for single char. For 'get': lists matching keys. For 'set' with wildcard: shows dry-run and requires 'accept'. Empty value on 'set' deletes the key.")] string? key = null,
+            [Description("Value to set. Empty string ('') DELETES the key entirely.")] string? value = null,
             [Description("TTL in seconds (vault scope only — ignored/config rejected for 'config' scope). After this many seconds the key auto-expires.")] int? ttl = null)
         {
             return await Execute(action, key, value, ttl, scope, kvStore, configService, subAgentManager, agentId);

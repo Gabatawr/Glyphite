@@ -136,6 +136,18 @@ public partial class ChatRepl
         // Flush any accumulated table
         if (_streamInTable)
         {
+            // If there's a buffered incomplete line that looks like a table row,
+            // add it to the table lines before flushing.
+            if (_streamTextBuffer.Length > 0)
+            {
+                var bufferedLine = _streamTextBuffer.ToString().TrimEnd('\r');
+                if (TableRenderer.IsTableRow(bufferedLine) || TableRenderer.IsTableSeparator(bufferedLine))
+                {
+                    _streamTableLines.Add(bufferedLine);
+                    _streamTextBuffer.Clear();
+                }
+            }
+
             FlushStreamTable();
         }
 
