@@ -372,5 +372,5 @@ public static class KVStoreTool
     public static AIFunction AsKvStoreFunction(IKVStore kvStore, IConfigService configService, SubAgentManager subAgentManager, string agentId)
         => AIFunctionFactory.Create(
             new KVInvoker(kvStore, configService, subAgentManager, agentId).Invoke,
-            "kvstor");
+            "kvstore");
 }

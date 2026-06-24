@@ -41,8 +41,9 @@ public partial class BlockMemoryProvider
             }
         }
 
-        var messages = blocks.Select(b =>
-            new ChatMessage(ChatRole.System, b.ToContextString())).ToList();
+        var messages = blocks
+            .Where(b => b.Type != BlockType.turn)
+            .Select(b => new ChatMessage(ChatRole.System, b.ToContextString())).ToList();
 
         return messages;
     }

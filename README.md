@@ -23,7 +23,7 @@
   - `fetch_web` — HTTP requests
   - `search_glob` / `search_grep` — file and content search
   - `todo` — task management with create/update/list, title-based multi-list support
-  - `kvstor` — key-value store with vault/config scopes, glob masks, TTL, dry-run confirm flow
+  - `kvstore` — key-value store with vault/config scopes, glob masks, TTL, dry-run confirm flow
   - `memory` — memory statistics (stats)
   - `subagent_run` / `subagent_use` / `subagent_list` — delegate tasks to worker agents
 - **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`). Every agent (main + subagents) can have its own MCP servers via `Glyphite.{agentName}.json`
@@ -118,7 +118,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `search_glob` | Find files by glob pattern |
 | `search_grep` | Search text inside files (with content dedup) |
 | `fetch_web` | HTTP request (GET/POST) with text extraction |
-| `kvstor` | Key-value store for agent data. Two scopes: `vault` (persistent table) and `config` (agent config + session overrides). `get`/`set` actions with glob masks (`*`/`?`), TTL (vault only), dry-run confirm flow for masked sets. Empty value = delete. Ephemeral (subagent_run) agents use in-memory only — no DB leaks. |
+| `kvstore` | Key-value store for agent data. Two scopes: `vault` (persistent table) and `config` (agent config + session overrides). `get`/`set` actions with glob masks (`*`/`?`), TTL (vault only), dry-run confirm flow for masked sets. Empty value = delete. Ephemeral (subagent_run) agents use in-memory only — no DB leaks. |
 | `todo` | Create, update, or list todo lists — title as immutable ID for multi-list support. `create(title, items)`, `update(title, items)`, `list(title?)` — list all or by title. Statuses: pending, in_progress, done, cancelled, blocked. Update by index or by text (no index = match by text, new text = add item). |
 | `memory` | Memory statistics: `stats` (block type distribution, token usage, cache stats, cost) |
 | `subagent_run` | One-shot task execution (ephemeral). Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Ephemeral: usage restored to pre-run state, no compaction runs, blocks deleted after. Supports `mode="parallel"` |
