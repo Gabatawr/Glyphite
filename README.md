@@ -30,8 +30,12 @@
 - **Block-based memory** — full conversation history stored in SQLite with smart deduplication and compression
   - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
-- **Atomic auto-compaction** — when context exceeds threshold, groups old turns into Fibonacci zones, summarizes them via LLM in **parallel**, and atomically replaces history in a single SQLite transaction. Protected blocks (agent_data, user_message, agent_task, agent_message, turn) are preserved; if summarization fails, blocks fall back intact.
-  - **No UI freeze:** fast pre-check (`ShouldCompactAsync`) runs first, `[AutoTool: compression]` notification appears immediately, then slow summarization (`CompactAsync`) runs in background — user sees progress.
+- **Atomic auto-compaction** — two strategies (configurable via `Strategies` dict with flags):
+  - **`fibo-parts`** — Fibonacci zones (1, 1, 2, 3, 5, 8...), zone 3+ cleaned & summarized in **parallel**, zones 1-2 intact
+  - **`struct-cut`** — all old turns cleaned → one structured LLM summary (Goal/Progress/Decisions/Files/Next Steps)
+  - Protected blocks (agent_data, user_message, agent_task, agent_message, turn) and subagent tools preserved
+  - If summarization fails, blocks fall back intact
+  - **No UI freeze:** fast pre-check (`ShouldCompactAsync`) runs first, `[AutoTool: compression]` notification appears immediately, then slow summarization runs in background
 - **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
 - **ToolMaxLength** — per-tool output length control. Set `0` to hide, `-1` for full output, or `N` for first N characters. Works for all tools including MCP.
 - **Content deduplication** — repeated lines compressed in bash, read, and search tool outputs
@@ -116,7 +120,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `kvstor` | Key-value store for agent data. Two scopes: `vault` (persistent table) and `config` (agent config + session overrides). `get`/`set` actions with glob masks (`*`/`?`), TTL (vault only), dry-run confirm flow for masked sets. Empty value = delete. Ephemeral (subagent_run) agents use in-memory only — no DB leaks. |
 | `todo` | Create, update, or list todo lists — title as immutable ID for multi-list support. `create(title, items)`, `update(title, items)`, `list(title?)` — list all or by title. Statuses: pending, in_progress, done, cancelled, blocked. Update by index or by text (no index = match by text, new text = add item). |
 | `memory` | Memory statistics: `stats` (block type distribution, token usage, cache stats, cost) |
-| `subagent_run` | One-shot task execution. Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Supports `mode="parallel"` |
+| `subagent_run` | One-shot task execution (ephemeral). Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Ephemeral: usage restored to pre-run state, no compaction runs, blocks deleted after. Supports `mode="parallel"` |
 | `subagent_use` | Execute a task on a named subagent (auto-creates if not found). Memory and context **accumulate** across calls — the agent persists. `memory` tool is available. Supports `mode="parallel"` |
 | `subagent_list` | List all existing agents (excluding current session) with home, model, block count, cache stats |
 
@@ -194,26 +198,41 @@ Both CLI agents and subagents use the unified `ISessionConfigLoader` (old `Confi
 
 ## Auto-compaction
 
-When enabled, Glyphite automatically compresses old conversation history via LLM summarization:
+When enabled, Glyphite automatically compresses old conversation history via LLM summarization. Two strategies are available, toggled via `Strategies` dictionary flags:
 
 ```json
 {
   "Compression": {
     "AutoCompress": true,
-    "AutoThreshold": 75
+    "AutoThreshold": 20,
+    "Strategies": {
+      "fibo-parts": true,
+      "struct-cut": false
+    }
   }
 }
 ```
 
-- **Trigger:** when last request tokens exceed `AutoThreshold`% of the context window (e.g., 75% of 160K = 120K tokens)
-- **Fibonacci zones:** history is grouped into Fibonacci-sized zones (1, 1, 2, 3, 5, 8... turns). The two newest zones (1-2) are always preserved intact.
-- **Parallel summarization:** old zones are summarized via LLM **in parallel** — all zones at once, reducing latency
-- **Protected blocks:** `agent_data`, `user_message`, `agent_task`, `agent_message`, `turn` — preserved in summarization prompt
-- **Subagent results:** `subagent_run`/`subagent_use` tool blocks are also included in summarization
-- **Fail-safe:** if summarization fails for a zone, its protected blocks are kept intact (no data loss)
-- **Atomic replacement:** summaries + preserved blocks are inserted atomically via `ReplaceBlocksSinceAsync` in a single SQLite transaction. On crash — rollback, nothing lost.
-- **Usage tracking:** compaction LLM calls record hit/miss/output tokens to session stats (parsed from `response.RawRepresentation`)
-- **Notification:** when compaction triggers, `[AutoTool: compression | {"AutoCompress":true,"AutoThreshold":75}]` is shown before the LLM call
+- **Trigger:** when last request tokens exceed `AutoThreshold`% of the context window (e.g., 20% of 1M = 200K tokens)
+- **Strategy selection:** if one strategy is enabled — it's used. If both — randomly picked each turn (visible in `[AutoTool: compression]`)
+
+### `fibo-parts` (Fibonacci zones)
+- History is grouped into Fibonacci-sized zones (1, 1, 2, 3, 5, 8... turns) from newest to oldest.
+- **Zones 1-2** (1+1 newest turns) preserved intact — **all blocks**, including tool calls, auto_tool results, reasoning.
+- **Zones 3+** stripped of unprotected blocks (tool results, auto_tool, reasoning), then each zone summarized via LLM **in parallel** with structured template: `## Topics / Key Actions / Results / State Changes / Open & Carried Over`.
+- Subagent tools (`subagent_run`/`subagent_use`) preserved in summarization.
+
+### `struct-cut` (structured cut)
+- All old turns (3+) stripped of unprotected blocks (subagent tools **preserved**).
+- Everything that remains sent to LLM in **one** call with structured template: `## Goal / Progress / Key Decisions / Relevant Files / Next Steps`.
+- Replaces all old history with one structured summary block, last 2 turns preserved.
+
+### Common
+- **Protected blocks:** `agent_data`, `user_message`, `agent_task`, `agent_message`, `turn` — always preserved
+- **Fail-safe:** if summarization fails, protected blocks kept intact (no data loss)
+- **Atomic replacement:** summaries + preserved blocks inserted atomically via `ReplaceBlocksSinceAsync` in a single SQLite transaction. On crash — rollback, nothing lost.
+- **Usage tracking:** compaction LLM calls record hit/miss/output tokens to session stats
+- **Notification:** `[AutoTool: compression | {"AutoCompress":true,"Strategy":"fibo-parts",...}]` shown before the LLM call
 
 ## MCP (Model Context Protocol)
 

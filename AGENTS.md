@@ -110,9 +110,46 @@ You are a specialized QA agent. Always run tests before and after changes.
 | [`example-perf-agent.md`](./agents/example-perf-agent.md) | Performance | Profiling, optimization, benchmarking |
 | [`example-onboard-agent.md`](./agents/example-onboard-agent.md) | Mentor | Onboarding, codebase tour, learning
 
+## Session state (Jun 24 — v1.1.23)
+
+### Latest changes — compaction strategies (fibo-parts, struct-cut), ephemeral flag, usage restore on subagent_run
+
+**1. Compaction strategies — два переключаемых режима (6 файлов):**
+
+| Было | Стало |
+|:-----|:------|
+| Одна стратегия фибоначчи, хардкод | Две стратегии: `fibo-parts` (дефолт) и `struct-cut`, переключение через `Strategies: {"fibo-parts": true, "struct-cut": false}` |
+| `Strategy: "fibo-parts"` строка | `Strategies: {"fibo-parts": true, "struct-cut": false}` — словарь флагов |
+| Free-form промпт для суммаризации зон | Структурированные шаблоны: **fibo-parts** → Topics/Key Actions/Results/State Changes/Open, **struct-cut** → Goal/Progress/Key Decisions/Relevant Files/Next Steps |
+| Весь компакт в одном файле | Разделение: `FiboPartsStrategy.cs`, `StructCutStrategy.cs`, `CompactionService.cs` как фасад |
+| Обе включены → ошибка | Random выбор из включённых |
+
+**2. Ephemeral + usage restore для subagent_run (3 файла):**
+
+| Было | Стало |
+|:-----|:------|
+| `saveMemory` (AdditionalProperties, use) + `isDryRun` (внутренний, run) | Единый флаг `ephemeral` в AdditionalProperties |
+| `subagent_run` → `ClearUsageAsync` — удалял ВСЁ usage агента | `subagent_run` → restore usage к checkpoint (как будто run'а не было) |
+| `includeMemory` проверял `isSubagent + saveMemory` | `includeMemory = !isEphemeral` |
+| Компакт всегда выполнялся, даже для subagent_run | `ephemeral=true` → компакт пропускается |
+| `RunAgentTask` возвращал только `(result, blockCk)` | Возвращает `(result, blockCk, ckHit, ckMiss, ckOutput)` |
+
+**3. Файлы изменения:**
+
+| Файл | Изменения |
+|---|---|
+| `Configuration.cs` | `Strategy` string → `Strategies` `Dictionary<string,bool>` |
+| `FiboPartsStrategy.cs` | **Новый** — Fibonacci-зоны, структура Topics/Key Actions/Results/State Changes/Open |
+| `StructCutStrategy.cs` | **Новый** — все старые turn'ы → один LLM, структура Goal/Progress/Decisions/Files/Next Steps |
+| `CompactionService.cs` | Фасад: диспатч, `PickStrategy()`, общие `SummarizeZoneAsync` + `GroupByTurns` |
+| `TurnProcessor.cs` | `compactArgs` со `Strategy`, `ephemeral` → пропуск компакта |
+| `SubAgentTool.cs` | `saveMemory`+`isDryRun` → единый `ephemeral`; restore usage к checkpoint |
+| `appsettings.json` | `Strategy` → `Strategies` с флагами |
+| тесты | +3 validation, +1 config для `Strategies` |
+
 ## Session state (Jun 23 — v1.0.16)
 
-### Latest changes — subagent escape handling, crash-safe pending_runs, agent_task block type, todo match-by-text
+### Previous — subagent escape handling, crash-safe pending_runs, agent_task block type, todo match-by-text
 
 **1. Subagent escape — CancellationToken propagation + dry-clean on cancel (6 files):**
 
@@ -543,4 +580,4 @@ Both are separate from the `FailSafeClient` messageList cleanup — DB and in-me
 See `BlockRepository.cs` `InitializeAsync()` for full DDL.
 
 ### Version
-`Version.txt`: `1.0.16`, published up to v1.0.16
+`Version.txt`: `1.0.22`, published up to v1.0.22
