@@ -41,7 +41,7 @@ public class BlockRepository : RepositoryBase, IBlockStore
         VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, 0)
         """;
 
-    private const string SqlSoftDeleteBlock = "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num";
+    private const string SqlSoftDeleteBlock = "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num AND type != 'agent_data'";
 
 
     // ── Mapping ──

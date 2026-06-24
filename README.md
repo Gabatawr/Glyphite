@@ -32,7 +32,7 @@
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
 - **Atomic auto-compaction** — two strategies (configurable via `Strategies` dict with flags):
   - **`fibo-parts`** — Fibonacci zones (1, 1, 2, 3, 5, 8...), zone 3+ cleaned & summarized in **parallel**, zones 1-2 intact
-  - **`struct-cut`** — all old turns cleaned → one structured LLM summary (Goal/Progress/Decisions/Files/Next Steps)
+  - **`struct-cut`** — full history (unfiltered) → one structured LLM summary (Goal/Progress/Decisions/Files/Next Steps); summary placed **after** preserved zones
   - Protected blocks (agent_data, user_message, agent_task, agent_message, turn) and subagent tools preserved
   - If summarization fails, blocks fall back intact
   - **No UI freeze:** fast pre-check (`ShouldCompactAsync`) runs first, `[AutoTool: compression]` notification appears immediately, then slow summarization runs in background
@@ -224,9 +224,10 @@ When enabled, Glyphite automatically compresses old conversation history via LLM
 - Subagent tools (`subagent_run`/`subagent_use`) preserved in summarization.
 
 ### `struct-cut` (structured cut)
-- All old turns (3+) stripped of unprotected blocks (subagent tools **preserved**).
-- Everything that remains sent to LLM in **one** call with structured template: `## Goal / Progress / Key Decisions / Relevant Files / Next Steps`.
-- Replaces all old history with one structured summary block, last 2 turns preserved.
+- Every block from `agent_data` (exclusive) to the end — **unfiltered** — sent to LLM in **one** call with structured template: `## Goal / Progress / Key Decisions / Relevant Files / Next Steps`.
+- LLM sees the full picture (tool calls, results, reasoning, protected blocks), producing a single comprehensive summary that covers **everything**, including the last 2 preserved turns.
+- Summary block placed **after** preserved zones (last 2 turns). Order in DB: `agent_data → preserved turns → struct-cut summary`.
+- All old blocks (except `agent_data`) soft-deleted. Summary replaces all removed history.
 
 ### Common
 - **Protected blocks:** `agent_data`, `user_message`, `agent_task`, `agent_message`, `turn` — always preserved

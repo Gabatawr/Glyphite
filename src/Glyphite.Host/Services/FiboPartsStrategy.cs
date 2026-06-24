@@ -97,6 +97,16 @@ internal static class FiboPartsStrategy
         var allUnprotectedNums = new HashSet<double>();
         var zoneProtectedBlocks = new List<List<MemoryBlock>>();
 
+        // Also clean non-agent_data blocks from the agent_data group (turn 0)
+        // These are blocks that ended up in the same group as agent_data (before first turn marker)
+        // and would otherwise survive compaction forever
+        var agentDataGroup = turnGroups[0];
+        foreach (var b in agentDataGroup)
+        {
+            if (b.Type != BlockType.agent_data)
+                allUnprotectedNums.Add(b.Number);
+        }
+
         for (var i = 0; i < summarizeCount; i++)
         {
             var zone = zones[i];
