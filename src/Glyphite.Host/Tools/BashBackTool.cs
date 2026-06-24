@@ -8,7 +8,7 @@ namespace Glyphite.Host.Tools;
 
 public static class BashBackTool
 {
-    private sealed class BashBackInvoker(IBashSessionManager manager, IConfigService cfg, string tmpDir)
+    private sealed class BashBackInvoker(IBashSessionManager manager, IConfigService cfg, string tmpDir, string agentId)
     {
         [Description("Retrieve output from a background bash process started with `back=true`. Action 'wait' blocks until the process finishes (or timeout — then kills it). Action 'partial' returns whatever output is available so far without blocking (timeout just returns what's there). Use `partLines` to get only the last N lines of output.")]
         public async Task<string> Execute(
@@ -17,40 +17,51 @@ public static class BashBackTool
             [Description("Timeout in ms for wait/partial. For 'wait': kills on timeout. For 'partial': returns whatever is available.")] int? timeoutMs = null,
             [Description("Return only the last N lines of output (from bottom).")] int? partLines = null)
         {
-            var wait = action?.Trim().ToLowerInvariant() == "wait";
-
-            var (output, completed, exitCode) = await manager.GetBackgroundOutputAsync(taskId, wait, timeoutMs, partLines);
-
-            var raw = output ?? "";
-
-            // Apply dedup compression (same as foreground execute_bash)
-            var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section);
-            var compressed = ContentDedup.Compress(raw, dedupOpts);
-
-            // Apply truncation (same as execute_bash — 1/3 + 2/3 with full output saved)
-            var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section);
-            var result = BashTool.TruncateOutput(compressed, bashOpts.MaxOutput, tmpDir, "bg");
-
-            if (completed)
+            try
             {
-                var code = exitCode is not null ? $"exit code: {exitCode}" : "completed";
-                if (result.Length > 0)
-                    result += "\n\n";
-                result += $"[Process {code}]";
-            }
-            else
-            {
-                if (result.Length > 0)
-                    result += "\n\n";
-                result += "[Process still running — use bash_back again to get more output]";
-            }
+                var wait = action?.Trim().ToLowerInvariant() == "wait";
 
-            return result;
+                var (output, completed, exitCode) = await manager.GetBackgroundOutputAsync(taskId, wait, timeoutMs, partLines);
+
+                var raw = output ?? "";
+
+                // Apply dedup compression (same as foreground execute_bash)
+                var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, agentId);
+                var compressed = ContentDedup.Compress(raw, dedupOpts);
+
+                // Apply truncation (same as execute_bash — 1/3 + 2/3 with full output saved)
+                var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, agentId);
+                var result = BashTool.TruncateOutput(compressed, bashOpts.MaxOutput, tmpDir, agentId);
+
+                if (completed)
+                {
+                    var code = exitCode is not null ? $"exit code: {exitCode}" : "completed";
+                    if (result.Length > 0)
+                        result += "\n\n";
+                    result += $"[Process {code}]";
+                }
+                else
+                {
+                    if (result.Length > 0)
+                        result += "\n\n";
+                    result += "[Process still running — use bash_back again to get more output]";
+                }
+
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                return "Background task wait was cancelled.";
+            }
+            catch (Exception ex)
+            {
+                return $"Error retrieving background output: {ex.Message}";
+            }
         }
     }
 
-    public static AIFunction AsAIFunction(IBashSessionManager manager, IConfigService cfg, string tmpDir)
+    public static AIFunction AsAIFunction(IBashSessionManager manager, IConfigService cfg, string tmpDir, string agentId)
         => AIFunctionFactory.Create(
-            new BashBackInvoker(manager, cfg, tmpDir).Execute,
+            new BashBackInvoker(manager, cfg, tmpDir, agentId).Execute,
             "bash_back");
 }
