@@ -127,5 +127,5 @@ public static class BashTool
     public static AIFunction AsAIFunction(IBashSessionManager manager, string agentId, IConfigService cfg, string tmpDir)
         => AIFunctionFactory.Create(
             new BashInvoker(manager, agentId, cfg, tmpDir).Execute,
-            "execute_bash");
+            "bash");
 }

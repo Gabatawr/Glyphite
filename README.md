@@ -18,7 +18,7 @@
 - **SessionManager** centralizes agent lifecycle — create, clone, switch, delete agents; persist/resume sessions; hot-reload config per agent
 - **InputHistory** shared between sessions — user messages and commands accessible across agent switches
 - **Built-in tools:**
-  - `execute_bash` — shell commands
+  - `bash` — shell commands
   - `read_file` / `write_file` / `patch_file` — file operations with diff highlighting
   - `fetch_web` — HTTP requests
   - `search_glob` / `search_grep` — file and content search
@@ -110,7 +110,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 
 | Tool | Description |
 |------|-------------|
-| `execute_bash` | Execute shell commands with timeout and output limits |
+| `bash` | Execute shell commands with timeout and output limits |
 | `read_file` | Read file contents with line numbers, offset/limit for partial reads, and auto-dedup for logs |
 | `write_file` | Create / overwrite a file |
 | `patch_file` | Partially modify a file (with diff highlighting) |
@@ -285,7 +285,7 @@ Control how much of a tool's output is shown in the console. Configured in `Glyp
 
 ```json
 "ToolMaxLength": {
-  "execute_bash": -1,     // -1 = full output
+  "bash": -1,              // -1 = full output
   "read_file": 0,         // 0 = hidden (LLM still sees full result)
   "fetch_web": 500,       // N = first N characters
   "codegraph_explore": 0  // works for MCP tools too

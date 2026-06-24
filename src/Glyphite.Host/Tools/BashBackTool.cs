@@ -48,11 +48,11 @@ public static class BashBackTool
 
                 var raw = output ?? "";
 
-                // Apply dedup compression (same as foreground execute_bash)
+                // Apply dedup compression (same as foreground bash)
                 var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, agentId);
                 var compressed = ContentDedup.Compress(raw, dedupOpts);
 
-                // Apply truncation (same as execute_bash — 1/3 + 2/3 with full output saved)
+                // Apply truncation (same as bash — 1/3 + 2/3 with full output saved)
                 var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, agentId);
                 var result = BashTool.TruncateOutput(compressed, bashOpts.MaxOutput, tmpDir, agentId);
 
