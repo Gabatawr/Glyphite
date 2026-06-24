@@ -1,5 +1,7 @@
 namespace Glyphite.Abstractions.Interfaces;
 
+public record struct BackgroundTaskInfo(string TaskId, string Command, bool IsActive, bool Completed, int? ExitCode);
+
 public interface IBashSessionManager : IDisposable
 {
     /// <summary>Execute a command in the persistent foreground shell session (blocking).</summary>
@@ -13,6 +15,6 @@ public interface IBashSessionManager : IDisposable
     Task<(string Output, bool Completed, int? ExitCode)> GetBackgroundOutputAsync(string taskId, bool wait, int? timeoutMs = null, int? partLines = null);
     /// <summary>Kill a background process by taskId.</summary>
     void KillBackground(string taskId);
-    /// <summary>List active background task IDs for an agent.</summary>
-    string[] GetBackgroundTasks(string agentId);
+    /// <summary>List active and recently completed background tasks for an agent.</summary>
+    BackgroundTaskInfo[] ListBackgroundTasks(string agentId);
 }

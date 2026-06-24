@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Services;
@@ -10,16 +11,37 @@ public static class BashBackTool
 {
     private sealed class BashBackInvoker(IBashSessionManager manager, IConfigService cfg, string tmpDir, string agentId)
     {
-        [Description("Retrieve output from a background bash process started with `back=true`. Action 'wait' blocks until the process finishes (or timeout — then kills it). Action 'partial' returns whatever output is available so far without blocking (timeout just returns what's there). Use `partLines` to get only the last N lines of output.")]
+        [Description("Retrieve output/list tasks for background bash processes started with `back=true`. Action 'list' returns all active + recently completed tasks. Action 'wait' blocks until done (kills on timeout). Action 'partial' returns current output, no kill on timeout. Use `partLines` for last N lines.")]
         public async Task<string> Execute(
-            [Description("Task ID returned by execute_bash with back=true.")] string taskId,
-            [Description("'wait' — blocks until done (kills on timeout). 'partial' — returns current output, no kill on timeout.")] string action,
+            [Description("Task ID (ignored for action='list').")] string taskId,
+            [Description("'list' — show all tasks. 'wait' — blocks until done (kills on timeout). 'partial' — returns current output, no kill on timeout.")] string action,
             [Description("Timeout in ms for wait/partial. For 'wait': kills on timeout. For 'partial': returns whatever is available.")] int? timeoutMs = null,
             [Description("Return only the last N lines of output (from bottom).")] int? partLines = null)
         {
             try
             {
-                var wait = action?.Trim().ToLowerInvariant() == "wait";
+                var act = action?.Trim().ToLowerInvariant();
+
+                // ── List all background tasks ──
+                if (act == "list")
+                {
+                    var tasks = manager.ListBackgroundTasks(agentId);
+                    if (tasks.Length == 0)
+                        return "No background tasks.";
+
+                    var sb = new StringBuilder();
+                    sb.AppendLine("Background tasks:");
+                    foreach (var t in tasks)
+                    {
+                        var status = t.Completed
+                            ? $"completed (exit: {t.ExitCode?.ToString() ?? "?"})"
+                            : "running";
+                        sb.AppendLine($"  {t.TaskId}  [{status}]  {t.Command.Trim()}");
+                    }
+                    return sb.ToString().TrimEnd();
+                }
+
+                var wait = act == "wait";
 
                 var (output, completed, exitCode) = await manager.GetBackgroundOutputAsync(taskId, wait, timeoutMs, partLines);
 
