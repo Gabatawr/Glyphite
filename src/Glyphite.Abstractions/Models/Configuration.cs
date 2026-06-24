@@ -204,13 +204,17 @@ public class ToolStreamingOptions
     public Dictionary<string, string[]> ToolHiddenArgs { get; set; } = [];
 
     /// <summary>
-    /// Lookup max length for a tool name. Supports two kinds of keys:
+    /// Lookup max length for a tool name. Key matching rules:
     /// <list type="bullet">
     ///   <item><b>Exact match</b> — key equals the tool name (e.g. <c>"codegraph_search"</c>). Highest priority.</item>
-    ///   <item><b>Prefix match</b> — key is a prefix of the tool name (e.g. <c>"codegraph_"</c> matches any tool starting with it).
-    ///         If multiple prefixes match, the <b>longest</b> one wins.</item>
+    ///   <item><b>Wildcard/prefix match</b> — key ends with <c>*</c> (e.g. <c>"codegraph_*"</c>) → matches any tool
+    ///         whose name starts with the key prefix (without the trailing <c>*</c>).</item>
+    ///   <item><b>Bare prefix match</b> — key without <c>*</c> (e.g. <c>"codegraph_"</c>) also works as a prefix
+    ///         (backward-compatible), but explicit <c>*</c> is recommended for readability.</item>
     /// </list>
-    /// Exact match always beats any prefix match. Returns <paramref name="defaultValue"/> when nothing matches.
+    /// If multiple prefix/wildcard keys match, the <b>longest</b> prefix wins.
+    /// Exact match always beats any prefix match.
+    /// Returns <paramref name="defaultValue"/> when nothing matches.
     /// </summary>
     public int GetMaxLength(string toolName, int defaultValue = -1)
     {
@@ -218,14 +222,15 @@ public class ToolStreamingOptions
         if (ToolMaxLength.TryGetValue(toolName, out var exact))
             return exact;
 
-        // 2. Prefix match — longest matching prefix wins
+        // 2. Prefix/wildcard match — longest matching prefix wins
         var best = defaultValue;
         var longest = -1;
         foreach (var (key, value) in ToolMaxLength)
         {
-            if (toolName.StartsWith(key, StringComparison.Ordinal) && key.Length > longest)
+            var prefix = key.EndsWith('*') ? key[..^1] : key;
+            if (prefix.Length > longest && toolName.StartsWith(prefix, StringComparison.Ordinal))
             {
-                longest = key.Length;
+                longest = prefix.Length;
                 best = value;
             }
         }
