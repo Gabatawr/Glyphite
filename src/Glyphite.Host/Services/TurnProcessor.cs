@@ -90,7 +90,7 @@ public class TurnProcessor : ITurnProcessor
             {
                 var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
                 var pickedStrategy = CompactionService.PickStrategy(compOpts);
-                var compactArgs = JsonSerializer.Serialize(new { AutoCompress = true, AutoThreshold = compOpts.AutoThreshold, Strategy = pickedStrategy, Strategies = compOpts.Strategies });
+                var compactArgs = JsonSerializer.Serialize(new { AutoCompress = true, AutoThreshold = compOpts.AutoThreshold, Strategy = pickedStrategy });
 
                 // Yield to UI BEFORE summarization (avoids freeze)
                 yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
