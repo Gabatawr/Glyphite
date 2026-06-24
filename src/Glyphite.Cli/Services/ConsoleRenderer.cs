@@ -139,9 +139,9 @@ public class ConsoleRenderer
                 // Render ToolResult if present (new system — result stored in tool block)
                 if (block.ToolResult is not null)
                 {
-                    var trLen = -1;
-                    if (block.ToolName is not null)
-                        _streamOpts.ToolMaxLength.TryGetValue(block.ToolName, out trLen);
+                    var trLen = block.ToolName is not null
+                        ? _streamOpts.GetMaxLength(block.ToolName, -1)
+                        : -1;
                     if (trLen == 0) { /* hidden */ }
                     else
                     {

@@ -215,7 +215,7 @@ public partial class ChatRepl
                         _liveChunkType = "";
                         Console.ForegroundColor = ConsoleColor.DarkGray;
                         Console.WriteLine($"[AutoTool: {at.Name} | {at.Args}]");
-                        var autoLen = _renderer.CurrentStreamOpts.ToolMaxLength.GetValueOrDefault(at.Name, -1);
+                        var autoLen = _renderer.CurrentStreamOpts.GetMaxLength(at.Name, -1);
                         if (autoLen != 0 && !string.IsNullOrEmpty(at.Result))
                         {
                             var display = autoLen > 0 && at.Result.Length > autoLen
@@ -238,7 +238,7 @@ public partial class ChatRepl
                         _liveChunkType = "";
                         if (!string.IsNullOrEmpty(tr.Result))
                         {
-                            var maxLen = _renderer.CurrentStreamOpts.ToolMaxLength.GetValueOrDefault(tr.Name, -1);
+                            var maxLen = _renderer.CurrentStreamOpts.GetMaxLength(tr.Name, -1);
                             if (maxLen == 0) { /* hidden */ }
                             else
                             {

@@ -202,6 +202,35 @@ public class ToolStreamingOptions
     public const string Section = "ToolStreaming";
     public Dictionary<string, int> ToolMaxLength { get; set; } = [];
     public Dictionary<string, string[]> ToolHiddenArgs { get; set; } = [];
+
+    /// <summary>
+    /// Lookup max length for a tool name. Supports two kinds of keys:
+    /// <list type="bullet">
+    ///   <item><b>Exact match</b> — key equals the tool name (e.g. <c>"codegraph_search"</c>). Highest priority.</item>
+    ///   <item><b>Prefix match</b> — key is a prefix of the tool name (e.g. <c>"codegraph_"</c> matches any tool starting with it).
+    ///         If multiple prefixes match, the <b>longest</b> one wins.</item>
+    /// </list>
+    /// Exact match always beats any prefix match. Returns <paramref name="defaultValue"/> when nothing matches.
+    /// </summary>
+    public int GetMaxLength(string toolName, int defaultValue = -1)
+    {
+        // 1. Exact match — highest priority
+        if (ToolMaxLength.TryGetValue(toolName, out var exact))
+            return exact;
+
+        // 2. Prefix match — longest matching prefix wins
+        var best = defaultValue;
+        var longest = -1;
+        foreach (var (key, value) in ToolMaxLength)
+        {
+            if (toolName.StartsWith(key, StringComparison.Ordinal) && key.Length > longest)
+            {
+                longest = key.Length;
+                best = value;
+            }
+        }
+        return best;
+    }
 }
 
 public class CompressionOptions
