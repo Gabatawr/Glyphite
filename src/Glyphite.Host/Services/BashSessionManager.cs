@@ -238,8 +238,6 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 {
     private readonly ConcurrentDictionary<string, Lazy<BashSession>> _sessions = new();
     private readonly ConcurrentDictionary<string, BackgroundProcessEntry> _background = new();
-    private readonly ConcurrentQueue<(string TaskId, string Command, int? ExitCode, DateTime CompletedAt)> _completedBackground = new();
-    private const int MaxCompletedEntries = 50;
     private readonly IConfigService _cfgService;
     private readonly ILogger _logger;
     private readonly BashOptions _opts;
@@ -338,25 +336,16 @@ public class BashSessionManager : IBashSessionManager, IDisposable
             {
                 // Timeout — kill and return what we have
                 entry.Kill();
-                RecordAndRemoveCompleted(taskId, entry);
+                _background.TryRemove(taskId, out _);
             }
         }
 
         var output = entry.GetOutput(partLines);
         var status = entry.Status;
         if (status.Exited)
-            RecordAndRemoveCompleted(taskId, entry);
+            _background.TryRemove(taskId, out _);
 
         return (output, status.Exited, status.ExitCode);
-    }
-
-    private void RecordAndRemoveCompleted(string taskId, BackgroundProcessEntry entry)
-    {
-        var status = entry.Status;
-        _completedBackground.Enqueue((taskId, entry.Command, status.ExitCode, DateTime.UtcNow));
-        while (_completedBackground.Count > MaxCompletedEntries)
-            _completedBackground.TryDequeue(out _);
-        _background.TryRemove(taskId, out _);
     }
 
     public void KillBackground(string taskId)
@@ -364,27 +353,15 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         if (_background.TryRemove(taskId, out var entry))
         {
             entry.Kill();
-            RecordAndRemoveCompleted(taskId, entry);
             _logger.LogDebug("Killed background process '{TaskId}'", taskId);
         }
     }
 
     public BackgroundTaskInfo[] ListBackgroundTasks(string agentId)
     {
-        var result = new List<BackgroundTaskInfo>();
-
-        foreach (var kv in _background)
-        {
-            var status = kv.Value.Status;
-            result.Add(new BackgroundTaskInfo(kv.Key, kv.Value.Command, IsActive: true, status.Exited, status.ExitCode));
-        }
-
-        foreach (var (taskId, command, exitCode, _) in _completedBackground)
-        {
-            result.Add(new BackgroundTaskInfo(taskId, command, IsActive: false, Completed: true, exitCode));
-        }
-
-        return result.ToArray();
+        return _background
+            .Select(kv => new BackgroundTaskInfo(kv.Key, kv.Value.Command))
+            .ToArray();
     }
 
     public void Dispose()

@@ -22,22 +22,17 @@ public static class BashBackTool
             {
                 var act = action?.Trim().ToLowerInvariant();
 
-                // ── List all background tasks ──
+                // ── List active background tasks ──
                 if (act == "list")
                 {
                     var tasks = manager.ListBackgroundTasks(agentId);
                     if (tasks.Length == 0)
-                        return "No background tasks.";
+                        return "No active background tasks.";
 
                     var sb = new StringBuilder();
-                    sb.AppendLine("Background tasks:");
+                    sb.AppendLine("Active background tasks:");
                     foreach (var t in tasks)
-                    {
-                        var status = t.Completed
-                            ? $"completed (exit: {t.ExitCode?.ToString() ?? "?"})"
-                            : "running";
-                        sb.AppendLine($"  {t.TaskId}  [{status}]  {t.Command.Trim()}");
-                    }
+                        sb.AppendLine($"  {t.TaskId}  [running]  {t.Command.Trim()}");
                     return sb.ToString().TrimEnd();
                 }
 
