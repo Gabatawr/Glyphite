@@ -89,30 +89,44 @@ internal static class SubAgentTool
             await foreach (var turnEvent in scope.TurnProcessor.ProcessAsync(
                 agentId, task, chatOptions, ct, cwd))
             {
-                if (turnEvent is TextChunkEvent tc)
-                    sb.Append(tc.Chunk);
+                switch (turnEvent)
+                {
+                    case TextChunkEvent tc:
+                        sb.Append(tc.Chunk);
+                        break;
+                    case ToolCallTurnEvent:
+                        // Text before a tool call is the model's planning (what to do next).
+                        // Discard it — we only want the final answer text after all tools complete.
+                        sb.Clear();
+                        break;
+                }
             }
         }
         catch (OperationCanceledException)
         {
             // Record delta usage even on cancellation — subagent did complete its last iteration,
             // usage is in DB via OnIterationRecorded, we just need to transfer delta to main session
-            await RecordSubAgentDeltaAsync(agentStore, mainSessionId, ckHit, ckMiss, ckOutput, resolvedModel);
-            throw;
+            await RecordSubAgentDeltaAsync(agentStore, agentId, mainSessionId, ckHit, ckMiss, ckOutput, resolvedModel);
+
+            // Return whatever text the model streamed before cancellation (discard only
+            // the text that preceded a tool call — none was executed if we're here).
+            // The caller (RunSubAgentTaskAsync) will still clean up ephemeral blocks
+            // because it catches OCE separately and re-cleans.
+            return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput);
         }
 
         // ── Delta after task completes ──
-        await RecordSubAgentDeltaAsync(agentStore, mainSessionId, ckHit, ckMiss, ckOutput, resolvedModel);
+        await RecordSubAgentDeltaAsync(agentStore, agentId, mainSessionId, ckHit, ckMiss, ckOutput, resolvedModel);
 
         return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput);
     }
 
     /// <summary>Compute delta since checkpoint and record into main session's usage.</summary>
     private static async Task RecordSubAgentDeltaAsync(
-        IAgentStore agentStore, string mainSessionId,
+        IAgentStore agentStore, string agentId, string mainSessionId,
         long ckHit, long ckMiss, long ckOutput, string? model)
     {
-        var (newHit, newMiss, newOutput) = await agentStore.GetUsageAsync(mainSessionId);
+        var (newHit, newMiss, newOutput) = await agentStore.GetUsageAsync(agentId);
         var dHit = newHit - ckHit;
         var dMiss = newMiss - ckMiss;
         var dOutput = newOutput - ckOutput;
