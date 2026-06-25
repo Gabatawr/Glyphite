@@ -79,10 +79,15 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
         for (var iteration = 0; iteration < _maxIterations; iteration++)
         {
+            // Graceful cancellation: don't start a new LLM iteration if cancelled
+            if (cancellationToken.IsCancellationRequested)
+                yield break;
+
             var allUpdates = new List<ChatResponseUpdate>();
             var hasToolCall = false;
 
-            await foreach (var update in base.GetStreamingResponseAsync(messageList, options, cancellationToken))
+            // Don't cancel mid-stream — let LLM complete its current response
+            await foreach (var update in base.GetStreamingResponseAsync(messageList, options, CancellationToken.None))
             {
                 allUpdates.Add(update);
 
@@ -96,14 +101,22 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             // Peek cleanup: truncate tool results that LLM just consumed (seen exactly once)
             _toolExecutor.CleanupPeekTools(messageList);
 
+            // Record usage regardless — per-iteration tracking
+            _usageTracker.RecordUsage(allUpdates);
+            if (OnIterationRecorded is not null)
+                await OnIterationRecorded(_usageTracker.LastHitTokens, _usageTracker.LastMissTokens, _usageTracker.LastOutputTokens);
+
             if (!hasToolCall)
             {
-                var chatResponse = allUpdates.ToChatResponse();
-                _usageTracker.RecordUsage(allUpdates);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    // Graceful cancel: usage already recorded, skip building final message
+                    _logger.LogInformation("Cancelled after {Iteration} iteration(s): hit={Hit} miss={Miss} out={Output}",
+                        iteration + 1, _usageTracker.TotalCacheHitTokens, _usageTracker.TotalCacheMissTokens, _usageTracker.TotalOutputTokens);
+                    yield break;
+                }
 
-                // Persist per-iteration usage immediately — survives crash/Escape
-                if (OnIterationRecorded is not null)
-                    await OnIterationRecorded(_usageTracker.LastHitTokens, _usageTracker.LastMissTokens, _usageTracker.LastOutputTokens);
+                var chatResponse = allUpdates.ToChatResponse();
 
                 _logger.LogInformation("Completed in {Iteration} iteration(s): hit={Hit} miss={Miss} out={Output}",
                     iteration + 1, _usageTracker.TotalCacheHitTokens, _usageTracker.TotalCacheMissTokens, _usageTracker.TotalOutputTokens);
@@ -130,12 +143,13 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                 yield break;
             }
 
-            // Record usage for tool-calling iteration
-            _usageTracker.RecordUsage(allUpdates);
-
-            // Persist per-iteration usage immediately — survives crash/Escape
-            if (OnIterationRecorded is not null)
-                await OnIterationRecorded(_usageTracker.LastHitTokens, _usageTracker.LastMissTokens, _usageTracker.LastOutputTokens);
+            // Check cancellation before executing tools — skip if user cancelled
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInformation("Cancelled after tool-call iteration {Iteration}: hit={Hit} miss={Miss} out={Output}",
+                    iteration + 1, _usageTracker.TotalCacheHitTokens, _usageTracker.TotalCacheMissTokens, _usageTracker.TotalOutputTokens);
+                yield break;
+            }
 
             var toolResponse = allUpdates.ToChatResponse();
             var toolAssistant = toolResponse.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
@@ -309,6 +323,15 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     messageList.Add(new ChatMessage(ChatRole.Tool,
                         [new FunctionResultContent(flushId, flushText), new TextContent(flushText)]));
                 }
+            }
+
+            // Graceful cancellation: tool results are in DB/shown to user, but don't
+            // feed them back to the LLM for another iteration
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInformation("Cancelled after tool execution in iteration {Iteration}: hit={Hit} miss={Miss} out={Output}",
+                    iteration + 1, _usageTracker.TotalCacheHitTokens, _usageTracker.TotalCacheMissTokens, _usageTracker.TotalOutputTokens);
+                yield break;
             }
         }
 

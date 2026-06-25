@@ -86,8 +86,10 @@ public class TurnProcessor : ITurnProcessor
         var nextNum = await _agentStore.GetNextNumberAsync(agentId);
         if (nextNum <= 0) nextNum = 1;
 
-        // Auto-compaction: skip for ephemeral agents (subagent_run — transient, no benefit)
-        var isEphemeral = chatOptions.AdditionalProperties?.ContainsKey("ephemeral") == true;
+        // Auto-compaction: skip only for truly ephemeral agents (subagent_run — transient, no benefit).
+        // subagent_use sets ephemeral=false so compaction runs normally.
+        var isEphemeral = chatOptions.AdditionalProperties?.TryGetValue("ephemeral", out var epVal) == true
+            && string.Equals(epVal as string, "true", StringComparison.OrdinalIgnoreCase);
 
         if (!isEphemeral)
         {
