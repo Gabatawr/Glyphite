@@ -227,24 +227,6 @@ public class CompactionService
         }
     }
 
-    /// <summary>Fast check — are there any uncompressed turn groups beyond safe zones?</summary>
-    public static bool HasToCompressZones(List<List<MemoryBlock>> turnGroups)
-    {
-        if (turnGroups.Count <= 1)
-            return false;
-
-        for (var i = turnGroups.Count - 1; i >= 1; i--)
-        {
-            var rankFromNewest = turnGroups.Count - 1 - i;
-            if (rankFromNewest < 2)
-                continue;
-            if (!turnGroups[i].Any(b => b.Compressed))
-                return true;
-        }
-
-        return false;
-    }
-
     /// <summary>
     /// Group blocks into turns. The first group contains agent_data alone.
     /// Each subsequent group starts at a user_message/agent_task or turn marker and ends at the next turn marker or end.
@@ -281,12 +263,31 @@ public class CompactionService
         return groups;
     }
 
+    /// <summary>Build HashSet of protected block types from MemoryOptions config.</summary>
+    public static HashSet<BlockType> GetProtectedBlockTypes(MemoryOptions memOpts)
+    {
+        return new HashSet<BlockType>(
+            memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
+    }
+
+    /// <summary>Tool names that are treated as protected during compaction.</summary>
+    public static readonly HashSet<string> SubagentToolNames = new(StringComparer.OrdinalIgnoreCase)
+        { "subagent_run", "subagent_use" };
+
+    /// <summary>Find the agent_data block. Returns null and logs warning if not found.</summary>
+    public static MemoryBlock? FindAgentDataBlock(List<MemoryBlock> blocks, string agentId, ILogger logger)
+    {
+        var agentBlock = blocks.FirstOrDefault(b => b.Type == BlockType.agent_data);
+        if (agentBlock is null)
+            logger.LogWarning("Compaction failed for session {SessionId}: agent_data block not found", agentId);
+        return agentBlock;
+    }
+
     /// <summary>Result of zone classification with all three zone groups.</summary>
     public sealed record ZoneClassification(
         List<List<MemoryBlock>> SafeGroups,
         List<List<MemoryBlock>> CompressedGroups,
         List<List<MemoryBlock>> ToCompressGroups,
-        int Threshold,
         bool IsHardMode,
         bool IsSafeHardMode);
 
@@ -343,7 +344,7 @@ public class CompactionService
         }
 
         return new ZoneClassification(safeGroups, compressedGroups, toCompressGroups,
-            threshold, isHardMode, isSafeHardMode);
+            isHardMode, isSafeHardMode);
     }
 
     /// <summary>Sum output tokens from turn markers in compressed groups (hard-mode threshold check).</summary>

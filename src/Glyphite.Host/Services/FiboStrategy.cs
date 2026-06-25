@@ -101,11 +101,8 @@ internal static class FiboStrategy
         if (zones.Count == 0)
             return false;
 
-        var protectedTypes = new HashSet<BlockType>(
-            memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
-
-        var isSubagentTool = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "subagent_run", "subagent_use" };
+        var protectedTypes = CompactionService.GetProtectedBlockTypes(memOpts);
+        var isSubagentTool = CompactionService.SubagentToolNames;
 
         var allUnprotectedNums = new HashSet<double>();
         var zoneProtectedBlocks = new List<List<MemoryBlock>>();
@@ -162,12 +159,9 @@ internal static class FiboStrategy
             return false;
 
         // Find agent_data block
-        var agentBlock = blocks.FirstOrDefault(b => b.Type == BlockType.agent_data);
+        var agentBlock = CompactionService.FindAgentDataBlock(blocks, agentId, logger);
         if (agentBlock is null)
-        {
-            logger.LogWarning("Compaction failed for session {SessionId}: agent_data block not found", agentId);
             return false;
-        }
 
         // 5. Build compacted history:
         //    agent_data (unchanged)

@@ -61,11 +61,8 @@ internal static class StructStrategy
         if (toCompressGroups.Count == 0)
             return false;
 
-        var protectedTypes = new HashSet<BlockType>(
-            memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
-
-        var isSubagentTool = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "subagent_run", "subagent_use" };
+        var protectedTypes = CompactionService.GetProtectedBlockTypes(memOpts);
+        var isSubagentTool = CompactionService.SubagentToolNames;
 
         // ── Build LLM input: EVERYTHING except agent_data ──
         // Send ALL blocks — group 0 (excl. agent_data), compressed, to_compress, and safe.
@@ -138,12 +135,9 @@ internal static class StructStrategy
             return false;
 
         // Find agent_data block
-        var agentBlock = blocks.FirstOrDefault(b => b.Type == BlockType.agent_data);
+        var agentBlock = CompactionService.FindAgentDataBlock(blocks, agentId, logger);
         if (agentBlock is null)
-        {
-            logger.LogWarning("Compaction failed for session {SessionId}: agent_data block not found", agentId);
             return false;
-        }
 
         // ── Build output: compressed zones FIRST (pass through), then safe (preserved), then summary ──
         var nextNumber = agentBlock.Number + 1;
