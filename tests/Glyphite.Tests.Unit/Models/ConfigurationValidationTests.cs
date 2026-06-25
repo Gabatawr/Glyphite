@@ -495,7 +495,7 @@ public class ConfigurationValidationTests
         var opts = new CompressionOptions
         {
             AutoThreshold = 50,
-            Strategies = new() { ["fibo-parts"] = true },
+            Strategies = new() { ["fibo"] = true },
             CacheHitRateThreshold = 80,
             CostSignificantThreshold = 0.01
         };
@@ -503,12 +503,12 @@ public class ConfigurationValidationTests
     }
 
     [Fact]
-    public void CompressionOptions_StructCutStrategy_Valid()
+    public void CompressionOptions_StructStrategy_Valid()
     {
         var opts = new CompressionOptions
         {
             AutoThreshold = 50,
-            Strategies = new() { ["struct-cut"] = true },
+            Strategies = new() { ["struct"] = true },
             CacheHitRateThreshold = 80,
             CostSignificantThreshold = 0.01
         };
@@ -521,7 +521,7 @@ public class ConfigurationValidationTests
         var opts = new CompressionOptions
         {
             AutoThreshold = 50,
-            Strategies = new() { ["fibo-parts"] = true, ["struct-cut"] = true },
+            Strategies = new() { ["fibo"] = true, ["struct"] = true },
             CacheHitRateThreshold = 80,
             CostSignificantThreshold = 0.01
         };
@@ -548,7 +548,7 @@ public class ConfigurationValidationTests
         var opts = new CompressionOptions
         {
             AutoThreshold = 50,
-            Strategies = new() { ["fibo-parts"] = false, ["struct-cut"] = false },
+            Strategies = new() { ["fibo"] = false, ["struct"] = false },
             CacheHitRateThreshold = 80,
             CostSignificantThreshold = 0.01
         };

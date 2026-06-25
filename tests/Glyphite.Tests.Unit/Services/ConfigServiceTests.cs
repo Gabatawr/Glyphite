@@ -218,7 +218,7 @@ public class ConfigServiceTests
         Assert.Equal(50, options.AutoThreshold);
         Assert.True(options.AutoCompress);
         Assert.Single(options.Strategies);
-        Assert.True(options.Strategies["fibo-parts"]);
+        Assert.True(options.Strategies["fibo"]);
         Assert.Equal(80, options.CacheHitRateThreshold);
         Assert.Equal(0.01, options.CostSignificantThreshold);
     }

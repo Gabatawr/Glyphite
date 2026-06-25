@@ -12,11 +12,11 @@ namespace Glyphite.Host.Services;
 /// Auto-compaction service: after each turn, if context usage exceeds the configured threshold,
 /// compresses old conversation history via LLM summarization. Supports two strategies:
 ///
-/// <c>fibo-parts</c> (default): groups blocks into Fibonacci-sized zones by turn, strips unprotected
+/// <c>fibo</c> (default): groups blocks into Fibonacci-sized zones by turn, strips unprotected
 /// blocks from old zones (zone 3+), summarizes protected blocks via LLM, replaces history with
 /// summaries + intact new zones. Zones 1-2 (the two newest turns) are preserved entirely intact.
 ///
-/// <c>struct-cut</c>: sends ALL content (including unprotected tool results, auto_tool, reasoning)
+/// <c>struct</c>: sends ALL content (including unprotected tool results, auto_tool, reasoning)
 /// from agent_data to the save boundary (last 2 turns) into a single LLM call with a structured
 /// template. After summarization, unprotected old blocks are soft-deleted. The model sees the full
 /// picture for a more informed summary. One summary block replaces all old history.
@@ -73,11 +73,11 @@ public class CompactionService
         var strategy = PickStrategy(compOpts);
         var turnGroups = GroupByTurns(blocks);
 
-        if (strategy == "struct-cut")
+        if (strategy == "struct")
             return turnGroups.Count > 3; // agent_data + at least 3 turn groups
 
-        // fibo-parts: need at least 2 Fibonacci zones after agent_data
-        return turnGroups.Count > 1 && FiboPartsStrategy.DistributeFibonacci(turnGroups).Count > 2;
+        // fibo: need at least 2 Fibonacci zones after agent_data
+        return turnGroups.Count > 1 && FiboStrategy.DistributeFibonacci(turnGroups).Count > 2;
     }
 
     /// <summary>Randomly pick one of the enabled strategies.</summary>
@@ -103,16 +103,16 @@ public class CompactionService
         var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId);
         var model = await _agentStore.GetAgentModelAsync(agentId);
 
-        if (strategy == "struct-cut")
+        if (strategy == "struct")
         {
-            return await StructCutStrategy.CompactAsync(
+            return await StructStrategy.CompactAsync(
                 agentId, compOpts, memOpts, blocks, model,
-                _blockStore, _chatClient, _agentStore, _logger);
+                _blockStore, _chatClient, _agentStore, _logger, contextWindow);
         }
 
-        return await FiboPartsStrategy.CompactAsync(
+        return await FiboStrategy.CompactAsync(
             agentId, compOpts, memOpts, blocks, model,
-            _blockStore, _chatClient, _agentStore, _logger);
+            _blockStore, _chatClient, _agentStore, _logger, contextWindow);
     }
 
     // ===== Shared helpers (used by both strategies) =====
@@ -121,8 +121,9 @@ public class CompactionService
     /// Summarize a set of blocks via LLM. When <paramref name="structured"/> is true,
     /// uses a full-session structured template (## Goal, ## Progress, ## Key Decisions, ## Relevant Files, ## Next Steps).
     /// When false, uses a zone-specific structured template (## Topics, ## Key Actions, ## Results, ## State Changes, ## Open / Carried Over).
+    /// Returns the summary text and usage stats from the LLM call.
     /// </summary>
-    internal static async Task<string?> SummarizeZoneAsync(
+    internal static async Task<(string? Summary, long Hit, long Miss, long Output)> SummarizeZoneAsync(
         string agentId,
         List<MemoryBlock> blocks,
         string? model,
@@ -202,6 +203,8 @@ public class CompactionService
             var assistantMsg = response.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
             var text = assistantMsg?.Text?.Trim();
 
+            long hit = 0, miss = 0, output = 0;
+
             if (response.RawRepresentation is not null)
             {
                 try
@@ -209,7 +212,7 @@ public class CompactionService
                     using var doc = UsageParser.Normalize(response.RawRepresentation);
                     if (doc is not null)
                     {
-                        var (hit, miss, output) = UsageParser.Parse(doc);
+                        (hit, miss, output) = UsageParser.Parse(doc);
                         if (hit > 0 || miss > 0 || output > 0)
                             await agentStore.RecordUsageAsync(agentId, hit, miss, output, model: model);
                     }
@@ -217,19 +220,38 @@ public class CompactionService
                 catch { logger.LogWarning("Failed to parse usage from summarization response"); }
             }
 
-            return string.IsNullOrEmpty(text) ? null : text;
+            return (string.IsNullOrEmpty(text) ? null : text, hit, miss, output);
         }
         catch
         {
-            return null;
+            return (null, 0, 0, 0);
         }
+    }
+
+    /// <summary>Fast check — are there any uncompressed turn groups beyond safe zones?</summary>
+    public static bool HasToCompressZones(List<List<MemoryBlock>> turnGroups)
+    {
+        if (turnGroups.Count <= 1)
+            return false;
+
+        // Walk from newest (end) backwards, skip last 2 (safe), mark compressed
+        for (var i = turnGroups.Count - 1; i >= 1; i--)
+        {
+            var rankFromNewest = turnGroups.Count - 1 - i; // 0 = newest
+            if (rankFromNewest < 2)
+                continue; // safe — skip
+            if (!turnGroups[i].Any(b => b.Compressed))
+                return true; // found uncompressed = to_compress
+        }
+
+        return false;
     }
 
     /// <summary>
     /// Group blocks into turns. The first group contains agent_data alone.
     /// Each subsequent group starts at a user_message/agent_task or turn marker and ends at the next turn marker or end.
     /// </summary>
-    internal static List<List<MemoryBlock>> GroupByTurns(List<MemoryBlock> blocks)
+    public static List<List<MemoryBlock>> GroupByTurns(List<MemoryBlock> blocks)
     {
         var ordered = blocks.OrderBy(b => b.Number).ToList();
         var groups = new List<List<MemoryBlock>>();

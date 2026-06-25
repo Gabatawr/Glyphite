@@ -16,6 +16,7 @@ public partial class ChatRepl
     private readonly SessionManager _session;
     private readonly InputHistory _inputHistory;
     private readonly ConsoleRenderer _renderer;
+    private readonly CompactionService _compactionService;
 
     // LLM config — refreshed each turn via UpdatePromptPrefixAsync
     private int _contextWindow;
@@ -40,7 +41,8 @@ public partial class ChatRepl
         IConfigService cfgService,
         SessionManager session,
         InputHistory inputHistory,
-        ConsoleRenderer renderer)
+        ConsoleRenderer renderer,
+        CompactionService compactionService)
     {
         _agentStore = agentStore;
         _blockStore = blockStore;
@@ -48,6 +50,7 @@ public partial class ChatRepl
         _session = session;
         _inputHistory = inputHistory;
         _renderer = renderer;
+        _compactionService = compactionService;
     }
 
     public async Task RunAsync(CancellationToken ct)

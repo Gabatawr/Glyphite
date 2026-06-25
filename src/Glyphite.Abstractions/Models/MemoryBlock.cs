@@ -55,6 +55,10 @@ public class MemoryBlock
     [JsonPropertyOrder(7)]
     public string? ToolResult { get; set; }
 
+    /// <summary>True if this block is a compaction summary (not original content).</summary>
+    [JsonPropertyOrder(9)]
+    public bool Compressed { get; set; }
+
     public static MemoryBlock Create(BlockType type, string content, string? toolName = null, Dictionary<string, object>? data = null, string? model = null)
         => new()
         {

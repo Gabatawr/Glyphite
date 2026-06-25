@@ -244,10 +244,10 @@ public class CompressionOptions
     public int AutoThreshold { get; set; }
     public bool AutoCompress { get; set; }
     /// <summary>Known strategy names.</summary>
-    internal static readonly string[] KnownStrategies = ["fibo-parts", "struct-cut"];
+    internal static readonly string[] KnownStrategies = ["fibo", "struct"];
 
     /// <summary>Strategy flags. At least one must be enabled. If multiple are enabled, one is picked randomly per compaction cycle.</summary>
-    public Dictionary<string, bool> Strategies { get; set; } = new() { ["fibo-parts"] = true };
+    public Dictionary<string, bool> Strategies { get; set; } = new() { ["fibo"] = true };
     public int CacheHitRateThreshold { get; set; } = 80;
     public double CostSignificantThreshold { get; set; } = 0.01;
     public void Validate()

@@ -6,7 +6,7 @@ namespace Glyphite.Cli;
 public partial class ChatRepl
 {
     private static readonly string[] _knownCommands =
-        ["/new", "/clone", "/use", "/delete", "/stats", "/version", "/models", "/exit"];
+        ["/new", "/clone", "/use", "/delete", "/stats", "/version", "/models", "/compression", "/exit"];
 
     private int _historyIndex = -1;
     private string? _pendingInput;
