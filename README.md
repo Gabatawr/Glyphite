@@ -287,10 +287,10 @@ Control how much of a tool's output is shown in the console. Configured in `Glyp
 
 ```json
 "ToolMaxLength": {
-  "bash": -1,              // -1 = full output
+  "bash": -1,             // -1 = full output
   "read_file": 0,         // 0 = hidden (LLM still sees full result)
   "fetch_web": 500,       // N = first N characters
-  "codegraph_explore": 0  // works for MCP tools too
+  "codegraph_*": 0        // works for MCP tools too
 }
 ```
 

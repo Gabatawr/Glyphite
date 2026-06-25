@@ -42,7 +42,7 @@ public partial class BlockMemoryProvider
         }
 
         var messages = blocks
-            .Where(b => b.Type != BlockType.turn)
+            .Where(b => b.Type != BlockType.turn && b.Type != BlockType.auto_tool)
             .Select(b => new ChatMessage(ChatRole.System, b.ToContextString())).ToList();
 
         return messages;

@@ -133,8 +133,6 @@ public class TurnProcessor : ITurnProcessor
             var autoBlock = MemoryBlock.AutoTool("peek_reasoning", cleanArgs, peekMsg, modelStr);
             autoBlock.Number = nextNum++;
             await _blockStore.AppendBlocksAsync(agentId, [autoBlock], nextNum);
-
-            contextMessages.Add(new ChatMessage(ChatRole.System, autoBlock.ToContextString()));
         }
 
         var initialMessages = new List<ChatMessage>();
