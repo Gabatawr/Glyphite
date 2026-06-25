@@ -133,7 +133,12 @@ internal static class FiboStrategy
             compressedGroups.Clear();
         }
 
-        // 3b. Need at least some groups to compress
+        // 3c. Safe zone hard mode: if a safe zone exceeds 50% of threshold, move it to to_compress
+        var safeKept = CheckSafeZones(safeGroups, toCompressGroups, threshold);
+        if (safeKept < 2)
+            logger.LogInformation("Safe zone hard mode: kept {Kept} of 2 safe zones, {Moved} moved to to_compress", safeKept, 2 - safeKept);
+
+        // 3d. Need at least some groups to compress
         if (toCompressGroups.Count == 0)
             return false;
 
@@ -294,5 +299,49 @@ internal static class FiboStrategy
             }
         }
         return total;
+    }
+
+    /// <summary>Estimate token count for a turn group by rendering blocks to context strings and dividing by 4.</summary>
+    internal static long EstimateZoneTokens(List<MemoryBlock> group)
+    {
+        long totalLen = 0;
+        foreach (var block in group)
+            totalLen += block.ToContextString().Length;
+        return totalLen / 4;
+    }
+
+    /// <summary>Check safe zones (last 2 turns) against threshold using estimated content size.
+    /// If the second-to-last (older) safe zone >= 50% of threshold, it's moved to to_compress.
+    /// If the last (newest) safe zone >= 50% of threshold, both safe zones are moved to to_compress.
+    /// Returns the number of safe zones to keep (0, 1, or 2).</summary>
+    internal static int CheckSafeZones(
+        List<List<MemoryBlock>> safeGroups,
+        List<List<MemoryBlock>> toCompressGroups,
+        int threshold)
+    {
+        if (safeGroups.Count < 2)
+            return safeGroups.Count; // fewer than 2 safe zones, keep what we have
+
+        // safeGroups[0] = older (second-to-last), safeGroups[1] = newest (last)
+        var olderSize = EstimateZoneTokens(safeGroups[0]);
+        var newerSize = EstimateZoneTokens(safeGroups[1]);
+
+        if (newerSize >= threshold / 2L)
+        {
+            // Both go to to_compress
+            toCompressGroups.AddRange(safeGroups);
+            safeGroups.Clear();
+            return 0;
+        }
+
+        if (olderSize >= threshold / 2L)
+        {
+            // Only the older one goes to to_compress
+            toCompressGroups.Add(safeGroups[0]);
+            safeGroups.RemoveAt(0);
+            return 1;
+        }
+
+        return 2;
     }
 }

@@ -104,7 +104,7 @@ public class TurnProcessor : ITurnProcessor
                 yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
 
                 // 2. Actual compaction (slow — LLM summarization)
-                var compacted = await _compactionService.CompactAsync(agentId, llmOpts.ContextWindow);
+                var compacted = await _compactionService.CompactAsync(agentId, llmOpts.ContextWindow, pickedStrategy);
 
                 if (compacted)
                 {

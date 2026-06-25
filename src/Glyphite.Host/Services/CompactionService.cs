@@ -70,18 +70,16 @@ public class CompactionService
             return false;
         }
 
-        var strategy = PickStrategy(compOpts);
         var turnGroups = GroupByTurns(blocks);
 
-        if (strategy == "struct")
-            return turnGroups.Count > 3; // agent_data + at least 3 turn groups
-
-        // fibo: need at least 2 Fibonacci zones after agent_data
-        return turnGroups.Count > 1 && FiboStrategy.DistributeFibonacci(turnGroups).Count > 2;
+        // Use HasToCompressZones — checks if there are any uncompressed turn groups
+        // beyond the safe last 2. Works for both fibo and struct: if all non-safe
+        // zones are already compressed, no compaction is needed regardless of strategy.
+        return HasToCompressZones(turnGroups);
     }
 
     /// <summary>Randomly pick one of the enabled strategies.</summary>
-    internal static string PickStrategy(CompressionOptions compOpts)
+    public static string PickStrategy(CompressionOptions compOpts)
     {
         var enabled = compOpts.Strategies
             .Where(kv => kv.Value)
@@ -94,11 +92,11 @@ public class CompactionService
         return enabled[Random.Shared.Next(enabled.Length)];
     }
 
-    /// <summary>Execute compaction using a randomly selected enabled strategy.</summary>
-    public async Task<bool> CompactAsync(string agentId, int contextWindow)
+    /// <summary>Execute compaction. If strategy is null, picks randomly from enabled strategies.</summary>
+    public async Task<bool> CompactAsync(string agentId, int contextWindow, string? strategy = null)
     {
         var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
-        var strategy = PickStrategy(compOpts);
+        strategy ??= PickStrategy(compOpts);
         var blocks = await _blockStore.LoadBlocksAsync(agentId);
         var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId);
         var model = await _agentStore.GetAgentModelAsync(agentId);

@@ -12,6 +12,7 @@ public sealed record BlockEntity
     public string? Data { get; set; }
     public string? Model { get; set; }
     public string? ToolResult { get; set; }
+    public bool IsCompressed { get; set; }
 }
 
 public sealed record ConfigRow(string Key, string Value, string Scope, string AgentId, string UpdatedAt);

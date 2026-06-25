@@ -104,12 +104,14 @@ public partial class ChatRepl
                 }
 
                 var llmOpts = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section, AgentId);
+                var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, AgentId);
+                var strategy = CompactionService.PickStrategy(compOpts);
 
                 Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine("Running compaction...");
+                Console.WriteLine($"Running {strategy} compaction...");
                 Console.ResetColor();
 
-                var compacted = await _compactionService.CompactAsync(AgentId, llmOpts.ContextWindow);
+                var compacted = await _compactionService.CompactAsync(AgentId, llmOpts.ContextWindow, strategy);
 
                 Console.ForegroundColor = compacted ? ConsoleColor.Green : ConsoleColor.DarkYellow;
                 Console.WriteLine(compacted ? "Compaction complete." : "Compaction did not run (no eligible blocks).");

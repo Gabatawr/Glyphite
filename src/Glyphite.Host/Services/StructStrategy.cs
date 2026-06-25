@@ -101,6 +101,11 @@ internal static class StructStrategy
             compressedGroups.Clear();
         }
 
+        // Safe zone hard mode: if a safe zone exceeds 50% of threshold, move it to to_compress
+        var safeKept = FiboStrategy.CheckSafeZones(safeGroups, toCompressGroups, threshold);
+        if (safeKept < 2)
+            logger.LogInformation("Safe zone hard mode: kept {Kept} of 2 safe zones, {Moved} moved to to_compress", safeKept, 2 - safeKept);
+
         if (toCompressGroups.Count == 0)
             return false;
 

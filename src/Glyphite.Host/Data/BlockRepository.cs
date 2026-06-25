@@ -28,17 +28,34 @@ public class BlockRepository : RepositoryBase, IBlockStore
                 model TEXT,
                 tool_result TEXT,
                 updated_at TEXT,
-                is_deleted INTEGER NOT NULL DEFAULT 0
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                is_compressed INTEGER NOT NULL DEFAULT 0
             );
             """);
         _conn.Execute("CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_deleted)");
+        ApplyMigrations();
+    }
+
+    private void ApplyMigrations()
+    {
+        if (!ColumnExists("blocks", "is_compressed"))
+            _conn.Execute("ALTER TABLE blocks ADD COLUMN is_compressed INTEGER NOT NULL DEFAULT 0");
+    }
+
+    private bool ColumnExists(string table, string column)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM pragma_table_info(@table) WHERE name = @col";
+        cmd.Parameters.AddWithValue("@table", table);
+        cmd.Parameters.AddWithValue("@col", column);
+        return (long)cmd.ExecuteScalar()! > 0;
     }
 
     // ── Shared SQL ──
 
     private const string SqlInsertBlock = """
-        INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, is_deleted)
-        VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, 0)
+        INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, is_deleted, is_compressed)
+        VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, 0, @IsCompressed)
         """;
 
     private const string SqlSoftDeleteBlock = "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num AND type != 'agent_data'";
@@ -61,7 +78,8 @@ public class BlockRepository : RepositoryBase, IBlockStore
             ToolName = e.ToolName,
             Data = e.Data is not null ? JsonSerializer.Deserialize<Dictionary<string, object>>(e.Data) : null,
             Model = e.Model,
-            ToolResult = e.ToolResult
+            ToolResult = e.ToolResult,
+            Compressed = e.IsCompressed
         };
     }
 
@@ -78,7 +96,8 @@ public class BlockRepository : RepositoryBase, IBlockStore
             b.ToolName,
             Data = b.Data is not null ? JsonSerializer.Serialize(b.Data) : null,
             b.Model,
-            tool_result = b.ToolResult
+            tool_result = b.ToolResult,
+            IsCompressed = b.Compressed
         };
     }
 
