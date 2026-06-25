@@ -84,26 +84,41 @@ internal static class SubAgentTool
         var (ckHit, ckMiss, ckOutput) = await agentStore.GetUsageAsync(agentId);
 
         var sb = new StringBuilder();
-        await foreach (var turnEvent in scope.TurnProcessor.ProcessAsync(
-            agentId, task, chatOptions, ct, cwd))
+        try
         {
-            if (turnEvent is TextChunkEvent tc)
-                sb.Append(tc.Chunk);
+            await foreach (var turnEvent in scope.TurnProcessor.ProcessAsync(
+                agentId, task, chatOptions, ct, cwd))
+            {
+                if (turnEvent is TextChunkEvent tc)
+                    sb.Append(tc.Chunk);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Record delta usage even on cancellation — subagent did complete its last iteration,
+            // usage is in DB via OnIterationRecorded, we just need to transfer delta to main session
+            await RecordSubAgentDeltaAsync(agentStore, mainSessionId, ckHit, ckMiss, ckOutput, resolvedModel);
+            throw;
         }
 
         // ── Delta after task completes ──
-        var (newHit, newMiss, newOutput) = await agentStore.GetUsageAsync(agentId);
+        await RecordSubAgentDeltaAsync(agentStore, mainSessionId, ckHit, ckMiss, ckOutput, resolvedModel);
+
+        return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput);
+    }
+
+    /// <summary>Compute delta since checkpoint and record into main session's usage.</summary>
+    private static async Task RecordSubAgentDeltaAsync(
+        IAgentStore agentStore, string mainSessionId,
+        long ckHit, long ckMiss, long ckOutput, string? model)
+    {
+        var (newHit, newMiss, newOutput) = await agentStore.GetUsageAsync(mainSessionId);
         var dHit = newHit - ckHit;
         var dMiss = newMiss - ckMiss;
         var dOutput = newOutput - ckOutput;
 
-        // Record the subagent's usage delta into the MAIN chat's session_usage
-        // Only 3 deltas (hit/miss/output) + model — no lastRequest, no cache rate
         if (dHit > 0 || dMiss > 0 || dOutput > 0)
-            await agentStore.RecordUsageAsync(mainSessionId, dHit, dMiss, dOutput,
-                model: resolvedModel);
-
-        return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput);
+            await agentStore.RecordUsageAsync(mainSessionId, dHit, dMiss, dOutput, model: model);
     }
 
     /// <summary>Ensure a scope is registered for the given agent, creating one if needed.</summary>
