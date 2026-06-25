@@ -6,7 +6,7 @@ namespace Glyphite.Cli;
 public partial class ChatRepl
 {
     private static readonly string[] _knownCommands =
-        ["/new", "/clone", "/use", "/delete", "/stats", "/version", "/models", "/exit"];
+        ["/new", "/clone", "/use", "/delete", "/stats", "/version", "/models", "/compression", "/exit"];
 
     private int _historyIndex = -1;
     private string? _pendingInput;
@@ -37,8 +37,15 @@ public partial class ChatRepl
         var lastTokens = _lastTurnLastHit + _lastTurnLastMiss;
         if (lastTokens > 0)
         {
-            var useYellow = lastTokens * 100.0 / _contextWindow >= compOpts.AutoThreshold;
-            _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", useYellow ? yellow : white));
+            ConsoleColor color = white;
+
+            var status = await _compactionService.EvaluateCompactionStatusAsync(AgentId, _contextWindow);
+            if (status.IsThresholdExceeded && status.WillCompact)
+                color = status.Mode.Contains("hard") ? ConsoleColor.Red : yellow;
+            else if (status.IsThresholdExceeded)
+                color = ConsoleColor.Magenta; // context large but no compaction (rare)
+
+            _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", color));
         }
 
         // Cumulative cost (per-model pricing)

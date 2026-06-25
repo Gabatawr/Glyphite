@@ -91,20 +91,22 @@ public class TurnProcessor : ITurnProcessor
 
         if (!isEphemeral)
         {
-            // 1. Fast check (no LLM) — yield event immediately so UI doesn't freeze
-            var shouldCompact = await _compactionService.ShouldCompactAsync(agentId, llmOpts.ContextWindow);
+            var status = await _compactionService.EvaluateCompactionStatusAsync(agentId, llmOpts.ContextWindow);
 
-            if (shouldCompact)
+            if (status.IsThresholdExceeded && status.WillCompact)
             {
-                var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
-                var pickedStrategy = CompactionService.PickStrategy(compOpts);
-                var compactArgs = JsonSerializer.Serialize(new { AutoCompress = true, AutoThreshold = compOpts.AutoThreshold, Strategy = pickedStrategy });
+                var compactArgs = JsonSerializer.Serialize(new
+                {
+                    AutoCompress = true,
+                    Strategy = status.Strategy,
+                    Mode = status.Mode
+                });
 
                 // Yield to UI BEFORE summarization (avoids freeze)
                 yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
 
                 // 2. Actual compaction (slow — LLM summarization)
-                var compacted = await _compactionService.CompactAsync(agentId, llmOpts.ContextWindow);
+                var compacted = await _compactionService.CompactAsync(agentId, llmOpts.ContextWindow, status.Strategy);
 
                 if (compacted)
                 {

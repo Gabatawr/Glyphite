@@ -1,4 +1,4 @@
-using System.Text;
+using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Extensions.AI;
@@ -8,24 +8,19 @@ namespace Glyphite.Host.Services;
 
 /// <summary>
 /// Fibonacci-zoned compaction strategy.
-/// Groups blocks into Fibonacci-sized zones by turn, strips unprotected blocks from old zones
-/// (zone 3+), summarizes them via LLM, and replaces history with summaries + intact new zones.
-/// Zones 1-2 (the two newest turns) are preserved entirely intact.
+/// Groups blocks into Fibonacci-sized zones by turn, identifies already-compressed zones
+/// (summary+turn markers from previous compactions), skips them, and only summarizes
+/// uncompressed old zones. Zones 1-2 (the two newest turns) are always preserved intact.
 /// </summary>
-internal static class FiboPartsStrategy
+internal static class FiboStrategy
 {
     /// <summary>
-    /// Distribute turn groups into Fibonacci-sized zones, starting from the most recent turn backwards.
-    /// Zone sizes: 1, 1, 2, 3, 5, 8, ... turns (the first zone after agent_data).
-    /// The agent_data group is never included in any zone.
+    /// Distribute a flat list of turn groups (no agent_data) into Fibonacci-sized zones,
+    /// starting from the most recent turn backwards.
+    /// Zone sizes: 1, 1, 2, 3, 5, 8, ... turns.
     /// </summary>
-    internal static List<List<MemoryBlock>> DistributeFibonacci(List<List<MemoryBlock>> turnGroups)
+    internal static List<List<MemoryBlock>> DistributeTurnGroups(List<List<MemoryBlock>> turnList)
     {
-        // turnGroups[0] = agent_data group (oldest)
-        // turnGroups[1..] = turn groups (oldest first)
-        // We reverse to distribute from newest backwards, then reverse back.
-
-        var turnList = turnGroups.Skip(1).ToList(); // Skip agent_data group
         if (turnList.Count == 0)
             return [];
 
@@ -61,7 +56,16 @@ internal static class FiboPartsStrategy
         return zones;
     }
 
-    /// <summary>Execute the fibo-parts compaction.</summary>
+    /// <summary>
+    /// Distribute turn groups (with agent_data at index 0) into Fibonacci-sized zones.
+    /// Skips the agent_data group.
+    /// </summary>
+    internal static List<List<MemoryBlock>> DistributeFibonacci(List<List<MemoryBlock>> turnGroups)
+    {
+        return DistributeTurnGroups(turnGroups.Skip(1).ToList());
+    }
+
+    /// <summary>Execute the fibo compaction.</summary>
     internal static async Task<bool> CompactAsync(
         string agentId,
         CompressionOptions compOpts,
@@ -71,7 +75,8 @@ internal static class FiboPartsStrategy
         IBlockStore blockStore,
         IChatClient chatClient,
         IAgentStore agentStore,
-        ILogger logger)
+        ILogger logger,
+        int contextWindow)
     {
         if (blocks.Count <= 1)
             return false;
@@ -81,9 +86,19 @@ internal static class FiboPartsStrategy
         if (turnGroups.Count <= 1)
             return false;
 
-        // 2. Distribute turn groups into Fibonacci zones
-        var zones = DistributeFibonacci(turnGroups);
-        if (zones.Count <= 2)
+        // 2. Classify zones + apply hard mode checks
+        var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
+        var zoneClass = CompactionService.ClassifyZones(turnGroups, threshold, logger);
+        var safeGroups = zoneClass.SafeGroups;
+        var compressedGroups = zoneClass.CompressedGroups;
+        var toCompressGroups = zoneClass.ToCompressGroups;
+
+        if (toCompressGroups.Count == 0)
+            return false;
+
+        // 3. Distribute to_compress groups into Fibonacci zones
+        var zones = DistributeTurnGroups(toCompressGroups);
+        if (zones.Count == 0)
             return false;
 
         var protectedTypes = new HashSet<BlockType>(
@@ -92,24 +107,21 @@ internal static class FiboPartsStrategy
         var isSubagentTool = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "subagent_run", "subagent_use" };
 
-        var summarizeCount = zones.Count - 2;
-
         var allUnprotectedNums = new HashSet<double>();
         var zoneProtectedBlocks = new List<List<MemoryBlock>>();
 
-        // Also clean non-agent_data blocks from the agent_data group (turn 0)
+        // Clean non-agent_data blocks from the agent_data group (group 0)
         // These are blocks that ended up in the same group as agent_data (before first turn marker)
         // and would otherwise survive compaction forever
         var agentDataGroup = turnGroups[0];
         foreach (var b in agentDataGroup)
         {
-            if (b.Type != BlockType.agent_data)
+            if (b.Type != BlockType.agent_data && !b.Compressed)
                 allUnprotectedNums.Add(b.Number);
         }
 
-        for (var i = 0; i < summarizeCount; i++)
+        foreach (var zone in zones)
         {
-            var zone = zones[i];
             var keepInZone = new List<MemoryBlock>();
 
             foreach (var b in zone)
@@ -124,35 +136,29 @@ internal static class FiboPartsStrategy
             zoneProtectedBlocks.Add(keepInZone);
         }
 
-        var totalBlocks = blocks.Count;
-        logger.LogInformation("Compacting session {SessionId}: {TotalBlocks} blocks, {ZoneCount} old zones to summarize (fibo-parts), threshold {Threshold}%",
-            agentId, totalBlocks, summarizeCount, compOpts.AutoThreshold);
+        logger.LogInformation("Compacting session {SessionId}: {TotalBlocks} blocks, {ZoneCount} old zones to summarize (fibo), threshold {Threshold}%",
+            agentId, blocks.Count, zoneProtectedBlocks.Count, compOpts.AutoThreshold);
 
         // Summarize all old zones via LLM in parallel
-        var zoneTasks = new List<(List<MemoryBlock> zone, Task<string?> task)>();
+        var zoneTasks = new List<(List<MemoryBlock> zone, Task<(string? Summary, long Hit, long Miss, long Output)> task)>();
         foreach (var zone in zoneProtectedBlocks)
         {
             if (zone.Count == 0) continue;
             zoneTasks.Add((zone, CompactionService.SummarizeZoneAsync(agentId, zone, model, chatClient, agentStore, logger, structured: false)));
         }
 
-        var summaries = new List<string>();
         var summarizedFallback = new List<MemoryBlock>();
+        var summaryResults = new List<(string Summary, long Hit, long Miss, long Output)>();
         foreach (var (zone, task) in zoneTasks)
         {
-            var summary = await task;
+            var (summary, hit, miss, output) = await task;
             if (summary is not null)
-                summaries.Add(summary);
+                summaryResults.Add((summary, hit, miss, output));
             else
                 summarizedFallback.AddRange(zone);
         }
 
-        // Collect preserved blocks from the two newest zones
-        var preserved = new List<MemoryBlock>();
-        for (var i = summarizeCount; i < zones.Count; i++)
-            preserved.AddRange(zones[i]);
-
-        if (summaries.Count == 0 && preserved.Count == 0 && summarizedFallback.Count == 0)
+        if (summaryResults.Count == 0 && safeGroups.Count == 0 && summarizedFallback.Count == 0)
             return false;
 
         // Find agent_data block
@@ -163,27 +169,54 @@ internal static class FiboPartsStrategy
             return false;
         }
 
-        // Build compacted history: summaries + fallback + preserved
+        // 5. Build compacted history:
+        //    agent_data (unchanged)
+        //    + already compressed zones (pass through)
+        //    + new summaries + turn markers (from to_compress zones)
+        //    + safe zones (preserved)
         var nextNumber = agentBlock.Number + 1;
         var newBlocks = new List<MemoryBlock>();
 
-        foreach (var summary in summaries)
+        // Already compressed zones — pass through untouched
+        foreach (var group in compressedGroups)
+        {
+            foreach (var block in group)
+            {
+                block.Number = nextNumber++;
+                newBlocks.Add(block);
+            }
+        }
+
+        // New summaries — each with its own turn marker
+        foreach (var (summary, _, _, output) in summaryResults)
         {
             var block = MemoryBlock.AgentMessage(summary, model: model);
             block.Number = nextNumber++;
+            block.Compressed = true;
             newBlocks.Add(block);
+
+            // Each summary gets its own turn marker with that zone's usage (hit=0, miss=output, out=output)
+            var turnBlock = MemoryBlock.TurnMarker(
+                JsonSerializer.Serialize(new { hit = 0L, miss = output, out_ = output }));
+            turnBlock.Number = nextNumber++;
+            newBlocks.Add(turnBlock);
         }
 
+        // Fallback (summarization failed — keep original blocks)
         foreach (var block in summarizedFallback)
         {
             block.Number = nextNumber++;
             newBlocks.Add(block);
         }
 
-        foreach (var block in preserved)
+        // Safe zones (last 2 turns) — preserved intact
+        foreach (var group in safeGroups)
         {
-            block.Number = nextNumber++;
-            newBlocks.Add(block);
+            foreach (var block in group)
+            {
+                block.Number = nextNumber++;
+                newBlocks.Add(block);
+            }
         }
 
         // Atomically replace history
@@ -194,8 +227,8 @@ internal static class FiboPartsStrategy
             nextNumber,
             softDeleteNums: allUnprotectedNums.Count > 0 ? allUnprotectedNums : null);
 
-        logger.LogInformation("Compacted session {SessionId}: {SummaryCount} summaries, {FallbackCount} fallback blocks, {PreservedCount} preserved, {SoftDeletedCount} soft-deleted (fibo-parts)",
-            agentId, summaries.Count, summarizedFallback.Count, preserved.Count, allUnprotectedNums.Count);
+        logger.LogInformation("Compacted session {SessionId}: {SummaryCount} summaries, {CompressedCount} compressed preserved, {FallbackCount} fallback blocks, {SafeCount} safe preserved, {SoftDeletedCount} soft-deleted (fibo)",
+            agentId, summaryResults.Count, compressedGroups.Count, summarizedFallback.Count, safeGroups.Count, allUnprotectedNums.Count);
         return true;
     }
 }

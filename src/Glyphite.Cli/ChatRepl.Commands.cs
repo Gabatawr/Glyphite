@@ -88,6 +88,30 @@ public partial class ChatRepl
             case "/models":
                 await _session.ShowModelSelectionAsync();
                 return true;
+
+            case "/compression":
+                var status = await _compactionService.EvaluateCompactionStatusAsync(AgentId, _contextWindow, isManual: true);
+
+                if (!status.WillCompact)
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkYellow;
+                    Console.WriteLine("Compaction not needed — all eligible zones are already compressed.");
+                    Console.ResetColor();
+                    Console.WriteLine();
+                    return true;
+                }
+
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"Running {status.Strategy} ({status.Mode}) compaction...");
+                Console.ResetColor();
+
+                var compacted = await _compactionService.CompactAsync(AgentId, _contextWindow, status.Strategy);
+
+                Console.ForegroundColor = compacted ? ConsoleColor.Green : ConsoleColor.DarkYellow;
+                Console.WriteLine(compacted ? "Compaction complete." : "Compaction did not run.");
+                Console.ResetColor();
+                Console.WriteLine();
+                return true;
         }
 
         return false;

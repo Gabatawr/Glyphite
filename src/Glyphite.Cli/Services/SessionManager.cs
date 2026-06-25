@@ -181,7 +181,7 @@ public partial class SessionManager
             _inputHistory.Add(b.Content);
 
         // Seed built-in commands so Up at "/" always shows something
-        foreach (var cmd in new[] { "/exit", "/new", "/clone", "/use", "/delete", "/stats", "/models" })
+        foreach (var cmd in new[] { "/exit", "/new", "/clone", "/use", "/delete", "/stats", "/models", "/version", "/compression" })
         {
             if (!_inputHistory.Contains(cmd))
                 _inputHistory.Add(cmd);
