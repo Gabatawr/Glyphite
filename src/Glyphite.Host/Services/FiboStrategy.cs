@@ -86,63 +86,17 @@ internal static class FiboStrategy
         if (turnGroups.Count <= 1)
             return false;
 
-        // 2. Classify turn groups (skip index 0 = agent_data group)
-        // Walk from newest (end) backwards:
-        //   - Last 2 groups = safe (preserved intact)
-        //   - Groups with Compressed=true blocks = already compressed (pass through)
-        //   - Everything else = to_compress (will be summarized)
-        var safeGroups = new List<List<MemoryBlock>>();
-        var compressedGroups = new List<List<MemoryBlock>>();
-        var toCompressGroups = new List<List<MemoryBlock>>();
-
-        for (var i = turnGroups.Count - 1; i >= 1; i--)
-        {
-            var group = turnGroups[i];
-            var rankFromNewest = turnGroups.Count - 1 - i; // 0 = newest
-
-            if (rankFromNewest < 2)
-            {
-                // Last 2 groups = safe zones
-                safeGroups.Add(group);
-            }
-            else if (group.Any(b => b.Compressed))
-            {
-                // Already compressed — pass through untouched
-                compressedGroups.Add(group);
-            }
-            else
-            {
-                // Uncompressed old zone — needs summarization
-                toCompressGroups.Add(group);
-            }
-        }
-
-        // Reverse to get chronological order (oldest first)
-        safeGroups.Reverse();
-        compressedGroups.Reverse();
-        toCompressGroups.Reverse();
-
-        // 3a. Hard mode: if compressed zones consume >= 2/3 of threshold, recompress them too
+        // 2. Classify zones + apply hard mode checks
         var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
-        var compressedTokens = SumCompressedOutput(compressedGroups);
-        if (compressedTokens >= (int)(2.0 / 3.0 * threshold) && compressedGroups.Count > 0)
-        {
-            logger.LogInformation("Hard mode: {CompressedTokens} compressed tokens >= 2/3 of threshold {Threshold}, recompressing {Count} compressed zones",
-                compressedTokens, threshold, compressedGroups.Count);
-            toCompressGroups.InsertRange(0, compressedGroups);
-            compressedGroups.Clear();
-        }
+        var zoneClass = CompactionService.ClassifyZones(turnGroups, threshold, logger);
+        var safeGroups = zoneClass.SafeGroups;
+        var compressedGroups = zoneClass.CompressedGroups;
+        var toCompressGroups = zoneClass.ToCompressGroups;
 
-        // 3c. Safe zone hard mode: if a safe zone exceeds 50% of threshold, move it to to_compress
-        var safeKept = CheckSafeZones(safeGroups, toCompressGroups, threshold);
-        if (safeKept < 2)
-            logger.LogInformation("Safe zone hard mode: kept {Kept} of 2 safe zones, {Moved} moved to to_compress", safeKept, 2 - safeKept);
-
-        // 3d. Need at least some groups to compress
         if (toCompressGroups.Count == 0)
             return false;
 
-        // 4. Distribute to_compress groups into Fibonacci zones
+        // 3. Distribute to_compress groups into Fibonacci zones
         var zones = DistributeTurnGroups(toCompressGroups);
         if (zones.Count == 0)
             return false;
@@ -276,72 +230,5 @@ internal static class FiboStrategy
         logger.LogInformation("Compacted session {SessionId}: {SummaryCount} summaries, {CompressedCount} compressed preserved, {FallbackCount} fallback blocks, {SafeCount} safe preserved, {SoftDeletedCount} soft-deleted (fibo)",
             agentId, summaryResults.Count, compressedGroups.Count, summarizedFallback.Count, safeGroups.Count, allUnprotectedNums.Count);
         return true;
-    }
-
-    /// <summary>Sum output tokens from turn markers in compressed groups (used for hard-mode threshold check).</summary>
-    internal static long SumCompressedOutput(List<List<MemoryBlock>> compressedGroups)
-    {
-        long total = 0;
-        foreach (var group in compressedGroups)
-        {
-            foreach (var block in group)
-            {
-                if (block.Type == BlockType.turn && !string.IsNullOrEmpty(block.Content))
-                {
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(block.Content);
-                        if (doc.RootElement.TryGetProperty("out_", out var outProp) && outProp.TryGetInt64(out var outVal))
-                            total += outVal;
-                    }
-                    catch { /* skip malformed turn markers */ }
-                }
-            }
-        }
-        return total;
-    }
-
-    /// <summary>Estimate token count for a turn group by rendering blocks to context strings and dividing by 4.</summary>
-    internal static long EstimateZoneTokens(List<MemoryBlock> group)
-    {
-        long totalLen = 0;
-        foreach (var block in group)
-            totalLen += block.ToContextString().Length;
-        return totalLen / 4;
-    }
-
-    /// <summary>Check safe zones (last 2 turns) against threshold using estimated content size.
-    /// If the second-to-last (older) safe zone >= 50% of threshold, it's moved to to_compress.
-    /// If the last (newest) safe zone >= 50% of threshold, both safe zones are moved to to_compress.
-    /// Returns the number of safe zones to keep (0, 1, or 2).</summary>
-    internal static int CheckSafeZones(
-        List<List<MemoryBlock>> safeGroups,
-        List<List<MemoryBlock>> toCompressGroups,
-        int threshold)
-    {
-        if (safeGroups.Count < 2)
-            return safeGroups.Count; // fewer than 2 safe zones, keep what we have
-
-        // safeGroups[0] = older (second-to-last), safeGroups[1] = newest (last)
-        var olderSize = EstimateZoneTokens(safeGroups[0]);
-        var newerSize = EstimateZoneTokens(safeGroups[1]);
-
-        if (newerSize >= threshold / 2L)
-        {
-            // Both go to to_compress
-            toCompressGroups.AddRange(safeGroups);
-            safeGroups.Clear();
-            return 0;
-        }
-
-        if (olderSize >= threshold / 2L)
-        {
-            // Only the older one goes to to_compress
-            toCompressGroups.Add(safeGroups[0]);
-            safeGroups.RemoveAt(0);
-            return 1;
-        }
-
-        return 2;
     }
 }

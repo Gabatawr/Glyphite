@@ -37,8 +37,16 @@ public partial class ChatRepl
         var lastTokens = _lastTurnLastHit + _lastTurnLastMiss;
         if (lastTokens > 0)
         {
-            var useYellow = lastTokens * 100.0 / _contextWindow >= compOpts.AutoThreshold;
-            _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", useYellow ? yellow : white));
+            ConsoleColor color = white;
+
+            if (compOpts.AutoCompress)
+            {
+                var status = await _compactionService.EvaluateCompactionStatusAsync(AgentId, _contextWindow);
+                if (status.IsThresholdExceeded)
+                    color = status.Mode.Contains("hard") ? ConsoleColor.Red : yellow;
+            }
+
+            _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", color));
         }
 
         // Cumulative cost (per-model pricing)

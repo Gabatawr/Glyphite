@@ -52,62 +52,20 @@ internal static class StructStrategy
         if (turnGroups.Count <= 3)
             return false; // need agent_data + at least 3 turn groups to save 2 and summarize 1+
 
+        var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
+        var zoneClass = CompactionService.ClassifyZones(turnGroups, threshold, logger);
+        var safeGroups = zoneClass.SafeGroups;
+        var compressedGroups = zoneClass.CompressedGroups;
+        var toCompressGroups = zoneClass.ToCompressGroups;
+
+        if (toCompressGroups.Count == 0)
+            return false;
+
         var protectedTypes = new HashSet<BlockType>(
             memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
 
         var isSubagentTool = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "subagent_run", "subagent_use" };
-
-        // Classify turn groups (skip index 0 = agent_data group)
-        // Walk from newest (end) backwards:
-        //   - Last 2 = safe (preserved intact)
-        //   - Groups with Compressed=true = already compressed (pass through)
-        //   - Everything else = to_compress (will be fully summarized)
-        var safeGroups = new List<List<MemoryBlock>>();
-        var compressedGroups = new List<List<MemoryBlock>>();
-        var toCompressGroups = new List<List<MemoryBlock>>();
-
-        for (var i = turnGroups.Count - 1; i >= 1; i--)
-        {
-            var group = turnGroups[i];
-            var rankFromNewest = turnGroups.Count - 1 - i;
-
-            if (rankFromNewest < 2)
-            {
-                safeGroups.Add(group);
-            }
-            else if (group.Any(b => b.Compressed))
-            {
-                compressedGroups.Add(group);
-            }
-            else
-            {
-                toCompressGroups.Add(group);
-            }
-        }
-
-        safeGroups.Reverse();
-        compressedGroups.Reverse();
-        toCompressGroups.Reverse();
-
-        // Hard mode: if compressed zones consume >= 2/3 of threshold, recompress them too
-        var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
-        var compressedTokens = FiboStrategy.SumCompressedOutput(compressedGroups);
-        if (compressedTokens >= (int)(2.0 / 3.0 * threshold) && compressedGroups.Count > 0)
-        {
-            logger.LogInformation("Hard mode: {CompressedTokens} compressed tokens >= 2/3 of threshold {Threshold}, recompressing {Count} compressed zones",
-                compressedTokens, threshold, compressedGroups.Count);
-            toCompressGroups.InsertRange(0, compressedGroups);
-            compressedGroups.Clear();
-        }
-
-        // Safe zone hard mode: if a safe zone exceeds 50% of threshold, move it to to_compress
-        var safeKept = FiboStrategy.CheckSafeZones(safeGroups, toCompressGroups, threshold);
-        if (safeKept < 2)
-            logger.LogInformation("Safe zone hard mode: kept {Kept} of 2 safe zones, {Moved} moved to to_compress", safeKept, 2 - safeKept);
-
-        if (toCompressGroups.Count == 0)
-            return false;
 
         // ── Build LLM input: EVERYTHING except agent_data ──
         // Send ALL blocks — group 0 (excl. agent_data), compressed, to_compress, and safe.

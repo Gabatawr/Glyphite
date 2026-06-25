@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Linq;
 using System.Text;
 using Glyphite.Abstractions.Interfaces;
@@ -90,6 +91,33 @@ public class CompactionService
             return enabled[0];
 
         return enabled[Random.Shared.Next(enabled.Length)];
+    }
+
+    /// <summary>Evaluate compaction status without executing compaction. Loads blocks, classifies zones,
+    /// picks strategy, and returns threshold/mode info. Use at end-of-turn for prompt coloring or in /compression command.</summary>
+    public async Task<CompactionStatus> EvaluateCompactionStatusAsync(string agentId, int contextWindow)
+    {
+        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
+        var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
+        var strategy = PickStrategy(compOpts);
+
+        // Check threshold via last usage
+        var lastUsage = await _agentStore.GetLastUsageAsync(agentId);
+        var lastRequestTokens = lastUsage.LastHit + lastUsage.LastMiss;
+        var isThresholdExceeded = lastRequestTokens >= threshold;
+
+        // Classify zones to determine if compaction will actually happen
+        var blocks = await _blockStore.LoadBlocksAsync(agentId);
+        var turnGroups = GroupByTurns(blocks);
+        var zoneClass = ClassifyZones(turnGroups, threshold);
+
+        var willCompact = zoneClass.ToCompressGroups.Count > 0;
+
+        var mode = zoneClass.IsSafeHardMode ? "safe+" : "";
+        mode += zoneClass.IsHardMode ? "hard" : "soft";
+        if (!willCompact) mode = "none";
+
+        return new CompactionStatus(isThresholdExceeded, willCompact, strategy, mode);
     }
 
     /// <summary>Execute compaction. If strategy is null, picks randomly from enabled strategies.</summary>
@@ -232,14 +260,13 @@ public class CompactionService
         if (turnGroups.Count <= 1)
             return false;
 
-        // Walk from newest (end) backwards, skip last 2 (safe), mark compressed
         for (var i = turnGroups.Count - 1; i >= 1; i--)
         {
-            var rankFromNewest = turnGroups.Count - 1 - i; // 0 = newest
+            var rankFromNewest = turnGroups.Count - 1 - i;
             if (rankFromNewest < 2)
-                continue; // safe — skip
+                continue;
             if (!turnGroups[i].Any(b => b.Compressed))
-                return true; // found uncompressed = to_compress
+                return true;
         }
 
         return false;
@@ -279,5 +306,128 @@ public class CompactionService
             groups.Add(current);
 
         return groups;
+    }
+
+    /// <summary>Result of zone classification with all three zone groups.</summary>
+    public sealed record ZoneClassification(
+        List<List<MemoryBlock>> SafeGroups,
+        List<List<MemoryBlock>> CompressedGroups,
+        List<List<MemoryBlock>> ToCompressGroups,
+        int Threshold,
+        bool IsHardMode,
+        bool IsSafeHardMode);
+
+    /// <summary>Compaction evaluation result — threshold check, whether compaction will run, strategy and mode.</summary>
+    public sealed record CompactionStatus(
+        bool IsThresholdExceeded,
+        bool WillCompact,
+        string Strategy,
+        string Mode);
+
+    /// <summary>Classify turn groups into safe/compressed/to_compress and apply hard mode checks.</summary>
+    public static ZoneClassification ClassifyZones(
+        List<List<MemoryBlock>> turnGroups,
+        int threshold,
+        ILogger? logger = null)
+    {
+        var safeGroups = new List<List<MemoryBlock>>();
+        var compressedGroups = new List<List<MemoryBlock>>();
+        var toCompressGroups = new List<List<MemoryBlock>>();
+
+        for (var i = turnGroups.Count - 1; i >= 1; i--)
+        {
+            var group = turnGroups[i];
+            var rankFromNewest = turnGroups.Count - 1 - i;
+            if (rankFromNewest < 2)
+                safeGroups.Add(group);
+            else if (group.Any(b => b.Compressed))
+                compressedGroups.Add(group);
+            else
+                toCompressGroups.Add(group);
+        }
+
+        safeGroups.Reverse();
+        compressedGroups.Reverse();
+        toCompressGroups.Reverse();
+
+        var isHardMode = false;
+        var compressedTokens = SumCompressedOutput(compressedGroups);
+        if (compressedTokens >= (int)(2.0 / 3.0 * threshold) && compressedGroups.Count > 0)
+        {
+            logger?.LogInformation("Hard mode: {CompressedTokens} compressed tokens >= 2/3 of threshold {Threshold}, recompressing {Count} compressed zones",
+                compressedTokens, threshold, compressedGroups.Count);
+            toCompressGroups.InsertRange(0, compressedGroups);
+            compressedGroups.Clear();
+            isHardMode = true;
+        }
+
+        var isSafeHardMode = false;
+        var safeKept = CheckSafeZones(safeGroups, toCompressGroups, threshold);
+        if (safeKept < 2)
+        {
+            logger?.LogInformation("Safe zone hard mode: kept {Kept} of 2 safe zones", safeKept);
+            isSafeHardMode = true;
+        }
+
+        return new ZoneClassification(safeGroups, compressedGroups, toCompressGroups,
+            threshold, isHardMode, isSafeHardMode);
+    }
+
+    /// <summary>Sum output tokens from turn markers in compressed groups (hard-mode threshold check).</summary>
+    public static long SumCompressedOutput(List<List<MemoryBlock>> compressedGroups)
+    {
+        long total = 0;
+        foreach (var group in compressedGroups)
+            foreach (var block in group)
+                if (block.Type == BlockType.turn && !string.IsNullOrEmpty(block.Content))
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(block.Content);
+                        if (doc.RootElement.TryGetProperty("out_", out var outProp) && outProp.TryGetInt64(out var outVal))
+                            total += outVal;
+                    }
+                    catch { }
+                }
+        return total;
+    }
+
+    /// <summary>Estimate token count for a turn group by rendering blocks to context strings and dividing by 4.</summary>
+    public static long EstimateZoneTokens(List<MemoryBlock> group)
+    {
+        long totalLen = 0;
+        foreach (var block in group)
+            totalLen += block.ToContextString().Length;
+        return totalLen / 4;
+    }
+
+    /// <summary>Check safe zones against threshold. Moves oversized zones to to_compress.
+    /// Returns the number of safe zones to keep (0, 1, or 2).</summary>
+    public static int CheckSafeZones(
+        List<List<MemoryBlock>> safeGroups,
+        List<List<MemoryBlock>> toCompressGroups,
+        int threshold)
+    {
+        if (safeGroups.Count < 2)
+            return safeGroups.Count;
+
+        var olderSize = EstimateZoneTokens(safeGroups[0]);
+        var newerSize = EstimateZoneTokens(safeGroups[1]);
+
+        if (newerSize >= threshold / 2L)
+        {
+            toCompressGroups.AddRange(safeGroups);
+            safeGroups.Clear();
+            return 0;
+        }
+
+        if (olderSize >= threshold / 2L)
+        {
+            toCompressGroups.Add(safeGroups[0]);
+            safeGroups.RemoveAt(0);
+            return 1;
+        }
+
+        return 2;
     }
 }
