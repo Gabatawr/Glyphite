@@ -27,7 +27,7 @@ public static class FilePatchTool
             return $"Error: File not found: {path}";
 
         if (old == @new)
-            return "Error: 'old' and 'new' are identical вЂ” nothing to change.";
+            return "Error: 'old' and 'new' are identical — nothing to change.";
 
         var content = await File.ReadAllTextAsync(path);
         var lineEnding = DetectLineEnding(content);

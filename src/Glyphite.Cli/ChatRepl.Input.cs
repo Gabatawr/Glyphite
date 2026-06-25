@@ -447,14 +447,14 @@ public partial class ChatRepl
         var promptLen = _promptPrefix.Length + text.Length;
         var lineCount = (promptLen + bufWidth - 1) / bufWidth; // ceil
 
-        // Старый диапазон для очистки
+        // Old visual range to clear
         var oldMaxLine = _maxVisualLine;
 
-        // Новый диапазон — _promptLine фиксирован (точка старта ввода),
-        // _maxVisualLine вычисляем через ceil
+        // New range — _promptLine is fixed (input start point),
+        // _maxVisualLine computed via ceil
         _maxVisualLine = _promptLine + lineCount - 1;
 
-        // Если новый текст короче — чистим лишние строки снизу ДО записи
+        // If new text is shorter — clear stale lines below BEFORE writing
         if (_maxVisualLine < oldMaxLine)
         {
             for (var line = _maxVisualLine + 1; line <= oldMaxLine; line++)
@@ -464,30 +464,30 @@ public partial class ChatRepl
             }
         }
 
-        // Запись: промпт + текст с фиксированной _promptLine
+        // Write: prompt + text with fixed _promptLine
         Console.SetCursorPosition(0, _promptLine);
         WriteColoredPrompt();
         Console.ResetColor();
         Console.Write(text);
 
-        // Если текст привёл к скроллу терминала (выход за буфер) —
-        // корректируем _promptLine по фактической позиции курсора.
-        // Иначе последующие Redraw будут писать на неправильной строке
-        // и "съедать" историю выше.
+        // If text causes terminal scroll (overflowing buffer) —
+        // adjust _promptLine by actual cursor position.
+        // Otherwise subsequent Redraw calls write on the wrong line
+        // and "eat" history above.
         var actualLastLine = Console.CursorTop;
         var expectedLastLine = _promptLine + lineCount - 1;
         if (actualLastLine != expectedLastLine)
         {
-            // Скролл сдвинул содержимое вверх — пересчитываем _promptLine
+            // Scroll moved content up — recalculate _promptLine
             var oldPromptLine = _promptLine;
             _promptLine = actualLastLine - (lineCount - 1);
             if (_promptLine < 0) _promptLine = 0;
             _maxVisualLine = _promptLine + lineCount - 1;
 
-            // Если _promptLine сместился вниз — чистим зависшие строки
-            // между старым и новым положением (при нормальном скролле
-            // вверх _promptLine становится меньше oldPromptLine —
-            // там чистить нечего, терминал уже сдвинул содержимое).
+            // If _promptLine shifted down — clear stale rows
+            // between old and new position (when scrolling up normally
+            // _promptLine becomes smaller than oldPromptLine —
+            // nothing to clear there, terminal already shifted content).
             if (_promptLine > oldPromptLine)
             {
                 for (var line = _promptLine; line < oldPromptLine && line < bufHeight; line++)
@@ -498,7 +498,7 @@ public partial class ChatRepl
             }
         }
 
-        // Хвост последней строки — если текст стал короче в этой же строке
+        // Tail of last line — if text shortened on the same line
         var endCol = promptLen % bufWidth;
         if (endCol > 0)
         {
@@ -508,7 +508,7 @@ public partial class ChatRepl
 
         _lastBufferLen = text.Length;
 
-        // Курсор на позицию pos
+        // Cursor to position pos
         if (pos >= 0)
         {
             var col = _promptPrefix.Length + pos;

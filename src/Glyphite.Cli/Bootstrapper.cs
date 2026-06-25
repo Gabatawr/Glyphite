@@ -35,7 +35,7 @@ public static class Bootstrapper
             .UseSerilog()
             .ConfigureAppConfiguration((ctx, cfg) =>
             {
-                // 1. Встроенный appsettings.json из ресурсов
+                // 1. Embedded appsettings.json from resources
                 var assembly = Assembly.GetExecutingAssembly();
                 using var stream = assembly.GetManifestResourceStream("Glyphite.Cli.appsettings.json");
                 if (stream is not null)
@@ -44,7 +44,7 @@ public static class Bootstrapper
                     cfg.AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)));
                 }
 
-                // 2. Glyphite.json в рабочей директории — hot-reload
+                // 2. Glyphite.json in working directory — hot-reload
                 var cwdJson = Path.Combine(Directory.GetCurrentDirectory(), "Glyphite.json");
                 if (File.Exists(cwdJson))
                     cfg.AddJsonFile(cwdJson, optional: false, reloadOnChange: true);
