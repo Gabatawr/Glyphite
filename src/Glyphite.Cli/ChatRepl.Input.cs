@@ -39,12 +39,11 @@ public partial class ChatRepl
         {
             ConsoleColor color = white;
 
-            if (compOpts.AutoCompress)
-            {
-                var status = await _compactionService.EvaluateCompactionStatusAsync(AgentId, _contextWindow);
-                if (status.IsThresholdExceeded)
-                    color = status.Mode.Contains("hard") ? ConsoleColor.Red : yellow;
-            }
+            var status = await _compactionService.EvaluateCompactionStatusAsync(AgentId, _contextWindow);
+            if (status.IsThresholdExceeded && status.WillCompact)
+                color = status.Mode.Contains("hard") ? ConsoleColor.Red : yellow;
+            else if (status.IsThresholdExceeded)
+                color = ConsoleColor.Magenta; // context large but no compaction (rare)
 
             _promptSegments.Add(($"{lastTokens / 1000.0:F1}K", color));
         }

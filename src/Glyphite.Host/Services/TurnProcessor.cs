@@ -91,10 +91,6 @@ public class TurnProcessor : ITurnProcessor
 
         if (!isEphemeral)
         {
-            var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
-            if (!compOpts.AutoCompress)
-                goto afterAutoCompact;
-
             var status = await _compactionService.EvaluateCompactionStatusAsync(agentId, llmOpts.ContextWindow);
 
             if (status.IsThresholdExceeded && status.WillCompact)
@@ -121,7 +117,6 @@ public class TurnProcessor : ITurnProcessor
             }
         }
 
-        afterAutoCompact:
         var isSubagent = chatOptions.AdditionalProperties?.ContainsKey("isSubagent") == true;
         chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(agentId, !isEphemeral)).ToList();
 

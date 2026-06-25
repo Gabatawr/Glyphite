@@ -90,17 +90,9 @@ public partial class ChatRepl
                 return true;
 
             case "/compression":
-                var llmOpts = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section, AgentId);
-                var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, AgentId);
-                var strategy = CompactionService.PickStrategy(compOpts);
+                var status = await _compactionService.EvaluateCompactionStatusAsync(AgentId, _contextWindow, isManual: true);
 
-                // Determine mode via zone classification (to show user what will happen)
-                var blocks = await _blockStore.LoadBlocksAsync(AgentId);
-                var turnGroups = CompactionService.GroupByTurns(blocks);
-                var threshold = (int)(compOpts.AutoThreshold / 100.0 * llmOpts.ContextWindow);
-                var zoneClass = CompactionService.ClassifyZones(turnGroups, threshold);
-
-                if (zoneClass.ToCompressGroups.Count == 0)
+                if (!status.WillCompact)
                 {
                     Console.ForegroundColor = ConsoleColor.DarkYellow;
                     Console.WriteLine("Compaction not needed — all eligible zones are already compressed.");
@@ -109,14 +101,11 @@ public partial class ChatRepl
                     return true;
                 }
 
-                var mode = zoneClass.IsSafeHardMode ? "safe+" : "";
-                mode += zoneClass.IsHardMode ? "hard" : "soft";
-
                 Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine($"Running {strategy} ({mode}) compaction...");
+                Console.WriteLine($"Running {status.Strategy} ({status.Mode}) compaction...");
                 Console.ResetColor();
 
-                var compacted = await _compactionService.CompactAsync(AgentId, llmOpts.ContextWindow, strategy);
+                var compacted = await _compactionService.CompactAsync(AgentId, _contextWindow, status.Strategy);
 
                 Console.ForegroundColor = compacted ? ConsoleColor.Green : ConsoleColor.DarkYellow;
                 Console.WriteLine(compacted ? "Compaction complete." : "Compaction did not run.");

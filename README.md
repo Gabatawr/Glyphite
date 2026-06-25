@@ -31,11 +31,11 @@
   - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
 - **Atomic auto-compaction** — two strategies (configurable via `Strategies` dict with flags):
-  - **`fibo-parts`** — Fibonacci zones (1, 1, 2, 3, 5, 8...), zone 3+ cleaned & summarized in **parallel**, zones 1-2 intact
-  - **`struct-cut`** — full history (unfiltered) → one structured LLM summary (Goal/Progress/Decisions/Files/Next Steps); summary placed **after** preserved zones
+  - **`fibo`** — Fibonacci zones (1, 1, 2, 3, 5, 8...), zone 3+ cleaned & summarized in **parallel**, zones 1-2 intact
+  - **`struct`** — full history (unfiltered) → one structured LLM summary (Goal/Progress/Decisions/Files/Next Steps); summary placed **after** preserved zones
   - Protected blocks (agent_data, user_message, agent_task, agent_message, turn) and subagent tools preserved
   - If summarization fails, blocks fall back intact
-  - **No UI freeze:** fast pre-check (`ShouldCompactAsync`) runs first, `[AutoTool: compression]` notification appears immediately, then slow summarization runs in background
+  - **No UI freeze:** `[AutoTool: compression]` notification appears immediately (via `EvaluateCompactionStatusAsync`), then slow summarization runs in background
 - **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
 - **ToolMaxLength** — per-tool output length control. Set `0` to hide, `-1` for full output, or `N` for first N characters. Works for all tools including MCP.
 - **Content deduplication** — repeated lines compressed in bash, read, and search tool outputs
@@ -207,8 +207,8 @@ When enabled, Glyphite automatically compresses old conversation history via LLM
     "AutoCompress": true,
     "AutoThreshold": 20,
     "Strategies": {
-      "fibo-parts": true,
-      "struct-cut": false
+      "fibo": true,
+      "struct": false
     }
   }
 }
@@ -217,16 +217,16 @@ When enabled, Glyphite automatically compresses old conversation history via LLM
 - **Trigger:** when last request tokens exceed `AutoThreshold`% of the context window (e.g., 20% of 1M = 200K tokens)
 - **Strategy selection:** if one strategy is enabled — it's used. If both — randomly picked each turn (visible in `[AutoTool: compression]`)
 
-### `fibo-parts` (Fibonacci zones)
+### `fibo` (Fibonacci zones)
 - History is grouped into Fibonacci-sized zones (1, 1, 2, 3, 5, 8... turns) from newest to oldest.
 - **Zones 1-2** (1+1 newest turns) preserved intact — **all blocks**, including tool calls, auto_tool results, reasoning.
 - **Zones 3+** stripped of unprotected blocks (tool results, auto_tool, reasoning), then each zone summarized via LLM **in parallel** with structured template: `## Topics / Key Actions / Results / State Changes / Open & Carried Over`.
 - Subagent tools (`subagent_run`/`subagent_use`) preserved in summarization.
 
-### `struct-cut` (structured cut)
+### `struct` (structured cut)
 - Every block from `agent_data` (exclusive) to the end — **unfiltered** — sent to LLM in **one** call with structured template: `## Goal / Progress / Key Decisions / Relevant Files / Next Steps`.
 - LLM sees the full picture (tool calls, results, reasoning, protected blocks), producing a single comprehensive summary that covers **everything**, including the last 2 preserved turns.
-- Summary block placed **after** preserved zones (last 2 turns). Order in DB: `agent_data → preserved turns → struct-cut summary`.
+- Summary block placed **after** preserved zones (last 2 turns). Order in DB: `agent_data → preserved turns → struct summary`.
 - All old blocks (except `agent_data`) soft-deleted. Summary replaces all removed history.
 
 ### Common
@@ -234,7 +234,7 @@ When enabled, Glyphite automatically compresses old conversation history via LLM
 - **Fail-safe:** if summarization fails, protected blocks kept intact (no data loss)
 - **Atomic replacement:** summaries + preserved blocks inserted atomically via `ReplaceBlocksSinceAsync` in a single SQLite transaction. On crash — rollback, nothing lost.
 - **Usage tracking:** compaction LLM calls record hit/miss/output tokens to session stats
-- **Notification:** `[AutoTool: compression | {"AutoCompress":true,"Strategy":"fibo-parts",...}]` shown before the LLM call
+- **Notification:** `[AutoTool: compression | {"AutoCompress":true,"Strategy":"fibo",...}]` shown before the LLM call
 
 ## MCP (Model Context Protocol)
 

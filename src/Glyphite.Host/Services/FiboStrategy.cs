@@ -58,7 +58,7 @@ internal static class FiboStrategy
 
     /// <summary>
     /// Distribute turn groups (with agent_data at index 0) into Fibonacci-sized zones.
-    /// Skips the agent_data group. Used by ShouldCompactAsync.
+    /// Skips the agent_data group.
     /// </summary>
     internal static List<List<MemoryBlock>> DistributeFibonacci(List<List<MemoryBlock>> turnGroups)
     {

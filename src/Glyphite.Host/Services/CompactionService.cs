@@ -44,41 +44,6 @@ public class CompactionService
         _logger = logger;
     }
 
-    /// <summary>Fast check — no LLM calls. Determines if compaction is likely needed.</summary>
-    public async Task<bool> ShouldCompactAsync(string agentId, int contextWindow)
-    {
-        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
-        if (!compOpts.AutoCompress)
-            return false;
-
-        var blocks = await _blockStore.LoadBlocksAsync(agentId);
-        if (blocks.Count <= 1)
-            return false;
-
-        // Token threshold check
-        var lastUsage = await _agentStore.GetLastUsageAsync(agentId);
-        var lastRequestTokens = lastUsage.LastHit + lastUsage.LastMiss;
-        var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
-
-        if (lastRequestTokens == 0)
-        {
-            var estimatedTokens = blocks.Sum(b => (b.Content?.Length ?? 0) / 4);
-            if (estimatedTokens < threshold)
-                return false;
-        }
-        else if (lastRequestTokens < threshold)
-        {
-            return false;
-        }
-
-        var turnGroups = GroupByTurns(blocks);
-
-        // Use HasToCompressZones — checks if there are any uncompressed turn groups
-        // beyond the safe last 2. Works for both fibo and struct: if all non-safe
-        // zones are already compressed, no compaction is needed regardless of strategy.
-        return HasToCompressZones(turnGroups);
-    }
-
     /// <summary>Randomly pick one of the enabled strategies.</summary>
     public static string PickStrategy(CompressionOptions compOpts)
     {
@@ -94,12 +59,20 @@ public class CompactionService
     }
 
     /// <summary>Evaluate compaction status without executing compaction. Loads blocks, classifies zones,
-    /// picks strategy, and returns threshold/mode info. Use at end-of-turn for prompt coloring or in /compression command.</summary>
-    public async Task<CompactionStatus> EvaluateCompactionStatusAsync(string agentId, int contextWindow)
+    /// picks strategy, and returns threshold/mode info. Use at end-of-turn for prompt coloring or in /compression command.
+    /// When <paramref name="isManual"/> is false (auto-caller), returns WillCompact=false if AutoCompress is disabled
+    /// in config. Manual callers (/compression) pass isManual:true to always get full status regardless of AutoCompress.</summary>
+    public async Task<CompactionStatus> EvaluateCompactionStatusAsync(string agentId, int contextWindow, bool isManual = false)
     {
         var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
-        var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
+
         var strategy = PickStrategy(compOpts);
+
+        // Auto paths: if AutoCompress is disabled, signal no compaction
+        if (!isManual && !compOpts.AutoCompress)
+            return new CompactionStatus(false, false, strategy, "none");
+
+        var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
 
         // Check threshold via last usage
         var lastUsage = await _agentStore.GetLastUsageAsync(agentId);
@@ -414,14 +387,14 @@ public class CompactionService
         var olderSize = EstimateZoneTokens(safeGroups[0]);
         var newerSize = EstimateZoneTokens(safeGroups[1]);
 
-        if (newerSize >= threshold / 2L)
+        if (newerSize >= threshold / 4L)
         {
             toCompressGroups.AddRange(safeGroups);
             safeGroups.Clear();
             return 0;
         }
 
-        if (olderSize >= threshold / 2L)
+        if (olderSize >= threshold / 4L)
         {
             toCompressGroups.Add(safeGroups[0]);
             safeGroups.RemoveAt(0);

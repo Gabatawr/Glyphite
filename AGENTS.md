@@ -110,16 +110,16 @@ You are a specialized QA agent. Always run tests before and after changes.
 | [`example-perf-agent.md`](./agents/example-perf-agent.md) | Performance | Profiling, optimization, benchmarking |
 | [`example-onboard-agent.md`](./agents/example-onboard-agent.md) | Mentor | Onboarding, codebase tour, learning
 
-## Latest changes — compaction strategies (fibo-parts, struct-cut), ephemeral flag, usage restore on subagent_run
+## Latest changes — compaction strategies (fibo, struct), ephemeral flag, usage restore on subagent_run
 
 **1. Compaction strategies — two switchable modes (6 files):**
 
 | Before | After |
 |:-------|:------|
-| Single Fibonacci strategy, hardcoded | Two strategies: `fibo-parts` (default) and `struct-cut`, switched via `Strategies: {"fibo-parts": true, "struct-cut": false}` |
-| `Strategy: "fibo-parts"` string | `Strategies: {"fibo-parts": true, "struct-cut": false}` — dictionary of flags |
-| Free-form prompt for zone summarization | Structured templates: **fibo-parts** → Topics/Key Actions/Results/State Changes/Open, **struct-cut** → Goal/Progress/Key Decisions/Relevant Files/Next Steps |
-| All compaction in one file | Split: `FiboPartsStrategy.cs`, `StructCutStrategy.cs`, `CompactionService.cs` as facade |
+| Single Fibonacci strategy, hardcoded | Two strategies: `fibo` (default) and `struct`, switched via `Strategies: {"fibo": true, "struct": false}` |
+| `Strategy: "fibo"` string | `Strategies: {"fibo": true, "struct": false}` — dictionary of flags |
+| Free-form prompt for zone summarization | Structured templates: **fibo** → Topics/Key Actions/Results/State Changes/Open, **struct** → Goal/Progress/Key Decisions/Relevant Files/Next Steps |
+| All compaction in one file | Split: `FiboStrategy.cs`, `StructStrategy.cs`, `CompactionService.cs` as facade |
 | Both enabled → error | Random selection from enabled ones |
 
 **2. Ephemeral + usage restore for subagent_run (3 files):**
@@ -137,13 +137,25 @@ You are a specialized QA agent. Always run tests before and after changes.
 | File | Changes |
 |------|---------|
 | `Configuration.cs` | `Strategy` string → `Strategies` `Dictionary<string,bool>` |
-| `FiboPartsStrategy.cs` | **New** — Fibonacci zones, structured Topics/Key Actions/Results/State Changes/Open |
-| `StructCutStrategy.cs` | **New** — all old turns → one LLM, structure Goal/Progress/Decisions/Files/Next Steps |
+| `FiboStrategy.cs` | **New** — Fibonacci zones, structured Topics/Key Actions/Results/State Changes/Open |
+| `StructStrategy.cs` | **New** — all old turns → one LLM, structure Goal/Progress/Decisions/Files/Next Steps |
 | `CompactionService.cs` | Facade: dispatch, `PickStrategy()`, shared `SummarizeZoneAsync` + `GroupByTurns` |
 | `TurnProcessor.cs` | `compactArgs` with `Strategy`, `ephemeral` → skip compaction |
 | `SubAgentTool.cs` | `saveMemory`+`isDryRun` → single `ephemeral`; restore usage to checkpoint |
 | `appsettings.json` | `Strategy` → `Strategies` with flags |
 | tests | +3 validation, +1 config for `Strategies` |
+
+**4. Unify compaction evaluation, safe zone threshold refinement (5 files):**
+
+| Before | After |
+|:-------|:------|
+| `TurnProcessor` had separate `ShouldCompactAsync` + `PickStrategy` calls | Single `EvaluateCompactionStatusAsync(isManual)` — `isManual:true` skips `AutoCompress` check for `/compression` command |
+| `/compression` duplicated `PickStrategy` + `GroupByTurns` + `ClassifyZones` manually | `/compression` uses `EvaluateCompactionStatusAsync(isManual: true)` — single source of truth |
+| `ShouldCompactAsync` (dead code after unification) | Removed — `EvaluateCompactionStatusAsync` handles both paths |
+| Prompt coloring only checked `IsThresholdExceeded` → wrong yellow/red when compaction won't run | Also checks `WillCompact`; new **`Magenta`** color for "context large but all zones already compressed" (rare) |
+| Safe zone hard mode at `threshold / 2` (50K @ 100K threshold) | `threshold / 4` (25K @ 100K) — catches oversized last-2-turn zones earlier, reducing magenta scenario frequency |
+| `goto` in `TurnProcessor` for early exit | Replaced with clean nested `if` |
+| `version.txt` | `1.1.97` → `1.2.0` |
 
 ### Architecture
 - **Abstractions** — interfaces, models, no deps (except `Microsoft.Extensions.AI`)
