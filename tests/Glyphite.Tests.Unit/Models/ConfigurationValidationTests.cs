@@ -98,7 +98,7 @@ public class ConfigurationValidationTests
     }
 
     [Fact]
-    public void LlmOptions_MissingApiKey_Throws()
+    public void LlmOptions_MissingApiKey_DoesNotThrow()
     {
         var opts = new LlmOptions
         {
@@ -108,8 +108,8 @@ public class ConfigurationValidationTests
             Models = [new LlmModel()],
             ApiKey = ""
         };
-        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
-        Assert.Contains("API key", ex.Message);
+        // ApiKey is validated lazily at turn time, not at startup
+        opts.Validate();
     }
 
     // ── WebFetchOptions ──

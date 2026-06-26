@@ -89,6 +89,32 @@ public partial class SessionManager
     {
         await _cfgService.InitializeAsync(replaceSections: ["McpServers"]);
 
+        // ── Ensure Glyphite.json exists in CWD ──
+        // On first run in a new directory, create it with default LLM config.
+        // The user edits ApiKey:"" to add their key before sending messages.
+        var cwdConfig = Path.Combine(cwd, "Glyphite.json");
+        if (!File.Exists(cwdConfig))
+        {
+            var defaults = """
+{
+  "Glyphite": {
+    "LLM": {
+      "Endpoint": "https://api.deepseek.com/v1",
+      "ApiKey": "",
+      "Model": "deepseek-v4-flash",
+      "ContextWindow": 1000000,
+      "ReasoningEffort": "High",
+      "Models": [
+        { "Name": "deepseek-v4-flash", "Miss": 0.14, "Hit": 0.0028, "Output": 0.28 },
+        { "Name": "deepseek-v4-pro", "Miss": 0.435, "Hit": 0.003625, "Output": 0.87 }
+      ]
+    }
+  }
+}
+""";
+            await File.WriteAllTextAsync(cwdConfig, defaults);
+        }
+
         var agents = await _agentStore.ListAgentsAsync();
 
         if (agents.Count == 0)

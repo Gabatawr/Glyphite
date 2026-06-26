@@ -67,6 +67,14 @@ public class TurnProcessor : ITurnProcessor
         var llmOpts = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section, agentId);
         var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>(AgentOptions.Section, agentId);
 
+        // Lazy ApiKey check — allow startup even without a key
+        if (string.IsNullOrWhiteSpace(llmOpts.ApiKey))
+        {
+            yield return new TurnErrorEvent(
+                "LLM API key is not configured. Open Glyphite.json in the current directory and set LLM:ApiKey.");
+            yield break;
+        }
+
         // Apply reasoning effort from config (None = suppress, null = let provider decide)
         if (llmOpts.ReasoningEffort is { } effortStr
             && Enum.TryParse<ReasoningEffort>(effortStr, ignoreCase: true, out var parsedEffort))

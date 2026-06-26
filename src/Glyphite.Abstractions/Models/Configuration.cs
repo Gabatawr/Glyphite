@@ -22,9 +22,9 @@ public class LlmOptions
             throw new InvalidOperationException("LLM:ContextWindow must be > 0.");
         if (Models.Length == 0)
             throw new InvalidOperationException("LLM:Models must have at least one model entry.");
-        if (string.IsNullOrWhiteSpace(ApiKey))
-            throw new InvalidOperationException(
-                "LLM API key is not configured. Configure it in Glyphite.json under LLM:ApiKey.");
+        // ApiKey is NOT validated here — validated lazily at turn time.
+        // This allows the app to start even without a key, show welcome,
+        // and create a default Glyphite.json for the user to edit.
     }
 }
 
