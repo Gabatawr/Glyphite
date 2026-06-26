@@ -24,23 +24,11 @@ var cwd = Directory.GetCurrentDirectory();
 var cwdConfig = Path.Combine(cwd, "Glyphite.json");
 if (!File.Exists(cwdConfig))
 {
-    var defaults = """
-{
-  "Glyphite": {
-    "LLM": {
-      "Endpoint": "https://api.deepseek.com/v1",
-      "ApiKey": "",
-      "Model": "deepseek-v4-flash",
-      "ContextWindow": 1000000,
-      "ReasoningEffort": "High",
-      "Models": [
-        { "Name": "deepseek-v4-flash", "Miss": 0.14, "Hit": 0.0028, "Output": 0.28 },
-        { "Name": "deepseek-v4-pro", "Miss": 0.435, "Hit": 0.003625, "Output": 0.87 }
-      ]
-    }
-  }
-}
-""";
+    var assembly = Assembly.GetExecutingAssembly();
+    using var stream = assembly.GetManifestResourceStream("Glyphite.Cli.appsettings.default.json")
+        ?? throw new InvalidOperationException("Embedded resource 'Glyphite.Cli.appsettings.default.json' not found.");
+    using var reader = new StreamReader(stream);
+    var defaults = reader.ReadToEnd();
     File.WriteAllText(cwdConfig, defaults);
 }
 
