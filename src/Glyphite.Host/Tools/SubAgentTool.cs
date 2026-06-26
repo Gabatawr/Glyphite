@@ -6,7 +6,7 @@ using Glyphite.Host.DI;
 using Glyphite.Host.Services;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Options;
+
 
 namespace Glyphite.Host.Tools;
 
@@ -230,7 +230,7 @@ internal static class SubAgentTool
         SubAgentManager subAgentManager, IAgentManager agentManager,
         IAgentScopeFactory scopeFactory, IAgentStore agentStore, IBlockStore blockStore,
         IConfigService configService, IBashSessionManager bashManager,
-        LlmOptions llm,
+        string model,
         string currentSessionId, CancellationToken ct,
         string? cwd = null)
     {
@@ -240,7 +240,7 @@ internal static class SubAgentTool
         // Clean any config overlay from a previous run with this name
         configService.ClearSessionOverlay(agentId);
 
-        await agentManager.CreateAgentAsync(agentId, llm.Model, homePath, recordLaunch: false);
+        await agentManager.CreateAgentAsync(agentId, model, homePath, recordLaunch: false);
 
         // Record pending run — crash-safe: if process dies, this persists in DB
         await agentStore.SetPendingRunAsync(agentId, "run");
@@ -249,7 +249,7 @@ internal static class SubAgentTool
         {
             subAgentManager.SetEphemeral(agentId, true);
             return await RunSubAgentTaskAsync(agentId, task, ephemeral: true,
-                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, llm.Model, ct, cwd);
+                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, model, ct, cwd);
         }
         finally
         {
@@ -271,11 +271,8 @@ internal static class SubAgentTool
         IBlockStore blockStore,
         IConfigService configService,
         IBashSessionManager bashManager,
-        IOptions<LlmOptions> llmOpts,
         string currentSessionId)
     {
-        var llm = llmOpts.Value;
-
         return AIFunctionFactory.Create(async (
             [Description("Initial task/instruction for the subagent.")] string task,
             [Description("Agent name (optional — auto-generated GUID if omitted). If name is provided and the agent already exists, runs a dry-clean task (blocks cleared after). If the agent doesn't exist, creates a temporary one and deletes after.")] string? name = null,
@@ -289,6 +286,9 @@ internal static class SubAgentTool
 
             // Cleanup orphan agents from crashed sessions
             await CleanupOrphanRunsAsync(agentStore, blockStore, subAgentManager);
+
+            // Get fresh model from config (hot-reload)
+            var llm = await configService.GetOptionsAsync<LlmOptions>(LlmOptions.Section);
 
             // ── name provided + agent exists → dry-run with cleanup ──
             if (name is not null && await agentStore.AgentExistsAsync(name))
@@ -314,7 +314,7 @@ internal static class SubAgentTool
                     validateName: true,
                     subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
                     configService, bashManager,
-                    llm, currentSessionId, ct, cwd);
+                    llm.Model, currentSessionId, ct, cwd);
             }
 
             // ── no name → auto-GUID, temp, run, delete ──
@@ -323,7 +323,7 @@ internal static class SubAgentTool
                 validateName: false,
                 subAgentManager, agentManager, scopeFactory, agentStore, blockStore,
                 configService, bashManager,
-                llm, currentSessionId, ct, cwd);
+                llm.Model, currentSessionId, ct, cwd);
         },
         name: "subagent_run",
         description: "Run a one-shot task on an agent. Without a name: auto-GUID temp agent created then deleted. With a name and agent exists: dry-run (blocks cleaned after). With a name and no agent: temp agent with config created then deleted. Use mode=\"parallel\" for concurrent grouping."
@@ -336,11 +336,9 @@ internal static class SubAgentTool
         IAgentScopeFactory scopeFactory,
         IAgentStore agentStore,
         IBlockStore blockStore,
-        IOptions<LlmOptions> llmOpts,
+        IConfigService configService,
         string currentSessionId)
     {
-        var llm = llmOpts.Value;
-
         return AIFunctionFactory.Create(async (
             [Description("Name of the subagent to execute the task on. Auto-created if not found.")] string name,
             [Description("Task/instruction for the subagent.")] string task,
@@ -351,6 +349,9 @@ internal static class SubAgentTool
         {
             // Cleanup orphan agents from crashed sessions
             await CleanupOrphanRunsAsync(agentStore, blockStore, subAgentManager);
+
+            // Get fresh model from config (hot-reload)
+            var llm = await configService.GetOptionsAsync<LlmOptions>(LlmOptions.Section);
 
             if (!await agentStore.AgentExistsAsync(name))
             {

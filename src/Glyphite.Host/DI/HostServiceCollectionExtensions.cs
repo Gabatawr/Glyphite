@@ -55,14 +55,20 @@ public static class HostServiceCollectionExtensions
         services.AddSingleton<IConfigStore>(_ => new ConfigRepository(connStr));
         services.AddSingleton<IKVStore>(_ => new KVStoreRepository(connStr));
 
-        // ── IChatClient ──
+        // ── IChatClient — lazy: don't validate API key until first actual use ──
+        // ApiKey may be empty on first run (user hasn't configured Glyphite.json yet).
+        // TurnProcessor.ProcessAsync() checks the key at turn time and yields a
+        // user-friendly error before any chat call is made.
         services.AddSingleton<IChatClient>(sp =>
         {
-            var llm = sp.GetRequiredService<IOptions<LlmOptions>>().Value;
-            var client = new OpenAIClient(
-                new ApiKeyCredential(llm.ApiKey),
-                new OpenAIClientOptions { Endpoint = new Uri(llm.Endpoint) });
-            return client.GetChatClient(llm.Model).AsIChatClient();
+            return new LazyChatClient(() =>
+            {
+                var llm = sp.GetRequiredService<IOptionsMonitor<LlmOptions>>().CurrentValue;
+                var client = new OpenAIClient(
+                    new ApiKeyCredential(llm.ApiKey),
+                    new OpenAIClientOptions { Endpoint = new Uri(llm.Endpoint) });
+                return client.GetChatClient(llm.Model).AsIChatClient();
+            });
         });
 
         // ── Services ──
