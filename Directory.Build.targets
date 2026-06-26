@@ -10,7 +10,11 @@
       <_ExecArgs Condition="'$(Configuration)'=='Debug'">build</_ExecArgs>
       <_ExecArgs Condition="'$(Configuration)'!='Debug'">release</_ExecArgs>
     </PropertyGroup>
-    <Exec Command="python &quot;$(_ScriptFile)&quot; $(_ExecArgs) &quot;$(_VersionFile)&quot; 2>/dev/null" ConsoleToMSBuild="true" IgnoreExitCode="true">
+    <!-- Try each Python interpreter (py → python → python3) until we get output -->
+    <Exec Command="py &quot;$(_ScriptFile)&quot; $(_ExecArgs) &quot;$(_VersionFile)&quot;" ConsoleToMSBuild="true" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_Version" />
+    </Exec>
+    <Exec Condition="'$(_Version)' == ''" Command="python &quot;$(_ScriptFile)&quot; $(_ExecArgs) &quot;$(_VersionFile)&quot;" ConsoleToMSBuild="true" IgnoreExitCode="true">
       <Output TaskParameter="ConsoleOutput" PropertyName="_Version" />
     </Exec>
     <Exec Condition="'$(_Version)' == ''" Command="python3 &quot;$(_ScriptFile)&quot; $(_ExecArgs) &quot;$(_VersionFile)&quot;" ConsoleToMSBuild="true" IgnoreExitCode="true">
