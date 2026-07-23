@@ -25,7 +25,6 @@ internal sealed class TurnContext
     public Dictionary<string, (string name, string args, bool isPeek, double blockNumber)> PendingToolCalls { get; } = new();
     public List<ChatMessage> ContextMessages { get; }
     public FailSafeChatClient FailSafeClient { get; }
-    public AgentOptions AgentOpts { get; }
 
     private static readonly Dictionary<string, string[]> FileToolCleanArgs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -42,8 +41,7 @@ internal sealed class TurnContext
         string modelStr,
         double nextNum,
         List<ChatMessage> contextMessages,
-        FailSafeChatClient failSafeClient,
-        AgentOptions agentOpts)
+        FailSafeChatClient failSafeClient)
     {
         _blockStore = blockStore;
         _agentStore = agentStore;
@@ -53,7 +51,6 @@ internal sealed class TurnContext
         NextNum = nextNum;
         ContextMessages = contextMessages;
         FailSafeClient = failSafeClient;
-        AgentOpts = agentOpts;
     }
 
     public async Task<List<TurnEvent>> ProcessUpdate(ChatResponseUpdate update)
@@ -79,7 +76,7 @@ internal sealed class TurnContext
 
         if (fcc is not null)
         {
-            await FlushReasoning(AgentOpts.PeekToolReasoning);
+            await FlushReasoning();
             await FlushText();
 
             var args = JsonSerializer.Serialize(fcc.Arguments ?? new Dictionary<string, object?>(),
@@ -101,7 +98,7 @@ internal sealed class TurnContext
 
         if (frc is not null)
         {
-            await FlushReasoning(AgentOpts.PeekToolReasoning);
+            await FlushReasoning();
             await FlushText();
 
             var output = frc.Result?.ToString() ?? "";
@@ -174,15 +171,13 @@ internal sealed class TurnContext
         return events;
     }
 
-    public async Task FlushReasoning(bool isPeek)
+    public async Task FlushReasoning()
     {
         if (ReasoningAccum.Length == 0) return;
         var fullReasoning = ReasoningAccum.ToString();
         ReasoningAccum.Clear();
         var block = MemoryBlock.AgentReasoning(fullReasoning, model: ModelStr);
         block.Number = NextNum++;
-        if (isPeek)
-            block.Data = new() { ["peek"] = true };
         await _blockStore.AppendBlocksAsync(SessionId, [block], NextNum);
     }
 
@@ -196,9 +191,9 @@ internal sealed class TurnContext
         await _blockStore.AppendBlocksAsync(SessionId, [block], NextNum);
     }
 
-    public async Task FlushAll(AgentOptions agentOpts)
+    public async Task FlushAll()
     {
-        await FlushReasoning(agentOpts.PeekReasoning);
+        await FlushReasoning();
         await FlushText();
     }
 
@@ -227,14 +222,5 @@ internal sealed class TurnContext
         }
     }
 
-    public static string BuildPeekCleanMessage(int total, Dictionary<string, int> stats)
-    {
-        var lines = new List<string> { $"── Cleaned {total} peek blocks ─────────────────" };
-        foreach (var kv in stats.OrderByDescending(kv => kv.Value))
-        {
-            var icon = BlockTypeIcon.Get(kv.Key);
-            lines.Add($"  {icon} {kv.Key,-20}: {kv.Value,4}");
-        }
-        return string.Join('\n', lines);
-    }
+
 }

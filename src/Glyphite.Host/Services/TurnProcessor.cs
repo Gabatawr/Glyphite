@@ -2,6 +2,7 @@ using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Tools;
+using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
@@ -130,22 +131,83 @@ public class TurnProcessor : ITurnProcessor
         var isSubagent = chatOptions.AdditionalProperties?.ContainsKey("isSubagent") == true;
         chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(agentId, !isEphemeral)).ToList();
 
-        var peekStats = await _blockStore.GetPeekBlockStatsAsync(agentId);
-        var peekCleaned = await _blockStore.RemovePeekBlocksAsync(agentId);
+        // ── Auto-compact large reasoning blocks from previous turn ──
+        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
+        if (compOpts.AutoCompressReasoning)
+        {
+            var allReasoning = await _blockStore.LoadBlocksByTypeAsync(agentId, BlockType.agent_reasoning, null, false);
+            var toCompress = allReasoning
+                .Where(b => !b.Compressed && b.Content.Length > compOpts.AutoCompressReasoningMaxSize)
+                .ToList();
+
+            if (toCompress.Count > 0)
+            {
+                var maxOutputTokens = Math.Max(1, compOpts.AutoCompressReasoningMaxSize / 4 / 2);
+                var compactedCount = 0;
+
+                // Notify UI BEFORE compaction (explains why we're hanging)
+                var compressArgs = JsonSerializer.Serialize(new { count = toCompress.Count, maxTokens = maxOutputTokens });
+                yield return new AutoToolTurnEvent("compress_reasoning", compressArgs, false, "");
+
+                var tasks = toCompress.Select(async block =>
+                {
+                    try
+                    {
+                        var messages = new List<ChatMessage>
+                        {
+                            new(ChatRole.System, "You are a precise reasoning summarizer. Extract the key insights, conclusions, and decisions from the following reasoning/thinking block. Keep only what matters — discard meandering exploration, false starts, and redundant thoughts. Be concise. Output in the same language as the original."),
+                            new(ChatRole.User, block.Content)
+                        };
+
+                        var response = await _chatClient.GetResponseAsync(messages, new ChatOptions
+                        {
+                            MaxOutputTokens = maxOutputTokens,
+                            ModelId = modelStr
+                        }, ct);
+
+                        var summary = response.Messages
+                            .LastOrDefault(m => m.Role == ChatRole.Assistant)
+                            ?.Text?.Trim();
+
+                        if (!string.IsNullOrEmpty(summary) && summary.Length < block.Content.Length)
+                        {
+                            await _blockStore.UpdateBlockContentAsync(agentId, block.Number, summary);
+                            Interlocked.Increment(ref compactedCount);
+                        }
+
+                        // Record usage
+                        if (response.RawRepresentation is not null)
+                        {
+                            try
+                            {
+                                using var doc = UsageParser.Normalize(response.RawRepresentation);
+                                if (doc is not null)
+                                {
+                                    var (hit, miss, output) = UsageParser.Parse(doc);
+                                    if (hit > 0 || miss > 0 || output > 0)
+                                        await _agentStore.RecordUsageAsync(agentId, hit, miss, output, model: modelStr);
+                                }
+                            }
+                            catch { _logger.LogWarning("Failed to parse usage from reasoning compaction response"); }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to compact reasoning block {Number}", block.Number);
+                    }
+                });
+
+                await Task.WhenAll(tasks);
+
+                if (compactedCount > 0)
+                {
+                    _logger.LogInformation("Compacted {Count} reasoning blocks (max {MaxTokens} tok each)", compactedCount, maxOutputTokens);
+                }
+            }
+        }
 
         var contextMessages = await _blockMemory.BuildContextAsync(
             agentId, modelStr, llmOpts.ContextWindow);
-
-        if (peekCleaned > 0)
-        {
-            var peekMsg = TurnContext.BuildPeekCleanMessage(peekCleaned, peekStats);
-            var cleanArgs = JsonSerializer.Serialize(new { count = peekCleaned });
-            yield return new AutoToolTurnEvent("peek_reasoning", cleanArgs, false, "");
-
-            var autoBlock = MemoryBlock.AutoTool("peek_reasoning", cleanArgs, peekMsg, modelStr);
-            autoBlock.Number = nextNum++;
-            await _blockStore.AppendBlocksAsync(agentId, [autoBlock], nextNum);
-        }
 
         var initialMessages = new List<ChatMessage>();
         initialMessages.AddRange(contextMessages);
@@ -178,7 +240,7 @@ public class TurnProcessor : ITurnProcessor
         var ctx = new TurnContext(
             _blockStore, _agentStore, _logger,
             agentId, modelStr, nextNum,
-            contextMessages, failSafeClient, agentOpts);
+            contextMessages, failSafeClient);
 
         await foreach (var update in failSafeClient
             .GetStreamingResponseAsync(initialMessages, chatOptions)
@@ -199,7 +261,7 @@ public class TurnProcessor : ITurnProcessor
             ctx.FailSafeClient.LastHitTokens,
             ctx.FailSafeClient.LastMissTokens);
 
-        await ctx.FlushAll(ctx.AgentOpts);
+        await ctx.FlushAll();
 
         _logger.LogInformation("Turn end session {SessionId}: hit={Hit} miss={Miss} out={Output} lastHit={LastHit} lastMiss={LastMiss}",
             agentId,

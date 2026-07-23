@@ -130,8 +130,6 @@ public class AgentOptions
     public const string Section = "Agent";
     public int MaxToolIterations { get; set; }
     public string AgentName { get; set; } = "Glyphite.MainAgent";
-    public bool PeekReasoning { get; set; } = true;
-    public bool PeekToolReasoning { get; set; } = false;
     public void Validate()
     {
         if (MaxToolIterations <= 0)
@@ -304,6 +302,10 @@ public class CompressionOptions
 
     /// <summary>Strategy flags. At least one must be enabled. If multiple are enabled, one is picked randomly per compaction cycle.</summary>
     public Dictionary<string, bool> Strategies { get; set; } = new() { ["fibo"] = true };
+    /// <summary>Auto-compact large reasoning blocks via LLM after each turn.</summary>
+    public bool AutoCompressReasoning { get; set; } = true;
+    /// <summary>Reasoning blocks larger than this (in chars) will be LLM-compacted down to ~maxSize/4/2 tokens.</summary>
+    public int AutoCompressReasoningMaxSize { get; set; } = 6_000;
     public int CacheHitRateThreshold { get; set; } = 80;
     public double CostSignificantThreshold { get; set; } = 0.01;
     public void Validate()

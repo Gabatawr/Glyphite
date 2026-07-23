@@ -119,21 +119,19 @@ internal static class FiboStrategy
 
         foreach (var zone in zones)
         {
-            var keepInZone = new List<MemoryBlock>();
-
+            // Mark unprotected blocks for later soft-delete, but include ALL blocks in LLM input
+            // (the LLM sees tool results, reasoning, auto_tool — produces a richer summary)
             foreach (var b in zone)
             {
-                if (protectedTypes.Contains(b.Type) ||
-                    (b.Type == BlockType.tool && b.ToolName is not null && isSubagentTool.Contains(b.ToolName)))
-                    keepInZone.Add(b);
-                else
+                if (!protectedTypes.Contains(b.Type) &&
+                    !(b.Type == BlockType.tool && b.ToolName is not null && isSubagentTool.Contains(b.ToolName)))
                     allUnprotectedNums.Add(b.Number);
             }
 
-            zoneProtectedBlocks.Add(keepInZone);
+            zoneProtectedBlocks.Add(zone);
         }
 
-        logger.LogInformation("Compacting session {SessionId}: {TotalBlocks} blocks, {ZoneCount} old zones to summarize (fibo), threshold {Threshold}%",
+        logger.LogInformation("Compacting session {SessionId}: {TotalBlocks} blocks, {ZoneCount} old zones to summarize (fibo, unfiltered), threshold {Threshold}%",
             agentId, blocks.Count, zoneProtectedBlocks.Count, compOpts.AutoThreshold);
 
         // Summarize all old zones via LLM in parallel
