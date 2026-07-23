@@ -1,7 +1,7 @@
 <table>
   <tr>
     <td width="200" valign="middle">
-      <img src="Glyphite-icon.png" alt="Glyphite logo" width="200" height="200">
+      <img src="Glyphite.png" alt="Glyphite logo" width="200" height="200">
     </td>
     <td valign="middle">
       <h1>Glyphite</h1>
