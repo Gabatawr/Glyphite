@@ -13,7 +13,6 @@ public static class FilePatchTool
         string old,
         string @new,
         bool replaceAll = false,
-        bool? peek = null,
         string? defaultDirectory = null)
     {
         if (string.IsNullOrEmpty(old))
@@ -275,9 +274,8 @@ public static class FilePatchTool
             string path,
             [Description("Text to find. Try to match exact content from the file (including indentation). Fuzzy fallbacks handle minor whitespace differences.")] string old,
             [Description("Replacement text")] string @new,
-            [Description("Replace ALL occurrences (default: false, replaces only first match). Use with caution.")] bool replaceAll = false,
-            bool? peek = true)
-            => PatchFile(path, old, @new, replaceAll, peek, defaultDirectory);
+            [Description("Replace ALL occurrences (default: false, replaces only first match). Use with caution.")] bool replaceAll = false)
+            => PatchFile(path, old, @new, replaceAll, defaultDirectory);
     }
 
     public static AIFunction AsAIFunction(string? defaultDirectory = null)

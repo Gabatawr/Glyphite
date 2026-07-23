@@ -213,7 +213,8 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     var fcc = group[0];
                     var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
                     var toolName = fcc.Name ?? "";
-                    var isPeek = ToolCallHelper.IsPeekCall(toolName, fcc.Arguments);
+                    var tool = tools.FirstOrDefault(t => t.Name == toolName);
+                    var isPeek = ToolCallHelper.IsPeekCall(tool, toolName, fcc.Arguments);
 
                     // Yield FCC before execution — user sees the tool call header immediately
                     yield return new ChatResponseUpdate
@@ -222,7 +223,6 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     };
 
                     // Execute tool
-                    var tool = tools.FirstOrDefault(t => t.Name == toolName);
                     string? resultText = null, errorText = null;
                     Exception? exception = null;
 
@@ -260,10 +260,9 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     {
                         var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
                         var toolName = fcc.Name ?? "";
-
-                        var isPeek = ToolCallHelper.IsPeekCall(toolName, fcc.Arguments);
-
                         var tool = tools.FirstOrDefault(t => t.Name == toolName);
+                        var isPeek = ToolCallHelper.IsPeekCall(tool, toolName, fcc.Arguments);
+
                         if (tool is null)
                         {
                             execData.Add((callId, toolName, isPeek,

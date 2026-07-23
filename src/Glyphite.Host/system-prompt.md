@@ -30,9 +30,12 @@ Always follow this cycle for any task:
 
 ### Common Parameters
 
-The following parameters are consistent across tools (their descriptions are omitted from individual tool definitions to reduce token usage and improve cache quality):
+The following parameters are injected into every tool's schema. They are omitted from individual tool definitions below to reduce token usage and improve cache quality:
 
-- **`peek`** (`bool?`) — auto-clean the result after the tool loop. Default `false` (result persists). Set `true` for one-shot inspection. `write_file`, `patch_file`, and `memory` default to `true` because their output is verbose or shown as a diff.
+- **`extra_cfg`** (`object?`) — execution configuration. All fields optional, per-tool defaults from `Glyphite.json`:
+  - `peek` (`bool?`) — auto-clean result after tool loop. `true` = result visible once, then truncated to `(peek)`. Defaults per tool from `ToolExecution.Options.Peek` (hot-reloadable). Current defaults: `true` for `write_file`, `patch_file`, `memory`, `search_glob`, `search_grep`, `subagent_list`; `false` for others.
+  - `timeout` (`int?`) — override tool timeout in seconds.
+  - `maxSize` (`int?`) — max output characters (`0` = hide from console, `-1` = full, `N` = first N chars).
 - **`path`** (`string`) — file path, absolute or relative to the working directory. Parent directories auto-created on write.
 - **`workdir` / `cwd`** (`string?`) — working directory, defaults to the agent's current directory.
 - **`mode`** (`string?`) — execution mode: `"sequential"` (default, wait for result) or `"parallel"` (batch with Task.WhenAll for concurrent execution).

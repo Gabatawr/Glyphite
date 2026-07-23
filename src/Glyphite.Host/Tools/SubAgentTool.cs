@@ -278,7 +278,6 @@ internal static class SubAgentTool
             [Description("Agent name (optional — auto-generated GUID if omitted). If name is provided and the agent already exists, runs a dry-clean task (blocks cleared after). If the agent doesn't exist, creates a temporary one and deletes after.")] string? name = null,
             string? cwd = null,
             string? mode = null,
-            bool? peek = null,
             CancellationToken ct = default) =>
         {
             var parentCwd = await agentStore.GetAgentHomePathAsync(currentSessionId) ?? Directory.GetCurrentDirectory();
@@ -344,7 +343,6 @@ internal static class SubAgentTool
             [Description("Task/instruction for the subagent.")] string task,
             string? cwd = null,
             string? mode = null,
-            bool? peek = null,
             CancellationToken ct = default) =>
         {
             // Cleanup orphan agents from crashed sessions
@@ -378,8 +376,7 @@ internal static class SubAgentTool
         IBlockStore blockStore,
         string currentSessionId)
     {
-        return AIFunctionFactory.Create(async (
-            bool? peek = null) =>
+        return AIFunctionFactory.Create(async () =>
         {
             var allAgents = await agentStore.ListAgentsAsync();
             var filtered = allAgents.Where(a => !string.Equals(a, currentSessionId)).ToList();

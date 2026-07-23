@@ -18,7 +18,6 @@ public static class BashTool
         ContentDedupOptions dedupOpts,
         BashOptions bashOpts,
         string tmpDir,
-        bool? peek = null,
         CancellationToken ct = default)
     {
         var trimmed = command.Trim();
@@ -108,7 +107,6 @@ public static class BashTool
             string? workdir = null,
             [Description("Timeout in milliseconds (optional, defaults to 120000). Use for long-running builds/tests.")] int? timeoutMs = null,
             [Description("Run in background: returns immediately with a taskId. Use bash_back to get results.")] bool? back = null,
-            bool? peek = null,
             CancellationToken ct = default)
         {
             var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, agentId);
@@ -120,7 +118,7 @@ public static class BashTool
             }
 
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, agentId);
-            return await ExecuteBash(command, workdir, timeoutMs, manager, agentId, dedupOpts, bashOpts, tmpDir, peek, ct);
+            return await ExecuteBash(command, workdir, timeoutMs, manager, agentId, dedupOpts, bashOpts, tmpDir, ct);
         }
     }
 

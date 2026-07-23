@@ -1,6 +1,10 @@
 using System.Collections.Concurrent;
+using System.Reflection;
+using System.Text;
+using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Tools;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -29,6 +33,7 @@ public class McpService : IAsyncDisposable
     private readonly IConfigService _cfg;
     private readonly ILogger _logger;
     private string? _configHash;
+    private string? _mcpExecHash;
 
     public McpService(IConfigService cfg, ILogger<McpService> logger)
     {
@@ -40,10 +45,13 @@ public class McpService : IAsyncDisposable
     {
         var servers = await GetServerConfigAsync(sessionId, ct);
         var newHash = ComputeHash(servers);
+        var execEntries = await GetMcpExecutionAsync(sessionId);
+        var execHash = ComputeExecHash(execEntries);
 
-        if (newHash != _configHash)
+        if (newHash != _configHash || execHash != _mcpExecHash)
         {
             _configHash = newHash;
+            _mcpExecHash = execHash;
             _toolCache.Clear();
             await SyncServersAsync(servers, ct);
         }
@@ -56,7 +64,16 @@ public class McpService : IAsyncDisposable
                 {
                     var timeoutCt = CreateTimeoutToken(servers.GetValueOrDefault(name), ct);
                     var tools = await client.ListToolsAsync(cancellationToken: timeoutCt);
-                    var list = tools.OfType<AIFunction>().Select(t => (AITool)new McpPeekToolAdapter(t)).ToList().AsReadOnly();
+                    var list = tools.OfType<AIFunction>().Select(t =>
+                    {
+                        var execOpts = ResolveExecution(name, t.Name, execEntries);
+                        return (AITool)new ToolConfigDecorator(
+                            new PrefixedAIFunction(t, name),
+                            peekDefault: execOpts.Peek ?? false,
+                            contentMaxSizeDefault: execOpts.MaxSize ?? 100000,
+                            timeoutSecondsDefault: execOpts.Timeout ?? 300
+                        );
+                    }).ToList().AsReadOnly();
                     _toolCache[name] = list;
                     _toolCounts[name] = list.Count;
                     _statuses[name] = McpServerStatus.Connected;
@@ -155,7 +172,17 @@ public class McpService : IAsyncDisposable
             _errors.TryRemove(name, out _);
 
             var tools = await client.ListToolsAsync(cancellationToken: timeoutCt);
-            var list = tools.OfType<AIFunction>().Select(t => (AITool)new McpPeekToolAdapter(t)).ToList().AsReadOnly();
+            var execEntries = await GetMcpExecutionAsync(sessionId);
+            var list = tools.OfType<AIFunction>().Select(t =>
+            {
+                var execOpts = ResolveExecution(name, t.Name, execEntries);
+                return (AITool)new ToolConfigDecorator(
+                    new PrefixedAIFunction(t, name),
+                    peekDefault: execOpts.Peek ?? false,
+                    contentMaxSizeDefault: execOpts.MaxSize ?? 100000,
+                    timeoutSecondsDefault: execOpts.Timeout ?? 300
+                );
+            }).ToList().AsReadOnly();
             _toolCache[name] = list;
             _toolCounts[name] = list.Count;
             _serverConfigHashes[name] = ComputeServerHash(name, opts);
@@ -321,6 +348,140 @@ public class McpService : IAsyncDisposable
         sb.Append(opts.Url);
         return sb.ToString();
     }
+
+    /// <summary>Load McpExecution entries from config.</summary>
+    private async Task<McpExecutionEntry[]> GetMcpExecutionAsync(string? sessionId)
+    {
+        var config = await _cfg.GetOptionsAsync<McpServersConfig>(McpServersConfig.Section, sessionId);
+        return config.McpExecution ?? [];
+    }
+
+    /// <summary>
+    /// Resolve execution options for a given server + tool combination.
+    /// Merges hierarchically (lowest → highest priority):
+    /// <list type="number">
+    ///   <item>Hardcoded defaults (<c>Timeout=300, MaxSize=100000, Peek=false</c>)</item>
+    ///   <item><c>Mcp="*"</c> (no <c>Tool</c>) — wildcard server‑level</item>
+    ///   <item>Exact <c>Mcp</c> (no <c>Tool</c>) — exact server‑level</item>
+    ///   <item><c>Mcp="*", Tool="*"</c> — wildcard server + wildcard tool</item>
+    ///   <item>Exact <c>Mcp</c> + <c>Tool="*"</c> — exact server, all tools</item>
+    ///   <item><c>Mcp="*"</c> + exact <c>Tool</c> — wildcard server, exact tool</item>
+    ///   <item>Exact <c>Mcp</c> + exact <c>Tool</c> — highest priority</item>
+    /// </list>
+    /// Each step only overrides non‑null fields, so higher‑priority entries
+    /// can override just <c>Peek</c> while inheriting <c>Timeout</c> and <c>MaxSize</c>.
+    /// </summary>
+    private static McpExecutionOptionsEntry ResolveExecution(
+        string serverName, string toolName, McpExecutionEntry[] entries)
+    {
+        // Start with hardcoded defaults
+        var result = new McpExecutionOptionsEntry
+        {
+            Timeout = 300,
+            MaxSize = 100000,
+            Peek = false,
+        };
+
+        foreach (var e in entries)
+        {
+            if (e.Options is null) continue;
+
+            bool mcpMatch = string.Equals(e.Mcp, serverName, StringComparison.OrdinalIgnoreCase);
+            bool mcpWildcard = e.Mcp == "*";
+            bool toolExact = !string.IsNullOrEmpty(e.Tool) &&
+                string.Equals(e.Tool, toolName, StringComparison.OrdinalIgnoreCase);
+            bool toolWildcard = e.Tool == "*";
+            bool noTool = string.IsNullOrEmpty(e.Tool);
+
+            // Priority 1 (lowest): Mcp="*", no Tool
+            if (mcpWildcard && noTool)
+                ApplyNonNull(result, e.Options);
+
+            // Priority 2: exact Mcp, no Tool
+            if (mcpMatch && noTool)
+                ApplyNonNull(result, e.Options);
+
+            // Priority 3: Mcp="*", Tool="*"
+            if (mcpWildcard && toolWildcard)
+                ApplyNonNull(result, e.Options);
+
+            // Priority 4: exact Mcp, Tool="*"
+            if (mcpMatch && toolWildcard)
+                ApplyNonNull(result, e.Options);
+
+            // Priority 5: Mcp="*", exact Tool
+            if (mcpWildcard && toolExact)
+                ApplyNonNull(result, e.Options);
+
+            // Priority 6 (highest): exact Mcp + exact Tool
+            if (mcpMatch && toolExact)
+                ApplyNonNull(result, e.Options);
+        }
+
+        return result;
+    }
+
+    /// <summary>Copies non‑null fields from <paramref name="src"/> onto <paramref name="dst"/>.</summary>
+    private static void ApplyNonNull(McpExecutionOptionsEntry dst, McpExecutionOptionsEntry src)
+    {
+        if (src.Timeout.HasValue) dst.Timeout = src.Timeout;
+        if (src.MaxSize.HasValue) dst.MaxSize = src.MaxSize;
+        if (src.Peek.HasValue) dst.Peek = src.Peek;
+    }
+
+    /// <summary>Content‑based hash of McpExecution entries for cache invalidation.</summary>
+    private static string ComputeExecHash(McpExecutionEntry[] entries)
+    {
+        var sb = new StringBuilder();
+        foreach (var e in entries)
+        {
+            sb.Append(e.Mcp);
+            sb.Append(e.Tool ?? "");
+            if (e.Options is not null)
+            {
+                sb.Append(e.Options.Timeout);
+                sb.Append(e.Options.MaxSize);
+                sb.Append(e.Options.Peek);
+            }
+            sb.Append('|');
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Wraps an MCP <see cref="AIFunction"/> to prefix the tool name with the server name
+    /// (e.g., <c>codegraph_explore</c>). All other properties are transparently forwarded.
+    /// Config parameter injection (<c>extra_cfg</c>) and runtime enforcement are handled
+    /// by the outer <see cref="ToolConfigDecorator"/>.
+    /// </summary>
+#pragma warning disable CS8764 // Nullability of return type doesn't match overridden member
+    private sealed class PrefixedAIFunction : AIFunction
+    {
+        private readonly AIFunction _inner;
+        private readonly string _prefixedName;
+
+        public PrefixedAIFunction(AIFunction inner, string serverName)
+        {
+            _inner = inner;
+            var originalName = inner.Name;
+            if (originalName.StartsWith($"{serverName}_", StringComparison.OrdinalIgnoreCase))
+                _prefixedName = originalName;
+            else
+                _prefixedName = $"{serverName}_{originalName}";
+        }
+
+        public override string Name => _prefixedName;
+        public override string Description => _inner.Description;
+        public override JsonElement JsonSchema => _inner.JsonSchema;
+        public override JsonElement? ReturnJsonSchema => _inner.ReturnJsonSchema;
+        public override MethodInfo? UnderlyingMethod => _inner.UnderlyingMethod;
+        public override JsonSerializerOptions? JsonSerializerOptions => _inner.JsonSerializerOptions;
+        public override IReadOnlyDictionary<string, object?>? AdditionalProperties => _inner.AdditionalProperties;
+
+        protected override ValueTask<object?> InvokeCoreAsync(AIFunctionArguments? args, CancellationToken ct)
+            => _inner.InvokeAsync(args, ct);
+    }
+#pragma warning restore CS8764
 
     public async ValueTask DisposeAsync()
     {

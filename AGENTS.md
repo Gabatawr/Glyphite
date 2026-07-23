@@ -192,3 +192,59 @@ See `BlockRepository.cs` `InitializeAsync()` for full DDL.
 
 ### Version
 `Version.txt`: `1.0.22`, published up to v1.0.22
+
+## Latest changes — ToolExecution, McpExecution, ToolStreaming
+
+**1. ToolExecution — per-tool execution settings (peek, timeout, maxSize):**
+
+| File | Changes |
+|------|---------|
+| `ToolConfigDecorator.cs` | **New** — wraps any `AIFunction` with `extra_cfg` parameter (peek, timeout, maxSize). Injects into JSON schema, applies timeout via `CancellationTokenSource`, trims output to `maxSize` |
+| `ToolRegistry.cs` | Reads `ToolExecution` section from config, wraps each builtin tool with `ToolConfigDecorator` |
+| `ToolCallHelper.cs` | Added `IsPeekCall(AITool, ...)` — detects peek using `extra_cfg.peek` → flat `peek` → tool-specific default |
+| `FailSafeChatClient.cs` | Passes tool to `IsPeekCall` — uses tool-specific peek defaults |
+| `appsettings.json` | Added `ToolExecution` array with per-tool entries |
+| `Configuration.cs` | Added `ToolExecutionEntry`, `ToolExecutionOptionsEntry` |
+| 8 tool files | Removed legacy `peek` parameter (replaced by `ToolExecution` config) |
+
+**2. ToolStreaming — per-tool display control:**
+
+| File | Changes |
+|------|---------|
+| `Configuration.cs` | `ToolStreamingEntry` with `Tool` + `Options` (MaxSize, HiddenArgs), `GetMaxLength()`, `GetHiddenArgs()` |
+| `ConsoleRenderer.cs` | Uses `ToolStreamingEntry[]` instead of old `Dictionary<string, int>` |
+| `appsettings.json` | `ToolStreaming` changed from dictionary to array format |
+
+**3. McpExecution — per-server and per-tool MCP settings:**
+
+| File | Changes |
+|------|---------|
+| `McpService.cs` | `ResolveExecution` now accepts `toolName`, 6-level hierarchical merging (server→tool). Per-tool resolution in `GetToolsAsync`/`ReconnectAsync` |
+| `McpServerOptions.cs` | `McpExecutionEntry.Tool` added (nullable). `McpExecutionOptionsEntry` fields made nullable for merge detection |
+| `McpPeekToolAdapter.cs` | **Deleted** — replaced by `ToolConfigDecorator` + `PrefixedAIFunction` |
+
+**4. PrefixedAIFunction — MCP tool name prefixing:**
+
+| File | Changes |
+|------|---------|
+| `McpService.cs` | `PrefixedAIFunction` — wraps MCP `AIFunction` with `{serverName}_` prefix. Wrapping chain: `ToolConfigDecorator(PrefixedAIFunction(innerMcpTool, serverName))` |
+| `McpService.cs` | `extra_cfg` stripped before server call (in `ToolConfigDecorator`), prefix stripped before server call (in `PrefixedAIFunction`) |
+
+### Wrapping chain summary
+
+**Builtin tools:**
+```
+ToolRegistry → ToolConfigDecorator(originalFunc, ToolExecution options)
+```
+
+**MCP tools:**
+```
+McpService.GetToolsAsync → ToolConfigDecorator(PrefixedAIFunction(innerMcpTool, serverName), McpExecution options)
+```
+
+Both chains ensure:
+- `extra_cfg` parameter injected into JSON schema (LLM sees it)
+- `extra_cfg` stripped before actual tool execution (server/builtin never sees it)
+- Peek detected via `extra_cfg.peek` → flat `peek` → config default → tool-specific hardcoded default
+- Timeout enforced via `CancellationTokenSource`
+- Output trimmed to configurable `maxSize`

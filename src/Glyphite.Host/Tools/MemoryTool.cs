@@ -71,8 +71,7 @@ public static class MemoryTool
         [Description("Memory management tool. Actions: 'stats' — show block type distribution, token usage, cache stats, and cost.")]
         public Task<string> Execute(
             [Description("Action: 'stats' (show memory stats)")] string action,
-            [Description("Not used.")] double[]? blocks = null,
-            bool? peek = true)
+            [Description("Not used.")] double[]? blocks = null)
             => MemoryTool.Execute(action, blocks, provider, agentId, cfg);
     }
 

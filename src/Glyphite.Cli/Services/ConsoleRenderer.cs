@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Microsoft.Extensions.Configuration;
 
 namespace Glyphite.Cli.Services;
 
@@ -32,7 +33,25 @@ public class ConsoleRenderer
     /// <summary>Refresh ToolStreamingOptions from config. Call before rendering to pick up changes.</summary>
     public async Task RefreshAsync(string agentId)
     {
-        _streamOpts = await _cfgService.GetOptionsAsync<ToolStreamingOptions>(ToolStreamingOptions.Section, agentId);
+        var raw = await _cfgService.GetConfigAsync(agentId);
+        var filtered = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in raw)
+            if (key.StartsWith("ToolStreaming:", StringComparison.OrdinalIgnoreCase))
+                filtered[key] = value;
+
+        if (filtered.Count == 0)
+        {
+            _streamOpts = new ToolStreamingOptions();
+            return;
+        }
+
+        var entries = new ConfigurationBuilder()
+            .AddInMemoryCollection(filtered)
+            .Build()
+            .GetSection("ToolStreaming")
+            .Get<ToolStreamingEntry[]>();
+
+        _streamOpts = new ToolStreamingOptions { Entries = entries ?? [] };
     }
 
     public void RenderBlock(MemoryBlock block, ref RenderState s)
@@ -246,8 +265,8 @@ public class ConsoleRenderer
     {
         if (toolName is null) return content;
 
-        var hidden = _streamOpts.ToolHiddenArgs.GetValueOrDefault(toolName);
-        var hasHidden = hidden is not null && hidden.Length > 0;
+        var hidden = _streamOpts.GetHiddenArgs(toolName);
+        var hasHidden = hidden.Length > 0;
         var hasCwd = AgentCwd is not null;
 
         // Skip JSON parsing if nothing to do

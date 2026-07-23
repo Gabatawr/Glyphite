@@ -151,9 +151,9 @@ public class TurnProcessor : ITurnProcessor
         initialMessages.AddRange(contextMessages);
         initialMessages.Add(new ChatMessage(ChatRole.User, input));
 
-        var sessionClient = new SessionChatClient(_chatClient, agentId, modelStr);
+        var agentClient = new AgentChatClient(_chatClient, agentId, modelStr);
         var failSafeClient = new FailSafeChatClient(
-            sessionClient, agentOpts.MaxToolIterations, _logger);
+            agentClient, agentOpts.MaxToolIterations, _logger);
 
         // Subscribe: write per-iteration usage immediately — survives crash/Escape
         failSafeClient.OnIterationRecorded = (hit, miss, output) =>

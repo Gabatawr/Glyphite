@@ -1,0 +1,251 @@
+using System.Reflection;
+using System.Text.Json;
+using Microsoft.Extensions.AI;
+
+namespace Glyphite.Host.Tools;
+
+/// <summary>
+/// Wraps an <see cref="AIFunction"/> to inject a single <c>extra_cfg</c> parameter
+/// (nullable object) with fields <c>peek</c> (bool), <c>timeout</c> (int seconds),
+/// and <c>maxSize</c> (int chars).
+/// Defaults are taken from <see cref="ToolExecutionEntry"/> configuration.
+/// When <c>extra_cfg</c> is <c>null</c> (or omitted), all fields use their defaults.
+///
+/// <para>At runtime, enforces the limits:
+/// <list type="bullet">
+///   <item><c>timeout</c> — creates a <see cref="CancellationTokenSource"/>
+///     with the timeout, linked to the caller's token.</item>
+///   <item><c>maxSize</c> — truncates the result string if it exceeds the limit.</item>
+/// </list>
+/// </para>
+/// The injected <c>extra_cfg</c> is stripped before forwarding the call downstream.
+/// </summary>
+public sealed class ToolConfigDecorator : AIFunction
+{
+    private readonly AIFunction _inner;
+    private readonly JsonElement _schemaWithConfig;
+    private readonly bool _peekDefault;
+    private readonly int _contentMaxSizeDefault;
+    private readonly int _timeoutSecondsDefault;
+
+    /// <summary>Name of the single injected parameter.</summary>
+    private const string ExtraCfgParamName = "extra_cfg";
+
+    /// <summary>Default peek value for this tool, from config.</summary>
+    public bool DefaultPeek => _peekDefault;
+
+    private static readonly HashSet<string> InjectedParamNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ExtraCfgParamName,
+    };
+
+    private const string DefaultTruncationFormat = "Content truncated at {0} chars. Full result length: {1}";
+
+    public ToolConfigDecorator(
+        AIFunction inner,
+        bool peekDefault,
+        int contentMaxSizeDefault,
+        int timeoutSecondsDefault)
+    {
+        _inner = inner;
+        _peekDefault = peekDefault;
+        // -1 = unlimited, 0 = hide, N > 0 = first N chars (runtime sentinel: int.MaxValue)
+        _contentMaxSizeDefault = contentMaxSizeDefault == -1 ? int.MaxValue : contentMaxSizeDefault;
+        // <= 0 = unlimited timeout (runtime sentinel: int.MaxValue)
+        _timeoutSecondsDefault = timeoutSecondsDefault <= 0 ? int.MaxValue : timeoutSecondsDefault;
+        // Schema shows original values (before sentinel conversion) for LLM clarity
+        _schemaWithConfig = InjectExtraCfgParam(inner.JsonSchema,
+            _peekDefault, contentMaxSizeDefault, timeoutSecondsDefault);
+    }
+
+    public override string Name => _inner.Name;
+    public override string Description => _inner.Description;
+    public override JsonElement JsonSchema => _schemaWithConfig;
+    public override JsonElement? ReturnJsonSchema => _inner.ReturnJsonSchema;
+    public override MethodInfo? UnderlyingMethod => _inner.UnderlyingMethod;
+    public override JsonSerializerOptions JsonSerializerOptions => _inner.JsonSerializerOptions!;
+    public override IReadOnlyDictionary<string, object?> AdditionalProperties => _inner.AdditionalProperties!;
+
+    protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments? args, CancellationToken ct)
+    {
+        // ── Resolve effective config: extra_cfg ? merge : use defaults ──
+        int timeoutSeconds = _timeoutSecondsDefault;
+        int contentMaxSize = _contentMaxSizeDefault;
+        bool peek = _peekDefault;
+
+        if (args is not null && args.TryGetValue(ExtraCfgParamName, out var cfgObj) && cfgObj is not null)
+        {
+            if (cfgObj is JsonElement je && je.ValueKind == JsonValueKind.Object)
+                ResolveFromJsonElement(je, ref timeoutSeconds, ref contentMaxSize, ref peek);
+            else if (cfgObj is IReadOnlyDictionary<string, object?> cfgDict)
+                ResolveFromDictionary(cfgDict, ref timeoutSeconds, ref contentMaxSize, ref peek);
+        }
+
+        // ── Apply timeout if configured ──
+        CancellationToken effectiveCt = ct;
+        CancellationTokenSource? timeoutCts = null;
+        if (timeoutSeconds > 0 && timeoutSeconds < int.MaxValue)
+        {
+            timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+            effectiveCt = timeoutCts.Token;
+        }
+
+        try
+        {
+            // ── Strip injected extra_cfg from args ──
+            AIFunctionArguments? cleanedArgs = null;
+            if (args is not null && args.Count > 0 && args.ContainsKey(ExtraCfgParamName))
+            {
+                var cleaned = new Dictionary<string, object?>(args.Count);
+                foreach (var kv in args)
+                {
+                    if (!InjectedParamNames.Contains(kv.Key))
+                        cleaned[kv.Key] = kv.Value;
+                }
+                cleanedArgs = new AIFunctionArguments(cleaned);
+            }
+
+            // ── Invoke the tool with effective cancellation ──
+            var result = await _inner.InvokeAsync(cleanedArgs ?? args, effectiveCt);
+
+            // ── Enforce contentMaxSize ──
+            if (contentMaxSize < int.MaxValue && result is string str && str.Length > contentMaxSize)
+            {
+                result = str[..contentMaxSize] +
+                    $"\n\n[{string.Format(DefaultTruncationFormat, contentMaxSize, str.Length)}]";
+            }
+
+            return result;
+        }
+        finally
+        {
+            timeoutCts?.Dispose();
+        }
+    }
+
+    private static void ResolveFromJsonElement(JsonElement je,
+        ref int timeoutSeconds, ref int contentMaxSize, ref bool peek)
+    {
+        if (je.TryGetProperty("timeout", out var t) && t.ValueKind == JsonValueKind.Number)
+            timeoutSeconds = t.GetInt32();
+        if (je.TryGetProperty("maxSize", out var m) && m.ValueKind == JsonValueKind.Number)
+            contentMaxSize = m.GetInt32();
+        if (je.TryGetProperty("peek", out var p) && p.ValueKind == JsonValueKind.True)
+            peek = true;
+        else if (je.TryGetProperty("peek", out p) && p.ValueKind == JsonValueKind.False)
+            peek = false;
+    }
+
+    private static void ResolveFromDictionary(IReadOnlyDictionary<string, object?> dict,
+        ref int timeoutSeconds, ref int contentMaxSize, ref bool peek)
+    {
+        if (dict.TryGetValue("timeout", out var t) && t is int ti)
+            timeoutSeconds = ti;
+        else if (dict.TryGetValue("timeout", out t) && t is JsonElement tje && tje.ValueKind == JsonValueKind.Number)
+            timeoutSeconds = tje.GetInt32();
+
+        if (dict.TryGetValue("maxSize", out var m) && m is int mi)
+            contentMaxSize = mi;
+        else if (dict.TryGetValue("maxSize", out m) && m is JsonElement mje && mje.ValueKind == JsonValueKind.Number)
+            contentMaxSize = mje.GetInt32();
+
+        if (dict.TryGetValue("peek", out var p) && p is bool pb)
+            peek = pb;
+        else if (dict.TryGetValue("peek", out p) && p is JsonElement pje && pje.ValueKind == JsonValueKind.True)
+            peek = true;
+        else if (dict.TryGetValue("peek", out p) && p is JsonElement pje2 && pje2.ValueKind == JsonValueKind.False)
+            peek = false;
+    }
+
+    // ── Schema injection ───────────────────────────────────────────────
+
+    private static JsonElement InjectExtraCfgParam(
+        JsonElement schema,
+        bool peekDefault, int maxSizeDefault, int timeoutDefault)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(schema.GetRawText());
+            var root = doc.RootElement;
+
+            using var ms = new MemoryStream();
+            using var writer = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = false });
+
+            writer.WriteStartObject();
+
+            bool hadProperties = false;
+
+            foreach (var prop in root.EnumerateObject())
+            {
+                if (prop.NameEquals("properties"))
+                {
+                    hadProperties = true;
+                    writer.WriteStartObject("properties");
+
+                    // Copy original properties
+                    foreach (var p in prop.Value.EnumerateObject())
+                        p.WriteTo(writer);
+
+                    // Inject our single extra_cfg object
+                    WriteExtraCfgParam(writer, peekDefault, maxSizeDefault, timeoutDefault);
+
+                    writer.WriteEndObject();
+                }
+                else
+                {
+                    prop.WriteTo(writer);
+                }
+            }
+
+            if (!hadProperties)
+            {
+                writer.WriteStartObject("properties");
+                WriteExtraCfgParam(writer, peekDefault, maxSizeDefault, timeoutDefault);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndObject();
+            writer.Flush();
+
+            return JsonDocument.Parse(ms.ToArray()).RootElement.Clone();
+        }
+        catch
+        {
+            return schema;
+        }
+    }
+
+    private static void WriteExtraCfgParam(Utf8JsonWriter writer,
+        bool peekDefault, int maxSizeDefault, int timeoutDefault)
+    {
+        writer.WriteStartObject("extra_cfg");
+        writer.WriteString("type", "object");
+        writer.WriteNull("default");
+        writer.WriteString("description",
+            "Override tool configuration defaults. All fields optional; omitted fields use config defaults.");
+
+        writer.WriteStartObject("properties");
+
+        writer.WriteStartObject("peek");
+        writer.WriteString("type", "boolean");
+        writer.WriteString("description", "Auto-clean result after tool loop.");
+        writer.WriteEndObject();
+
+        writer.WriteStartObject("timeout");
+        writer.WriteString("type", "integer");
+        writer.WriteString("description", "Timeout in seconds for tool execution.");
+        writer.WriteEndObject();
+
+        writer.WriteStartObject("maxSize");
+        writer.WriteString("type", "integer");
+        writer.WriteString("description", "Maximum allowed content size in characters.");
+        writer.WriteEndObject();
+
+        writer.WriteEndObject(); // properties
+
+        writer.WriteBoolean("additionalProperties", false);
+
+        writer.WriteEndObject(); // extra_cfg
+    }
+}

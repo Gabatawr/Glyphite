@@ -15,7 +15,6 @@ public static partial class WebFetchTool
         public async Task<string> Execute(
             [Description("URL to fetch (must start with http:// or https://)")] string url,
             [Description("Output format: 'text' (default, strips HTML) or 'markdown'")] string? format = null,
-            bool? peek = null,
             CancellationToken ct = default)
         {
             var opts = await cfg.GetOptionsAsync<WebFetchOptions>(WebFetchOptions.Section, sessionId);
@@ -24,7 +23,7 @@ public static partial class WebFetchTool
             http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", opts.UserAgent);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(opts.TimeoutSeconds));
-            return await FetchUrl(url, format ?? opts.DefaultFormat, http, opts.MaxContentLength, tmpDir, sessionId, peek, timeoutCts.Token);
+            return await FetchUrl(url, format ?? opts.DefaultFormat, http, opts.MaxContentLength, tmpDir, sessionId, timeoutCts.Token);
         }
     }
 
@@ -40,7 +39,6 @@ public static partial class WebFetchTool
         int maxContentLength,
         string tmpDir,
         string? agentId = null,
-        bool? peek = null,
         CancellationToken ct = default
     )
     {

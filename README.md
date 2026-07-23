@@ -26,7 +26,7 @@
   - `kvstore` — key-value store with vault/config scopes, glob masks, TTL, dry-run confirm flow
   - `memory` — memory statistics (stats)
   - `subagent_run` / `subagent_use` / `subagent_list` — delegate tasks to worker agents
-- **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`). Every agent (main + subagents) can have its own MCP servers via `Glyphite.{agentName}.json`
+- **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`). Every agent (main + subagents) can have its own MCP servers via `Glyphite.{agentName}.json`. Tools are prefixed with `{serverName}_` (e.g. `codegraph_explore`). Per-server and per-tool execution settings via `McpExecution` config.
 - **Block-based memory** — full conversation history stored in SQLite with smart deduplication and compression
   - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
@@ -37,7 +37,7 @@
   - If summarization fails, blocks fall back intact
   - **No UI freeze:** `[AutoTool: compression]` notification appears immediately (via `EvaluateCompactionStatusAsync`), then slow summarization runs in background
 - **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
-- **ToolMaxLength** — per-tool output length control. Set `0` to hide, `-1` for full output, or `N` for first N characters. Works for all tools including MCP.
+- **ToolStreaming** — per-tool output and display control. Set `MaxSize` (`-1` full, `0` hidden, `N` trim), configure `HiddenArgs` (arguments hidden from console), and per-tool `Peek`/`Timeout`/`MaxSize` via `ToolExecution`. Works for all tools including MCP.
 - **Content deduplication** — repeated lines compressed in bash, read, and search tool outputs
 - **Rich rendering** — syntax highlighting, diffs, color schemes. Color-coded tool rendering for subagent and memory actions.
 - **Markdown table formatting** — agent-generated markdown tables are automatically detected and rendered as formatted console tables with proportional column widths, centered headers, multi-line cell support, and word-wrap. Works in streaming, replay, and subagent results.
@@ -260,6 +260,28 @@ Glyphite supports MCP servers via `stdio`, `streamablehttp`, and `sse` transport
 
 Per-agent MCP servers via `Glyphite.{agentName}.json` — loaded only when that agent is active.
 
+**Tool name prefixing:** MCP tools are prefixed with `{serverName}_` to avoid name collisions. For example, a tool `explore` from server `codegraph` becomes `codegraph_explore`. Use the prefixed name in `ToolStreaming`, `ToolExecution`, and `McpExecution` configuration. The prefix is stripped before the call reaches the MCP server — the server always sees the original tool name.
+
+### McpExecution — per-server and per-tool settings
+
+Control execution parameters for MCP tools. Configured in `Glyphite.json` under `McpServers.McpExecution`:
+
+```json
+"McpExecution": [
+  { "Mcp": "*",          "Options": { "Timeout": 300, "MaxSize": 100000, "Peek": false }},
+  { "Mcp": "codegraph",  "Tool": "*",  "Options": { "Peek": true }},
+  { "Mcp": "codegraph",  "Tool": "search", "Options": { "Timeout": 60 }}
+]
+```
+
+Resolution priority (highest wins, non-null fields merge):
+1. Exact `Mcp` + exact `Tool` (highest)
+2. `Mcp="*"` + exact `Tool`
+3. Exact `Mcp` + `Tool="*"`
+4. `Mcp="*"` + `Tool="*"`
+5. Exact `Mcp` (server-level)
+6. `Mcp="*"` (server-level wildcard, lowest)
+
 **Hot-reload:** When MCP server config changes, `McpService` detects the hash change and reconnects automatically on the next turn. No restart needed.
 
 ## Config hot-reload
@@ -270,8 +292,10 @@ All configuration is reloaded from disk every turn — no `/reload` command need
 |---------|-----------|-------------------|
 | `LLM.*` | Model, context window, API key, endpoint | per-turn via `TurnProcessor` |
 | `Agent.*` | Max tool iterations, peek settings | per-turn via `TurnProcessor` |
-| `ToolStreaming.ToolMaxLength` | Per-tool output display | per-turn via `ConsoleRenderer.RefreshAsync` |
+| `ToolStreaming.*` | Per-tool display (MaxSize, HiddenArgs) | per-turn via `ConsoleRenderer.RefreshAsync` |
+| `ToolExecution.*` | Per-tool peek/timeout/maxSize defaults | per-turn via `ToolRegistry.WrapWithConfig` |
 | `McpServers.*` | MCP server connections | hash-based reconnect via `McpService` |
+| `McpExecution.*` | Per-server/per-tool MCP execution settings | per-turn via `McpService.GetToolsAsync` |
 | `Bash.*` | Shell timeouts, forbidden commands | per-call via `BashTool` + per-session via `BashSessionManager` |
 | `Search.*` | Search exclusions | per-call via `SearchTools` |
 | `Todo.*` | Todo valid statuses | per-call via `TodoTool` |
@@ -281,29 +305,61 @@ All configuration is reloaded from disk every turn — no `/reload` command need
 
 Changes are reflected immediately on the next user turn — no restart required.
 
-## ToolMaxLength
+## ToolStreaming
 
-Control how much of a tool's output is shown in the console. Configured in `Glyphite.json`:
+Control how tools are displayed and truncated in the console. Configured in `Glyphite.json` as an array:
 
 ```json
-"ToolMaxLength": {
-  "bash": -1,             // -1 = full output
-  "read_file": 0,         // 0 = hidden (LLM still sees full result)
-  "fetch_web": 500,       // N = first N characters
-  "codegraph_*": 0        // works for MCP tools too
-}
+"ToolStreaming": [
+  { "Tool": "bash",       "Options": { "MaxSize": -1, "HiddenArgs": [] }},
+  { "Tool": "read_file",  "Options": { "MaxSize": 0,  "HiddenArgs": [] }},
+  { "Tool": "write_file", "Options": { "MaxSize": 0,  "HiddenArgs": ["content"] }},
+  { "Tool": "patch_file", "Options": { "MaxSize": 0,  "HiddenArgs": ["old", "new"] }}
+]
 ```
 
-- **`-1`** (default) — full output
-- **`0`** — hidden from console (LLM still sees everything)
-- **`N > 0`** — first N characters
+- **`MaxSize`**: `-1` full output (default), `0` hidden from console (LLM still sees everything), `N > 0` first N characters
+- **`HiddenArgs`**: list of argument names to hide from console output (e.g. file content)
 
-Works for all tools including MCP. Changes are picked up per-turn without restart.
+Works for all tools including MCP (use prefixed name like `codegraph_explore`). Wildcard `*` matches any tool name suffix (e.g. `codegraph_*` matches all tools from the `codegraph` server). Changes are picked up per-turn without restart.
+
+## ToolExecution
+
+Per-tool execution settings — peek, timeout, and output size. Configured in `Glyphite.json` as an array:
+
+```json
+"ToolExecution": [
+  { "Tool": "bash",       "Options": { "Timeout": 300, "MaxSize": 100000, "Peek": false }},
+  { "Tool": "read_file",  "Options": { "Timeout": 30,  "MaxSize": 100000, "Peek": false }},
+  { "Tool": "write_file", "Options": { "Timeout": 30,  "MaxSize": 100000, "Peek": true }},
+  { "Tool": "search_glob","Options": { "Timeout": 30,  "MaxSize": 100000, "Peek": true }},
+  { "Tool": "codegraph_*", "Options": { "Timeout": 60, "Peek": true }}
+]
+```
+
+- **`Peek`** — whether the tool result is marked as peek by default (LLM can still override via `extra_cfg.peek`)
+- **`Timeout`** — max execution time in seconds before the tool is cancelled
+- **`MaxSize`** — max output characters (tool result is truncated server-side before the LLM sees it)
+
+The LLM can override any setting per-call via `extra_cfg` (e.g. `"extra_cfg": { "peek": true, "timeout": 600 }`).
+
+Works for all tools including MCP — use the prefixed tool name (e.g. `codegraph_explore`) or wildcard suffix (e.g. `codegraph_*`).
 
 ## Peek tool calls
 
-The LLM can pass `"peek": true` to any tool to mark the result as transient:
+The LLM can pass `"peek": true` to any tool to mark the result as transient. Per-tool peek defaults can be configured via `ToolExecution` (see below):
 
+```json
+"ToolExecution": [
+  { "Tool": "write_file",   "Options": { "Peek": true }},
+  { "Tool": "search_glob",  "Options": { "Peek": true }},
+  { "Tool": "bash",         "Options": { "Peek": false }}
+]
+```
+
+The LLM can override the default via `"extra_cfg": { "peek": true }` for any tool.
+
+When peek is active:
 - The tool **always executes** (file writes/patches still apply)
 - The LLM sees the full result **exactly once** — on the next iteration after the tool completes
 - After the LLM generates a response, the result is **truncated to `(peek)`** in the message list

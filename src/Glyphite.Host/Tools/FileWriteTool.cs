@@ -12,7 +12,6 @@ public static class FileWriteTool
         string path,
         string content,
         string? resultType = null,
-        bool? peek = null,
         string? sessionId = null,
         string? defaultDirectory = null)
     {
@@ -43,9 +42,8 @@ public static class FileWriteTool
         public async Task<string> Execute(
             string path,
             [Description("Complete file content to write. For targeted changes use `patch_file` instead.")] string content,
-            [Description("Result detail level: 'metadata' (default, returns path+size) or 'content' (returns full file content).")] string? resultType = null,
-            bool? peek = true)
-            => await WriteFile(path, content, resultType, peek, defaultDirectory: defaultDirectory);
+            [Description("Result detail level: 'metadata' (default, returns path+size) or 'content' (returns full file content).")] string? resultType = null)
+            => await WriteFile(path, content, resultType, defaultDirectory: defaultDirectory);
     }
 
     public static AIFunction AsAIFunction(string? defaultDirectory = null)

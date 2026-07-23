@@ -25,8 +25,8 @@ var cwdConfig = Path.Combine(cwd, "Glyphite.json");
 if (!File.Exists(cwdConfig))
 {
     var assembly = Assembly.GetExecutingAssembly();
-    using var stream = assembly.GetManifestResourceStream("Glyphite.Cli.appsettings.default.json")
-        ?? throw new InvalidOperationException("Embedded resource 'Glyphite.Cli.appsettings.default.json' not found.");
+    using var stream = assembly.GetManifestResourceStream("Glyphite.Cli.appsettings.json")
+        ?? throw new InvalidOperationException("Embedded resource 'Glyphite.Cli.appsettings.json' not found.");
     using var reader = new StreamReader(stream);
     var defaults = reader.ReadToEnd();
     File.WriteAllText(cwdConfig, defaults);

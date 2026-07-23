@@ -49,8 +49,6 @@ public class WebFetchOptions
             throw new InvalidOperationException("WebFetch:TimeoutSeconds must be > 0.");
         if (string.IsNullOrWhiteSpace(UserAgent))
             throw new InvalidOperationException("WebFetch:UserAgent is not configured.");
-        if (MaxContentLength <= 0)
-            throw new InvalidOperationException("WebFetch:MaxContentLength must be > 0.");
         if (string.IsNullOrWhiteSpace(DefaultFormat))
             throw new InvalidOperationException("WebFetch:DefaultFormat is not configured.");
     }
@@ -95,10 +93,6 @@ public class BashOptions
             throw new InvalidOperationException("Bash:ExecutablePath is not configured.");
         if (DiscoveryTimeoutMs <= 0)
             throw new InvalidOperationException("Bash:DiscoveryTimeoutMs must be > 0.");
-        if (DefaultTimeoutMs <= 0)
-            throw new InvalidOperationException("Bash:DefaultTimeoutMs must be > 0.");
-        if (MaxOutput <= 0)
-            throw new InvalidOperationException("Bash:MaxOutput must be > 0.");
     }
 }
 
@@ -178,8 +172,6 @@ public class SearchOptions
             throw new InvalidOperationException("Search:DetectBinarySampleSize must be > 0.");
         if (MaxEnumerationFiles <= 0)
             throw new InvalidOperationException("Search:MaxEnumerationFiles must be > 0.");
-        if (MaxReadChars <= 0)
-            throw new InvalidOperationException("Search:MaxReadChars must be > 0.");
     }
 }
 
@@ -197,16 +189,52 @@ public class DataOptions
     }
 }
 
+/// <summary>Per‑tool streaming options entry (array format, mirrors ToolExecution).</summary>
+public class ToolStreamingEntry
+{
+    public string Tool { get; set; } = "";
+    public ToolStreamingOptionsEntry? Options { get; set; }
+}
+
+/// <summary>Streaming display options for a single tool.</summary>
+public class ToolStreamingOptionsEntry
+{
+    /// <summary>Max result chars to show. 0 = hide, -1 = unlimited.</summary>
+    public int MaxSize { get; set; } = -1;
+    /// <summary>Arg names to mask with *** in the display.</summary>
+    public string[] HiddenArgs { get; set; } = [];
+}
+
 public class ToolStreamingOptions
 {
     public const string Section = "ToolStreaming";
-    public Dictionary<string, int> ToolMaxLength { get; set; } = [];
-    public Dictionary<string, string[]> ToolHiddenArgs { get; set; } = [];
+
+    /// <summary>Raw entries from config binding.</summary>
+    public ToolStreamingEntry[] Entries { get; set; } = [];
+
+    // Built lazily from Entries
+    private Dictionary<string, int>? _maxLengthLookup;
+    private Dictionary<string, string[]>? _hiddenArgsLookup;
+
+    private void EnsureLookup()
+    {
+        if (_maxLengthLookup is not null) return;
+        _maxLengthLookup = new(StringComparer.OrdinalIgnoreCase);
+        _hiddenArgsLookup = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entry in Entries)
+        {
+            if (string.IsNullOrEmpty(entry.Tool)) continue;
+            var opts = entry.Options ?? new ToolStreamingOptionsEntry();
+            _maxLengthLookup[entry.Tool] = opts.MaxSize;
+            _hiddenArgsLookup[entry.Tool] = opts.HiddenArgs ?? [];
+        }
+    }
 
     /// <summary>
     /// Lookup max length for a tool name. Key matching rules:
     /// <list type="bullet">
-    ///   <item><b>Exact match</b> — key equals the tool name (e.g. <c>"codegraph_search"</c>). Highest priority.</item>
+    ///   <item><b>Exact match</b> — key equals the tool name. Highest priority.</item>
     ///   <item><b>Wildcard match</b> — key ends with <c>*</c> (e.g. <c>"codegraph_*"</c>) → matches any tool
     ///         whose name starts with the prefix (without the trailing <c>*</c>).</item>
     /// </list>
@@ -216,14 +244,16 @@ public class ToolStreamingOptions
     /// </summary>
     public int GetMaxLength(string toolName, int defaultValue = -1)
     {
+        EnsureLookup();
+
         // 1. Exact match — highest priority
-        if (ToolMaxLength.TryGetValue(toolName, out var exact))
+        if (_maxLengthLookup!.TryGetValue(toolName, out var exact))
             return exact;
 
         // 2. Wildcard (*) match — longest matching prefix wins
         var best = defaultValue;
         var longest = -1;
-        foreach (var (key, value) in ToolMaxLength)
+        foreach (var (key, value) in _maxLengthLookup)
         {
             if (!key.EndsWith('*'))
                 continue;
@@ -235,6 +265,41 @@ public class ToolStreamingOptions
             }
         }
         return best;
+    }
+
+    /// <summary>
+    /// Get hidden args for a tool name (empty array if none). Key matching rules:
+    /// <list type="bullet">
+    ///   <item><b>Exact match</b> — key equals the tool name. Highest priority.</item>
+    ///   <item><b>Wildcard match</b> — key ends with <c>*</c> (e.g. <c>"codegraph_*"</c>) → matches any tool
+    ///         whose name starts with the prefix (without the trailing <c>*</c>).</item>
+    /// </list>
+    /// Exact match always beats any wildcard match.
+    /// If multiple wildcard keys match, the <b>longest</b> prefix wins.
+    /// </summary>
+    public string[] GetHiddenArgs(string toolName)
+    {
+        EnsureLookup();
+
+        // 1. Exact match — highest priority
+        if (_hiddenArgsLookup!.TryGetValue(toolName, out var exact))
+            return exact;
+
+        // 2. Wildcard (*) match — longest matching prefix wins
+        string[]? best = null;
+        var longest = -1;
+        foreach (var (key, value) in _hiddenArgsLookup)
+        {
+            if (!key.EndsWith('*'))
+                continue;
+            var prefix = key[..^1];
+            if (prefix.Length > longest && toolName.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                longest = prefix.Length;
+                best = value;
+            }
+        }
+        return best ?? [];
     }
 }
 
@@ -267,3 +332,21 @@ public class CompressionOptions
             throw new InvalidOperationException("Compression:CostSignificantThreshold must be non-negative.");
     }
 }
+
+/// <summary>Per‑tool execution settings from the ToolExecution config section.</summary>
+public class ToolExecutionEntry
+{
+    public string Tool { get; set; } = "";
+    public ToolExecutionOptionsEntry? Options { get; set; }
+}
+
+public class ToolExecutionOptionsEntry
+{
+    /// <summary>Timeout in seconds. 0 = use default.</summary>
+    public int Timeout { get; set; } = 120;
+    /// <summary>Max result size in characters. 0 = unlimited.</summary>
+    public int MaxSize { get; set; } = 100_000;
+    /// <summary>Auto‑clean result after tool loop (peek).</summary>
+    public bool Peek { get; set; } = false;
+}
+

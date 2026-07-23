@@ -18,7 +18,6 @@ public static class SearchTools
         string? path = null,
         SearchOptions? opts = null,
         string? defaultDirectory = null,
-        bool? peek = null,
         ContentDedupOptions? dedupOpts = null,
         ILogger? logger = null)
     {
@@ -60,7 +59,6 @@ public static class SearchTools
         string? include = null,
         SearchOptions? opts = null,
         string? defaultDirectory = null,
-        bool? peek = null,
         ContentDedupOptions? dedupOpts = null,
         ILogger? logger = null)
     {
@@ -248,24 +246,22 @@ public static class SearchTools
         [Description("Fast file pattern matching using glob patterns. Returns absolute paths sorted by last modified time (most recent first). Supports ** (recursive), * (single segment), and ? (single char). Faster than `bash find` for this purpose.")]
         public async Task<string> Glob(
             [Description("Glob pattern, e.g. \"**/*.cs\", \"src/**/*.ts\", \"*.json\"")] string pattern,
-            string? path = null,
-            bool? peek = null)
+            string? path = null)
         {
             var opts = await cfg.GetOptionsAsync<SearchOptions>(SearchOptions.Section, sessionId);
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
-            return await SearchTools.Glob(pattern, path, opts, defaultDirectory, peek, dedupOpts, logger);
+            return await SearchTools.Glob(pattern, path, opts, defaultDirectory, dedupOpts, logger);
         }
 
         [Description("Search file contents using a regex pattern. Returns file paths with line numbers and matching lines, sorted by file modification time (most recent first). Supports full .NET regex syntax. Use `include` to filter by file pattern (e.g. \"*.cs\", \"*.{ts,tsx}\"). Ideal for finding code references, imports, function definitions, error messages.")]
         public async Task<string> Grep(
             [Description("Regex pattern to search for. Supports .NET regex syntax (case-insensitive by default).")] string pattern,
             string? path = null,
-            [Description("File pattern to filter results, e.g. \"*.cs\", \"*.{ts,tsx}\", \"*.py\"")] string? include = null,
-            bool? peek = null)
+            [Description("File pattern to filter results, e.g. \"*.cs\", \"*.{ts,tsx}\", \"*.py\"")] string? include = null)
         {
             var opts = await cfg.GetOptionsAsync<SearchOptions>(SearchOptions.Section, sessionId);
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
-            return await SearchTools.Grep(pattern, path, include, opts, defaultDirectory, peek, dedupOpts, logger);
+            return await SearchTools.Grep(pattern, path, include, opts, defaultDirectory, dedupOpts, logger);
         }
     }
 

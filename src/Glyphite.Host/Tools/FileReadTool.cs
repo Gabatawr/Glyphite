@@ -17,7 +17,6 @@ public static class FileReadTool
         int? offset = null,
         int? limit = null,
         bool? compress = null,
-        bool? peek = null,
         string[]? dedupExtensions = null,
         string? defaultDirectory = null
     )
@@ -81,12 +80,11 @@ public static class FileReadTool
             string path,
             [Description("Starting line number, 1-indexed. Omit to read from beginning.")] int? offset = null,
             [Description("Maximum number of lines to return. Omit to read all lines from offset.")] int? limit = null,
-            [Description("Deduplicate repeated lines (auto-enabled for .log files, set false to disable).")] bool? compress = null,
-            bool? peek = null)
+            [Description("Deduplicate repeated lines (auto-enabled for .log files, set false to disable).")] bool? compress = null)
         {
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
             var searchOpts = await cfg.GetOptionsAsync<SearchOptions>(SearchOptions.Section, sessionId);
-            return await ReadFile(path, dedupOpts, searchOpts.MaxReadChars, offset, limit, compress, peek, dedupOpts.AutoDedupExtensions, defaultDirectory);
+            return await ReadFile(path, dedupOpts, searchOpts.MaxReadChars, offset, limit, compress, dedupOpts.AutoDedupExtensions, defaultDirectory);
         }
     }
 

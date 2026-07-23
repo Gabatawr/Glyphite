@@ -121,7 +121,6 @@ public class ConfigurationValidationTests
         {
             TimeoutSeconds = 30,
             UserAgent = "TestAgent/1.0",
-            MaxContentLength = 50000,
             DefaultFormat = "markdown"
         };
         opts.Validate();
@@ -134,7 +133,6 @@ public class ConfigurationValidationTests
         {
             TimeoutSeconds = 0,
             UserAgent = "TestAgent/1.0",
-            MaxContentLength = 50000,
             DefaultFormat = "markdown"
         };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
@@ -144,37 +142,22 @@ public class ConfigurationValidationTests
     [Fact]
     public void WebFetchOptions_TimeoutSecondsNegative_Throws()
     {
-        var opts = new WebFetchOptions { TimeoutSeconds = -1, UserAgent = "a", MaxContentLength = 1, DefaultFormat = "a" };
+        var opts = new WebFetchOptions { TimeoutSeconds = -1, UserAgent = "a", DefaultFormat = "a" };
         Assert.Throws<InvalidOperationException>(() => opts.Validate());
     }
 
     [Fact]
     public void WebFetchOptions_EmptyUserAgent_Throws()
     {
-        var opts = new WebFetchOptions { TimeoutSeconds = 30, UserAgent = "", MaxContentLength = 50000, DefaultFormat = "markdown" };
+        var opts = new WebFetchOptions { TimeoutSeconds = 30, UserAgent = "", DefaultFormat = "markdown" };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("UserAgent", ex.Message);
     }
 
     [Fact]
-    public void WebFetchOptions_MaxContentLengthZero_Throws()
-    {
-        var opts = new WebFetchOptions { TimeoutSeconds = 30, UserAgent = "a", MaxContentLength = 0, DefaultFormat = "markdown" };
-        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
-        Assert.Contains("MaxContentLength", ex.Message);
-    }
-
-    [Fact]
-    public void WebFetchOptions_MaxContentLengthNegative_Throws()
-    {
-        var opts = new WebFetchOptions { TimeoutSeconds = 30, UserAgent = "a", MaxContentLength = -1, DefaultFormat = "markdown" };
-        Assert.Throws<InvalidOperationException>(() => opts.Validate());
-    }
-
-    [Fact]
     public void WebFetchOptions_EmptyDefaultFormat_Throws()
     {
-        var opts = new WebFetchOptions { TimeoutSeconds = 30, UserAgent = "a", MaxContentLength = 50000, DefaultFormat = "" };
+        var opts = new WebFetchOptions { TimeoutSeconds = 30, UserAgent = "a", DefaultFormat = "" };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("DefaultFormat", ex.Message);
     }
@@ -264,8 +247,6 @@ public class ConfigurationValidationTests
         {
             ExecutablePath = "/bin/bash",
             DiscoveryTimeoutMs = 5000,
-            DefaultTimeoutMs = 30000,
-            MaxOutput = 100000
         };
         opts.Validate();
     }
@@ -273,7 +254,7 @@ public class ConfigurationValidationTests
     [Fact]
     public void BashOptions_EmptyExecutablePath_Throws()
     {
-        var opts = new BashOptions { ExecutablePath = "", DiscoveryTimeoutMs = 5000, DefaultTimeoutMs = 30000, MaxOutput = 100000 };
+        var opts = new BashOptions { ExecutablePath = "", DiscoveryTimeoutMs = 5000 };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("ExecutablePath", ex.Message);
     }
@@ -281,25 +262,9 @@ public class ConfigurationValidationTests
     [Fact]
     public void BashOptions_DiscoveryTimeoutMsZero_Throws()
     {
-        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 0, DefaultTimeoutMs = 30000, MaxOutput = 100000 };
+        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 0 };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("DiscoveryTimeoutMs", ex.Message);
-    }
-
-    [Fact]
-    public void BashOptions_DefaultTimeoutMsZero_Throws()
-    {
-        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 5000, DefaultTimeoutMs = 0, MaxOutput = 100000 };
-        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
-        Assert.Contains("DefaultTimeoutMs", ex.Message);
-    }
-
-    [Fact]
-    public void BashOptions_MaxOutputZero_Throws()
-    {
-        var opts = new BashOptions { ExecutablePath = "/bin/bash", DiscoveryTimeoutMs = 5000, DefaultTimeoutMs = 30000, MaxOutput = 0 };
-        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
-        Assert.Contains("MaxOutput", ex.Message);
     }
 
     // ── MemoryOptions ──
@@ -452,14 +417,6 @@ public class ConfigurationValidationTests
         var opts = new SearchOptions { MaxResultCount = 1, MaxTextFileSize = 1, MaxLineLength = 1, DetectBinarySampleSize = 1, MaxEnumerationFiles = 0 };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("MaxEnumerationFiles", ex.Message);
-    }
-
-    [Fact]
-    public void SearchOptions_MaxReadCharsZero_Throws()
-    {
-        var opts = new SearchOptions { MaxResultCount = 1, MaxTextFileSize = 1, MaxLineLength = 1, DetectBinarySampleSize = 1, MaxEnumerationFiles = 1, MaxReadChars = 0 };
-        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
-        Assert.Contains("MaxReadChars", ex.Message);
     }
 
     // ── DataOptions ──
