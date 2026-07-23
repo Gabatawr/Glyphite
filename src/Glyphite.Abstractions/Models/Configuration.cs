@@ -39,14 +39,10 @@ public class LlmModel
 public class WebFetchOptions
 {
     public const string Section = "WebFetch";
-    public int TimeoutSeconds { get; set; }
     public string UserAgent { get; set; } = string.Empty;
-    public int MaxContentLength { get; set; }
     public string DefaultFormat { get; set; } = string.Empty;
     public void Validate()
     {
-        if (TimeoutSeconds <= 0)
-            throw new InvalidOperationException("WebFetch:TimeoutSeconds must be > 0.");
         if (string.IsNullOrWhiteSpace(UserAgent))
             throw new InvalidOperationException("WebFetch:UserAgent is not configured.");
         if (string.IsNullOrWhiteSpace(DefaultFormat))
@@ -81,9 +77,6 @@ public class BashOptions
     public string ExecutablePath { get; set; } = string.Empty;
     public string DefaultDirectory { get; set; } = string.Empty;
     public int DiscoveryTimeoutMs { get; set; }
-    public int DefaultTimeoutMs { get; set; }
-    /// <summary>Max output chars for bash. Truncated to 1/3+2/3 with full output saved to tmp/.</summary>
-    public int MaxOutput { get; set; } = 100_000;
     public string[] AllowedExecutables { get; set; } = [];
     public string[] ForbiddenCommands { get; set; } = [];
     public string[] ForbiddenDirectories { get; set; } = [];
@@ -158,8 +151,6 @@ public class SearchOptions
     public int MaxLineLength { get; set; }
     public int DetectBinarySampleSize { get; set; }
     public int MaxEnumerationFiles { get; set; } = 50000;
-    /// <summary>Max output characters for read_file before returning a size-hint error.</summary>
-    public int MaxReadChars { get; set; } = 100_000;
     public void Validate()
     {
         if (MaxResultCount <= 0)

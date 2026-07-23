@@ -13,7 +13,7 @@ public static class FileReadTool
     public static async Task<string> ReadFile(
         string path,
         ContentDedupOptions dedupOpts,
-        int maxReadChars,
+        int? maxSize,
         int? offset = null,
         int? limit = null,
         bool? compress = null,
@@ -39,8 +39,8 @@ public static class FileReadTool
             var deduped = ContentDedup.Compress(raw, dedupOpts);
             var header = $"[File: {path}, {lines.Length} lines total, dedup]\n";
             var result = header + deduped;
-            if (result.Length > maxReadChars)
-                return $"Error: File too large ({result.Length} chars > {maxReadChars} limit). Use `offset`+`limit` to read specific sections.";
+            if (maxSize.HasValue && result.Length > maxSize.Value)
+                return $"Error: File too large ({result.Length} chars > {maxSize} limit). Use `offset`+`limit` to read specific sections.";
             return result;
         }
 
@@ -67,15 +67,15 @@ public static class FileReadTool
         sb.Insert(0, meta + "\n");
         var output = sb.ToString().TrimEnd();
 
-        if (output.Length > maxReadChars)
-            return $"Error: Result too large ({output.Length} chars > {maxReadChars} limit). Use `offset`+`limit` to read a smaller section.";
+        if (maxSize.HasValue && output.Length > maxSize.Value)
+            return $"Error: Result too large ({output.Length} chars > {maxSize} limit). Use `offset`+`limit` to read a smaller section.";
 
         return output;
     }
 
-    private sealed class ReadInvoker(IConfigService cfg, string? defaultDirectory, string? sessionId)
+    private sealed class ReadInvoker(IConfigService cfg, string? defaultDirectory, string? sessionId, int? maxSize)
     {
-        [Description("Read a file with optional line range and auto-dedup. Returns content with line numbers and file metadata (total lines, skipped, remaining). Lines are 1-indexed. Use `offset`+`limit` to read specific sections. Auto-deduplicates repeated lines for .log files (can be overridden with `compress`). Prefer this over bash `cat`/`head`/`tail` for file reading. Large files (>100K chars) will return an error — use offset+limit for those.")]
+        [Description("Read a file with optional line range and auto-dedup. Returns content with line numbers and file metadata (total lines, skipped, remaining). Lines are 1-indexed. Use `offset`+`limit` to read specific sections. Auto-deduplicates repeated lines for .log files (can be overridden with `compress`). Prefer this over bash `cat`/`head`/`tail` for file reading. Large files exceeding the configured tool execution limit will return an error — use offset+limit for those.")]
         public async Task<string> Execute(
             string path,
             [Description("Starting line number, 1-indexed. Omit to read from beginning.")] int? offset = null,
@@ -83,13 +83,12 @@ public static class FileReadTool
             [Description("Deduplicate repeated lines (auto-enabled for .log files, set false to disable).")] bool? compress = null)
         {
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
-            var searchOpts = await cfg.GetOptionsAsync<SearchOptions>(SearchOptions.Section, sessionId);
-            return await ReadFile(path, dedupOpts, searchOpts.MaxReadChars, offset, limit, compress, dedupOpts.AutoDedupExtensions, defaultDirectory);
+            return await ReadFile(path, dedupOpts, maxSize, offset, limit, compress, dedupOpts.AutoDedupExtensions, defaultDirectory);
         }
     }
 
-    public static AIFunction AsAIFunction(IConfigService cfg, string? defaultDirectory = null, string? sessionId = null)
+    public static AIFunction AsAIFunction(IConfigService cfg, string? defaultDirectory = null, string? sessionId = null, int? maxSize = null)
         => AIFunctionFactory.Create(
-            new ReadInvoker(cfg, defaultDirectory, sessionId).Execute,
+            new ReadInvoker(cfg, defaultDirectory, sessionId, maxSize).Execute,
             "read_file");
 }

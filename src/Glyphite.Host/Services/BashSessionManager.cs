@@ -318,7 +318,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
     {
         ct.ThrowIfCancellationRequested();
         var taskId = $"bg_{Interlocked.Increment(ref _taskSeq)}_{Guid.NewGuid().ToString("N")[..8]}";
-        var entry = new BackgroundProcessEntry(agentId, command, workdir, timeoutMs ?? _opts.DefaultTimeoutMs, _opts.ExecutablePath, _logger);
+        var entry = new BackgroundProcessEntry(agentId, command, workdir, timeoutMs ?? 120_000, _opts.ExecutablePath, _logger);
         _background[taskId] = entry;
         entry.Start();
         _logger.LogDebug("Background process '{TaskId}' started for agent '{AgentId}': {Command}", taskId, agentId, command);
@@ -332,7 +332,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
         if (wait)
         {
-            var completed = await entry.WaitAsync(timeoutMs ?? _opts.DefaultTimeoutMs, ct);
+            var completed = await entry.WaitAsync(timeoutMs ?? 120_000, ct);
             if (!completed)
             {
                 // Timeout / cancelled — kill and return what we have

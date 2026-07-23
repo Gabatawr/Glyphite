@@ -58,9 +58,7 @@ public class ConfigServiceTests
         var store = CreateStore();
         var config = BuildConfig(new Dictionary<string, string>
         {
-            ["WebFetch:TimeoutSeconds"] = "30",
             ["WebFetch:UserAgent"] = "TestBot/1.0",
-            ["WebFetch:MaxContentLength"] = "50000",
             ["WebFetch:DefaultFormat"] = "markdown"
         });
 
@@ -69,9 +67,7 @@ public class ConfigServiceTests
         var options = await service.GetOptionsAsync<WebFetchOptions>("WebFetch");
 
         Assert.NotNull(options);
-        Assert.Equal(30, options.TimeoutSeconds);
         Assert.Equal("TestBot/1.0", options.UserAgent);
-        Assert.Equal(50000, options.MaxContentLength);
         Assert.Equal("markdown", options.DefaultFormat);
     }
 
@@ -82,9 +78,7 @@ public class ConfigServiceTests
         var config = BuildConfig(new Dictionary<string, string>
         {
             ["Bash:ExecutablePath"] = "/bin/bash",
-            ["Bash:DiscoveryTimeoutMs"] = "5000",
-            ["Bash:DefaultTimeoutMs"] = "30000",
-            ["Bash:MaxOutput"] = "100000"
+            ["Bash:DiscoveryTimeoutMs"] = "5000"
         });
 
         var service = new ConfigService(store, config);
@@ -93,8 +87,6 @@ public class ConfigServiceTests
 
         Assert.Equal("/bin/bash", options.ExecutablePath);
         Assert.Equal(5000, options.DiscoveryTimeoutMs);
-        Assert.Equal(30000, options.DefaultTimeoutMs);
-        Assert.Equal(100000, options.MaxOutput);
     }
 
     [Fact]
@@ -107,8 +99,7 @@ public class ConfigServiceTests
             ["Search:MaxTextFileSize"] = "1048576",
             ["Search:MaxLineLength"] = "500",
             ["Search:DetectBinarySampleSize"] = "512",
-            ["Search:MaxEnumerationFiles"] = "50000",
-            ["Search:MaxReadChars"] = "100000"
+            ["Search:MaxEnumerationFiles"] = "50000"
         });
 
         var service = new ConfigService(store, config);
@@ -120,7 +111,6 @@ public class ConfigServiceTests
         Assert.Equal(500, options.MaxLineLength);
         Assert.Equal(512, options.DetectBinarySampleSize);
         Assert.Equal(50000, options.MaxEnumerationFiles);
-        Assert.Equal(100000, options.MaxReadChars);
     }
 
     [Fact]
@@ -289,25 +279,25 @@ public class ConfigServiceTests
 
         var config = BuildConfig(new Dictionary<string, string>
         {
-            ["WebFetch:TimeoutSeconds"] = "30"
+            ["WebFetch:UserAgent"] = "TestBot/1.0"
         });
 
         var service = new ConfigService(store, config);
 
         var options1 = await service.GetOptionsAsync<WebFetchOptions>("WebFetch");
-        Assert.Equal(30, options1.TimeoutSeconds);
+        Assert.Equal("TestBot/1.0", options1.UserAgent);
 
         // Simulate hot-reload by creating a new config with updated value
         // and recreating the service (since IConfiguration is immutable in tests)
         var newConfig = BuildConfig(new Dictionary<string, string>
         {
-            ["WebFetch:TimeoutSeconds"] = "60"
+            ["WebFetch:UserAgent"] = "NewBot/2.0"
         });
 
         var service2 = new ConfigService(store, newConfig);
 
         var options2 = await service2.GetOptionsAsync<WebFetchOptions>("WebFetch");
-        Assert.Equal(60, options2.TimeoutSeconds);
+        Assert.Equal("NewBot/2.0", options2.UserAgent);
     }
 
     [Fact]
@@ -317,14 +307,14 @@ public class ConfigServiceTests
         store.GetMergedConfigAsync("session-1")
             .Returns(Task.FromResult(new Dictionary<string, string>
             {
-                ["Bash:DefaultTimeoutMs"] = "60000"
+                ["Bash:DiscoveryTimeoutMs"] = "15000"
             }));
         store.GetMergedConfigAsync(null)
             .Returns(Task.FromResult(new Dictionary<string, string>()));
 
         var config = BuildConfig(new Dictionary<string, string>
         {
-            ["Bash:DefaultTimeoutMs"] = "30000",
+            ["Bash:DiscoveryTimeoutMs"] = "5000",
             ["Bash:ExecutablePath"] = "/bin/bash"
         });
 
@@ -333,7 +323,7 @@ public class ConfigServiceTests
         var options = await service.GetOptionsAsync<BashOptions>("Bash", "session-1");
 
         // Session override should take precedence
-        Assert.Equal(60000, options.DefaultTimeoutMs);
+        Assert.Equal(15000, options.DiscoveryTimeoutMs);
         // Global config should still apply
         Assert.Equal("/bin/bash", options.ExecutablePath);
     }

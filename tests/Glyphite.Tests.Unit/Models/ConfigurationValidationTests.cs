@@ -119,7 +119,6 @@ public class ConfigurationValidationTests
     {
         var opts = new WebFetchOptions
         {
-            TimeoutSeconds = 30,
             UserAgent = "TestAgent/1.0",
             DefaultFormat = "markdown"
         };
@@ -127,29 +126,9 @@ public class ConfigurationValidationTests
     }
 
     [Fact]
-    public void WebFetchOptions_TimeoutSecondsZero_Throws()
-    {
-        var opts = new WebFetchOptions
-        {
-            TimeoutSeconds = 0,
-            UserAgent = "TestAgent/1.0",
-            DefaultFormat = "markdown"
-        };
-        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
-        Assert.Contains("TimeoutSeconds", ex.Message);
-    }
-
-    [Fact]
-    public void WebFetchOptions_TimeoutSecondsNegative_Throws()
-    {
-        var opts = new WebFetchOptions { TimeoutSeconds = -1, UserAgent = "a", DefaultFormat = "a" };
-        Assert.Throws<InvalidOperationException>(() => opts.Validate());
-    }
-
-    [Fact]
     public void WebFetchOptions_EmptyUserAgent_Throws()
     {
-        var opts = new WebFetchOptions { TimeoutSeconds = 30, UserAgent = "", DefaultFormat = "markdown" };
+        var opts = new WebFetchOptions { UserAgent = "", DefaultFormat = "markdown" };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("UserAgent", ex.Message);
     }
@@ -157,7 +136,7 @@ public class ConfigurationValidationTests
     [Fact]
     public void WebFetchOptions_EmptyDefaultFormat_Throws()
     {
-        var opts = new WebFetchOptions { TimeoutSeconds = 30, UserAgent = "a", DefaultFormat = "" };
+        var opts = new WebFetchOptions { UserAgent = "a", DefaultFormat = "" };
         var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
         Assert.Contains("DefaultFormat", ex.Message);
     }
@@ -373,8 +352,7 @@ public class ConfigurationValidationTests
             MaxTextFileSize = 1048576,
             MaxLineLength = 500,
             DetectBinarySampleSize = 512,
-            MaxEnumerationFiles = 50000,
-            MaxReadChars = 100000
+            MaxEnumerationFiles = 50000
         };
         opts.Validate();
     }

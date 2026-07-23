@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Text;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Services;
@@ -17,7 +16,6 @@ public static class BashTool
         string agentId,
         ContentDedupOptions dedupOpts,
         BashOptions bashOpts,
-        string tmpDir,
         CancellationToken ct = default)
     {
         var trimmed = command.Trim();
@@ -48,10 +46,9 @@ public static class BashTool
 
         try
         {
-            timeoutMs ??= bashOpts.DefaultTimeoutMs;
+            timeoutMs ??= 120_000;
             var output = await manager.ExecuteAsync(agentId, command, workdir, timeoutMs, ct);
-            var compressed = ContentDedup.Compress(output, dedupOpts);
-            return TruncateOutput(compressed, bashOpts.MaxOutput, tmpDir, agentId);
+            return ContentDedup.Compress(output, dedupOpts);
         }
         catch (OperationCanceledException)
         {
@@ -63,45 +60,9 @@ public static class BashTool
         }
     }
 
-    internal static string TruncateOutput(string output, int maxChars, string tmpDir, string agentId)
+    private sealed class BashInvoker(IBashSessionManager manager, string agentId, IConfigService cfg)
     {
-        if (string.IsNullOrEmpty(output) || output.Length <= maxChars)
-            return output;
-
-        // Save full output to tmp file
-        var agentTmp = Path.Combine(tmpDir, SanitizeForPath(agentId));
-        Directory.CreateDirectory(agentTmp);
-        var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-        var outPath = Path.Combine(agentTmp, $"bash_{timestamp}.out");
-
-        File.WriteAllText(outPath, output);
-
-        // Build truncated view: 1/3 from top + truncation notice + 2/3 from bottom
-        var topChars = maxChars / 3;
-        var bottomChars = maxChars - topChars;
-
-        ReadOnlySpan<char> span = output.AsSpan();
-        var top = span[..topChars];
-        var bottom = span[^bottomChars..];
-
-        var note = $"[Output truncated: showing 1/3 ({topChars} chars) and 2/3 ({bottomChars} chars) of {output.Length} total]\n" +
-                   $"[Full output saved to: {outPath}]\n";
-
-        return string.Concat(top.ToString(), "\n", note, bottom.ToString());
-    }
-
-    private static string SanitizeForPath(string input)
-    {
-        var invalid = Path.GetInvalidFileNameChars();
-        var sb = new StringBuilder(input.Length);
-        foreach (var ch in input)
-            sb.Append(invalid.Contains(ch) ? '_' : ch);
-        return sb.ToString();
-    }
-
-    private sealed class BashInvoker(IBashSessionManager manager, string agentId, IConfigService cfg, string tmpDir)
-    {
-        [Description("Execute a bash command in a persistent shell session. Working directory and environment persist between commands. Output is auto-deduplicated (repeated lines compressed). Large outputs are truncated (showing 1/3 from top + 2/3 from bottom) and the full output is saved to a temp file for later reading. Use `workdir` to run in a specific directory (preferred over cd). Use `timeoutMs` for long-running commands. Use `back=true` to run as a background process — returns immediately with a `taskId`. Then use `bash_back` to poll/wait for results. Prefer non-interactive commands: use flags to disable pagers, auto-confirm prompts, provide input via flags rather than stdin.")]
+        [Description("Execute a bash command in a persistent shell session. Working directory and environment persist between commands. Output is auto-deduplicated (repeated lines compressed). Large outputs are truncated (1/3 top + 2/3 bottom), full output saved to a temp file. Use `workdir` to run in a specific directory (preferred over cd). Use `timeoutMs` for long-running commands. Use `back=true` to run as a background process — returns immediately with a `taskId`. Then use `bash_back` to poll/wait for results. Prefer non-interactive commands: use flags to disable pagers, auto-confirm prompts, provide input via flags rather than stdin.")]
         public async Task<string> Execute(
             [Description("The bash command to execute. Use non-interactive flags where possible (--no-pager, -y, etc.).")] string command,
             string? workdir = null,
@@ -118,12 +79,12 @@ public static class BashTool
             }
 
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, agentId);
-            return await ExecuteBash(command, workdir, timeoutMs, manager, agentId, dedupOpts, bashOpts, tmpDir, ct);
+            return await ExecuteBash(command, workdir, timeoutMs, manager, agentId, dedupOpts, bashOpts, ct);
         }
     }
 
-    public static AIFunction AsAIFunction(IBashSessionManager manager, string agentId, IConfigService cfg, string tmpDir)
+    public static AIFunction AsAIFunction(IBashSessionManager manager, string agentId, IConfigService cfg)
         => AIFunctionFactory.Create(
-            new BashInvoker(manager, agentId, cfg, tmpDir).Execute,
+            new BashInvoker(manager, agentId, cfg).Execute,
             "bash");
 }

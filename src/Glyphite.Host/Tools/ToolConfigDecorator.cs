@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 
@@ -15,7 +16,9 @@ namespace Glyphite.Host.Tools;
 /// <list type="bullet">
 ///   <item><c>timeout</c> — creates a <see cref="CancellationTokenSource"/>
 ///     with the timeout, linked to the caller's token.</item>
-///   <item><c>maxSize</c> — truncates the result string if it exceeds the limit.</item>
+///   <item><c>maxSize</c> — truncates the result string if it exceeds the limit.
+///     Full output is saved to a temp file, and the truncated view shows
+///     1/3 from the top and 2/3 from the bottom.</item>
 /// </list>
 /// </para>
 /// The injected <c>extra_cfg</c> is stripped before forwarding the call downstream.
@@ -27,6 +30,8 @@ public sealed class ToolConfigDecorator : AIFunction
     private readonly bool _peekDefault;
     private readonly int _contentMaxSizeDefault;
     private readonly int _timeoutSecondsDefault;
+    private readonly string _tmpDir;
+    private readonly string? _agentId;
 
     /// <summary>Name of the single injected parameter.</summary>
     private const string ExtraCfgParamName = "extra_cfg";
@@ -39,13 +44,13 @@ public sealed class ToolConfigDecorator : AIFunction
         ExtraCfgParamName,
     };
 
-    private const string DefaultTruncationFormat = "Content truncated at {0} chars. Full result length: {1}";
-
     public ToolConfigDecorator(
         AIFunction inner,
         bool peekDefault,
         int contentMaxSizeDefault,
-        int timeoutSecondsDefault)
+        int timeoutSecondsDefault,
+        string tmpDir = "",
+        string? agentId = null)
     {
         _inner = inner;
         _peekDefault = peekDefault;
@@ -53,6 +58,8 @@ public sealed class ToolConfigDecorator : AIFunction
         _contentMaxSizeDefault = contentMaxSizeDefault == -1 ? int.MaxValue : contentMaxSizeDefault;
         // <= 0 = unlimited timeout (runtime sentinel: int.MaxValue)
         _timeoutSecondsDefault = timeoutSecondsDefault <= 0 ? int.MaxValue : timeoutSecondsDefault;
+        _tmpDir = tmpDir;
+        _agentId = agentId;
         // Schema shows original values (before sentinel conversion) for LLM clarity
         _schemaWithConfig = InjectExtraCfgParam(inner.JsonSchema,
             _peekDefault, contentMaxSizeDefault, timeoutSecondsDefault);
@@ -109,11 +116,38 @@ public sealed class ToolConfigDecorator : AIFunction
             // ── Invoke the tool with effective cancellation ──
             var result = await _inner.InvokeAsync(cleanedArgs ?? args, effectiveCt);
 
-            // ── Enforce contentMaxSize ──
+            // ── Enforce contentMaxSize: 1/3 top + truncation notice + 2/3 bottom ──
             if (contentMaxSize < int.MaxValue && result is string str && str.Length > contentMaxSize)
             {
-                result = str[..contentMaxSize] +
-                    $"\n\n[{string.Format(DefaultTruncationFormat, contentMaxSize, str.Length)}]";
+                // Save full output to temp file
+                if (!string.IsNullOrEmpty(_tmpDir))
+                {
+                    var agentTmp = Path.Combine(_tmpDir, SanitizeForPath(_agentId ?? "unknown"));
+                    Directory.CreateDirectory(agentTmp);
+                    var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+                    var safeName = SanitizeForPath(Name);
+                    var outPath = Path.Combine(agentTmp, $"{safeName}_{timestamp}.out");
+                    File.WriteAllText(outPath, str);
+
+                    // Build truncated view: 1/3 from top + notice + 2/3 from bottom
+                    var topChars = contentMaxSize / 3;
+                    var bottomChars = contentMaxSize - topChars;
+
+                    ReadOnlySpan<char> span = str.AsSpan();
+                    var top = span[..topChars];
+                    var bottom = span[^bottomChars..];
+
+                    var note = $"[Output truncated: showing 1/3 ({topChars} chars) and 2/3 ({bottomChars} chars) of {str.Length} total]\n" +
+                               $"[Full output saved to: {outPath}]\n";
+
+                    result = string.Concat(top.ToString(), "\n", note, bottom.ToString());
+                }
+                else
+                {
+                    // No tmp dir configured — simple truncation
+                    result = str[..contentMaxSize] +
+                        $"\n\n[Content truncated at {contentMaxSize} chars. Full result length: {str.Length}]";
+                }
             }
 
             return result;
@@ -122,6 +156,15 @@ public sealed class ToolConfigDecorator : AIFunction
         {
             timeoutCts?.Dispose();
         }
+    }
+
+    private static string SanitizeForPath(string input)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sb = new StringBuilder(input.Length);
+        foreach (var ch in input)
+            sb.Append(invalid.Contains(ch) ? '_' : ch);
+        return sb.ToString();
     }
 
     private static void ResolveFromJsonElement(JsonElement je,

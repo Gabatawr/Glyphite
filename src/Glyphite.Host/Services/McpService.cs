@@ -32,6 +32,7 @@ public class McpService : IAsyncDisposable
     private readonly ConcurrentDictionary<string, string> _serverConfigHashes = new();
     private readonly IConfigService _cfg;
     private readonly ILogger _logger;
+    private readonly string _tmpDir;
     private string? _configHash;
     private string? _mcpExecHash;
 
@@ -39,6 +40,7 @@ public class McpService : IAsyncDisposable
     {
         _cfg = cfg;
         _logger = logger;
+        _tmpDir = Path.Combine(AppContext.BaseDirectory, "tmp");
     }
 
     public async Task<IReadOnlyList<AITool>> GetToolsAsync(string? sessionId = null, CancellationToken ct = default)
@@ -71,7 +73,9 @@ public class McpService : IAsyncDisposable
                             new PrefixedAIFunction(t, name),
                             peekDefault: execOpts.Peek ?? false,
                             contentMaxSizeDefault: execOpts.MaxSize ?? 100000,
-                            timeoutSecondsDefault: execOpts.Timeout ?? 300
+                            timeoutSecondsDefault: execOpts.Timeout ?? 300,
+                            tmpDir: _tmpDir,
+                            agentId: sessionId
                         );
                     }).ToList().AsReadOnly();
                     _toolCache[name] = list;
@@ -180,7 +184,9 @@ public class McpService : IAsyncDisposable
                     new PrefixedAIFunction(t, name),
                     peekDefault: execOpts.Peek ?? false,
                     contentMaxSizeDefault: execOpts.MaxSize ?? 100000,
-                    timeoutSecondsDefault: execOpts.Timeout ?? 300
+                    timeoutSecondsDefault: execOpts.Timeout ?? 300,
+                    tmpDir: _tmpDir,
+                    agentId: sessionId
                 );
             }).ToList().AsReadOnly();
             _toolCache[name] = list;

@@ -63,23 +63,25 @@ public class ToolRegistry : IToolRegistry
 
         var toolExec = LoadToolExecution();
 
+        var readFileMaxSize = toolExec.TryGetValue("read_file", out var readOpts) ? (int?)readOpts.MaxSize : null;
+
         var tools = new List<AITool>
         {
-            WrapWithConfig(BashTool.AsAIFunction(_bashManager, agentId, _cfgService, _tmpDir), toolExec, "bash"),
-            WrapWithConfig(BashBackTool.AsAIFunction(_bashManager, _cfgService, _tmpDir, agentId), toolExec, "bash_back"),
-            WrapWithConfig(FileReadTool.AsAIFunction(_cfgService, _defaultDir, agentId), toolExec, "read_file"),
-            WrapWithConfig(FileWriteTool.AsAIFunction(_defaultDir), toolExec, "write_file"),
-            WrapWithConfig(FilePatchTool.AsAIFunction(_defaultDir), toolExec, "patch_file"),
-            WrapWithConfig(TodoTool.AsTodoFunction(_agentStore, _blockStore, agentId, _cfgService), toolExec, "todo"),
-            WrapWithConfig(WebFetchTool.AsFetchFunction(_cfgService, agentId, _tmpDir), toolExec, "fetch_web"),
-            WrapWithConfig(SearchTools.AsGlobFunction(_cfgService, _defaultDir, agentId, _logger), toolExec, "search_glob"),
-            WrapWithConfig(SearchTools.AsGrepFunction(_cfgService, _defaultDir, agentId, _logger), toolExec, "search_grep"),
-            WrapWithConfig(KVStoreTool.AsKvStoreFunction(_kvStore, _cfgService, _subAgentManager, agentId), toolExec, "kvstore"),
+            WrapWithConfig(BashTool.AsAIFunction(_bashManager, agentId, _cfgService), toolExec, "bash", _tmpDir, agentId),
+            WrapWithConfig(BashBackTool.AsAIFunction(_bashManager, _cfgService, agentId), toolExec, "bash_back", _tmpDir, agentId),
+            WrapWithConfig(FileReadTool.AsAIFunction(_cfgService, _defaultDir, agentId, readFileMaxSize), toolExec, "read_file", _tmpDir, agentId),
+            WrapWithConfig(FileWriteTool.AsAIFunction(_defaultDir), toolExec, "write_file", _tmpDir, agentId),
+            WrapWithConfig(FilePatchTool.AsAIFunction(_defaultDir), toolExec, "patch_file", _tmpDir, agentId),
+            WrapWithConfig(TodoTool.AsTodoFunction(_agentStore, _blockStore, agentId, _cfgService), toolExec, "todo", _tmpDir, agentId),
+            WrapWithConfig(WebFetchTool.AsFetchFunction(_cfgService, agentId), toolExec, "fetch_web", _tmpDir, agentId),
+            WrapWithConfig(SearchTools.AsGlobFunction(_cfgService, _defaultDir, agentId, _logger), toolExec, "search_glob", _tmpDir, agentId),
+            WrapWithConfig(SearchTools.AsGrepFunction(_cfgService, _defaultDir, agentId, _logger), toolExec, "search_grep", _tmpDir, agentId),
+            WrapWithConfig(KVStoreTool.AsKvStoreFunction(_kvStore, _cfgService, _subAgentManager, agentId), toolExec, "kvstore", _tmpDir, agentId),
         };
 
         // Memory tool: available for main agent, or for subagents with saveMemory=true
         if (!isSubAgent || includeMemory)
-            tools.Add(WrapWithConfig(MemoryTool.AsAIFunction(_blockMemory, agentId, _cfgService), toolExec, "memory"));
+            tools.Add(WrapWithConfig(MemoryTool.AsAIFunction(_blockMemory, agentId, _cfgService), toolExec, "memory", _tmpDir, agentId));
 
         // MCP tools: available for all agents
         var mcpTools = await _mcpService.GetToolsAsync(agentId);
@@ -88,9 +90,9 @@ public class ToolRegistry : IToolRegistry
         // Subagent tools: only for main agent (prevents recursion)
         if (!isSubAgent)
         {
-            tools.Add(WrapWithConfig(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _cfgService, _bashManager, agentId), toolExec, "subagent_run"));
-            tools.Add(WrapWithConfig(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _cfgService, agentId), toolExec, "subagent_use"));
-            tools.Add(WrapWithConfig(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _agentStore, _blockStore, agentId), toolExec, "subagent_list"));
+            tools.Add(WrapWithConfig(SubAgentTool.AsSubAgentRunFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _cfgService, _bashManager, agentId), toolExec, "subagent_run", _tmpDir, agentId));
+            tools.Add(WrapWithConfig(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _cfgService, agentId), toolExec, "subagent_use", _tmpDir, agentId));
+            tools.Add(WrapWithConfig(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _agentStore, _blockStore, agentId), toolExec, "subagent_list", _tmpDir, agentId));
         }
 
         return tools;
@@ -127,7 +129,9 @@ public class ToolRegistry : IToolRegistry
     private static AIFunction WrapWithConfig(
         AIFunction tool,
         Dictionary<string, ToolExecutionOptionsEntry> toolExec,
-        string toolName)
+        string toolName,
+        string tmpDir = "",
+        string? agentId = null)
     {
         if (toolExec.TryGetValue(toolName, out var opts))
         {
@@ -135,7 +139,9 @@ public class ToolRegistry : IToolRegistry
                 tool,
                 peekDefault: opts.Peek,
                 contentMaxSizeDefault: opts.MaxSize,
-                timeoutSecondsDefault: opts.Timeout);
+                timeoutSecondsDefault: opts.Timeout,
+                tmpDir: tmpDir,
+                agentId: agentId);
         }
 
         // No config for this tool — still wrap with defaults
@@ -143,20 +149,25 @@ public class ToolRegistry : IToolRegistry
             tool,
             peekDefault: false,
             contentMaxSizeDefault: 100_000,
-            timeoutSecondsDefault: 120);
+            timeoutSecondsDefault: 120,
+            tmpDir: tmpDir,
+            agentId: agentId);
     }
 
     /// <summary>
     /// Wraps an <see cref="AITool"/> (MCP tool) with <see cref="ToolConfigDecorator"/>.
     /// MCP tools are returned as <see cref="AIFunction"/>, so casting is safe.
+    /// Note: MCP tools are also wrapped by McpService directly, not via this method.
     /// </summary>
     private static AITool WrapWithConfig(
         AITool tool,
         Dictionary<string, ToolExecutionOptionsEntry> toolExec,
-        string toolName)
+        string toolName,
+        string tmpDir = "",
+        string? agentId = null)
     {
         if (tool is AIFunction func)
-            return WrapWithConfig(func, toolExec, toolName);
+            return WrapWithConfig(func, toolExec, toolName, tmpDir, agentId);
         return tool;
     }
 }
