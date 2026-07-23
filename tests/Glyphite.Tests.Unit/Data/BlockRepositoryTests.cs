@@ -52,30 +52,6 @@ public class BlockRepositoryTests : IDisposable
     }
 
     [Fact]
-    public async Task Can_SoftDelete_Block()
-    {
-        const string agentId = "test-agent-softdel";
-        using var sessionRepo = CreateSessionRepo();
-        await sessionRepo.EnsureSessionAsync(agentId);
-
-        using var repo = CreateBlockRepo();
-        await repo.AppendBlocksAsync(agentId,
-            [new MemoryBlock { Type = BlockType.user_message, Content = "Delete me", Number = 1 }], nextNumber: 2);
-
-        var (removed, protectedNums) = await repo.DeleteBlocksAsync(agentId, [1]);
-        Assert.Equal(1, removed);
-        Assert.Empty(protectedNums);
-
-        var loaded = await repo.LoadBlocksAsync(agentId);
-        Assert.Empty(loaded);
-
-        var deletedBlock = await repo.GetBlockAsync(agentId, 1, includeDeleted: true);
-        Assert.NotNull(deletedBlock);
-        Assert.Equal("Delete me", deletedBlock!.Content);
-    }
-
-
-    [Fact]
     public async Task Blocks_List_Filtered_By_AgentId()
     {
         using var sessionRepo = CreateSessionRepo();

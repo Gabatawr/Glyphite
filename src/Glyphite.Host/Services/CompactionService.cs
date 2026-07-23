@@ -13,14 +13,14 @@ namespace Glyphite.Host.Services;
 /// Auto-compaction service: after each turn, if context usage exceeds the configured threshold,
 /// compresses old conversation history via LLM summarization. Supports two strategies:
 ///
-/// <c>fibo</c> (default): groups blocks into Fibonacci-sized zones by turn, strips unprotected
-/// blocks from old zones (zone 3+), summarizes protected blocks via LLM, replaces history with
-/// summaries + intact new zones. Zones 1-2 (the two newest turns) are preserved entirely intact.
+/// <c>fibo</c> (default): groups blocks into Fibonacci-sized zones by turn, sends ALL content
+/// from old zones (zone 3+) to LLM for summarization, replaces history with summaries + intact
+/// new zones. Zones 1-2 (the two newest turns) are preserved entirely intact.
 ///
-/// <c>struct</c>: sends ALL content (including unprotected tool results, auto_tool, reasoning)
+/// <c>struct</c>: sends ALL content (including tool results, auto_tool, reasoning)
 /// from agent_data to the save boundary (last 2 turns) into a single LLM call with a structured
-/// template. After summarization, unprotected old blocks are soft-deleted. The model sees the full
-/// picture for a more informed summary. One summary block replaces all old history.
+/// template. After summarization, old blocks are replaced by the new summary via
+/// <c>ReplaceBlocksSinceAsync</c>. The model sees the full picture for a more informed summary.
 /// </summary>
 public class CompactionService
 {
@@ -99,18 +99,17 @@ public class CompactionService
         var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
         strategy ??= PickStrategy(compOpts);
         var blocks = await _blockStore.LoadBlocksAsync(agentId);
-        var memOpts = await _cfgService.GetOptionsAsync<MemoryOptions>(MemoryOptions.Section, agentId);
         var model = await _agentStore.GetAgentModelAsync(agentId);
 
         if (strategy == "struct")
         {
             return await StructStrategy.CompactAsync(
-                agentId, compOpts, memOpts, blocks, model,
+                agentId, compOpts, blocks, model,
                 _blockStore, _chatClient, _agentStore, _logger, contextWindow);
         }
 
         return await FiboStrategy.CompactAsync(
-            agentId, compOpts, memOpts, blocks, model,
+            agentId, compOpts, blocks, model,
             _blockStore, _chatClient, _agentStore, _logger, contextWindow);
     }
 
@@ -262,17 +261,6 @@ public class CompactionService
 
         return groups;
     }
-
-    /// <summary>Build HashSet of protected block types from MemoryOptions config.</summary>
-    public static HashSet<BlockType> GetProtectedBlockTypes(MemoryOptions memOpts)
-    {
-        return new HashSet<BlockType>(
-            memOpts.ProtectedBlockTypes.Select(t => Enum.Parse<BlockType>(t, ignoreCase: true)));
-    }
-
-    /// <summary>Tool names that are treated as protected during compaction.</summary>
-    public static readonly HashSet<string> SubagentToolNames = new(StringComparer.OrdinalIgnoreCase)
-        { "subagent_run", "subagent_use" };
 
     /// <summary>Find the agent_data block. Returns null and logs warning if not found.</summary>
     public static MemoryBlock? FindAgentDataBlock(List<MemoryBlock> blocks, string agentId, ILogger logger)

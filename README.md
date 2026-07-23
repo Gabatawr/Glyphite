@@ -31,9 +31,8 @@
   - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
   - **Indexed queries** — fast context loading via indexed `(agent_id, is_deleted)`
 - **Atomic auto-compaction** — two strategies (configurable via `Strategies` dict with flags):
-  - **`fibo`** — Fibonacci zones (1, 1, 2, 3, 5, 8...), zone 3+ cleaned & summarized in **parallel**, zones 1-2 intact
+  - **`fibo`** — Fibonacci zones (1, 1, 2, 3, 5, 8...), zone 3+ fully sent to LLM & summarized **in parallel**, zones 1-2 intact
   - **`struct`** — full history (unfiltered) → one structured LLM summary (Goal/Progress/Decisions/Files/Next Steps); summary placed **after** preserved zones
-  - Protected blocks (agent_data, user_message, agent_task, agent_message, turn) and subagent tools preserved
   - If summarization fails, blocks fall back intact
   - **No UI freeze:** `[AutoTool: compression]` notification appears immediately (via `EvaluateCompactionStatusAsync`), then slow summarization runs in background
 - **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
@@ -220,18 +219,17 @@ When enabled, Glyphite automatically compresses old conversation history via LLM
 ### `fibo` (Fibonacci zones)
 - History is grouped into Fibonacci-sized zones (1, 1, 2, 3, 5, 8... turns) from newest to oldest.
 - **Zones 1-2** (1+1 newest turns) preserved intact — **all blocks**, including tool calls, auto_tool results, reasoning.
-- **Zones 3+** stripped of unprotected blocks (tool results, auto_tool, reasoning), then each zone summarized via LLM **in parallel** with structured template: `## Topics / Key Actions / Results / State Changes / Open & Carried Over`.
+- **Zones 3+** fully sent to LLM (all block types), each zone summarized **in parallel** with structured template: `## Topics / Key Actions / Results / State Changes / Open & Carried Over`.
 - Subagent tools (`subagent_run`/`subagent_use`) preserved in summarization.
 
 ### `struct` (structured cut)
 - Every block from `agent_data` (exclusive) to the end — **unfiltered** — sent to LLM in **one** call with structured template: `## Goal / Progress / Key Decisions / Relevant Files / Next Steps`.
-- LLM sees the full picture (tool calls, results, reasoning, protected blocks), producing a single comprehensive summary that covers **everything**, including the last 2 preserved turns.
+- LLM sees the full picture (all block types — tool calls, results, reasoning, turn messages), producing a single comprehensive summary that covers **everything**, including the last 2 preserved turns.
 - Summary block placed **after** preserved zones (last 2 turns). Order in DB: `agent_data → preserved turns → struct summary`.
-- All old blocks (except `agent_data`) soft-deleted. Summary replaces all removed history.
+- All old blocks (except `agent_data`) replaced atomically by the new summary.
 
 ### Common
-- **Protected blocks:** `agent_data`, `user_message`, `agent_task`, `agent_message`, `turn` — always preserved
-- **Fail-safe:** if summarization fails, protected blocks kept intact (no data loss)
+- **Fail-safe:** if summarization fails, old blocks kept intact (no data loss)
 - **Atomic replacement:** summaries + preserved blocks inserted atomically via `ReplaceBlocksSinceAsync` in a single SQLite transaction. On crash — rollback, nothing lost.
 - **Usage tracking:** compaction LLM calls record hit/miss/output tokens to session stats
 - **Notification:** `[AutoTool: compression | {"AutoCompress":true,"Strategy":"fibo",...}]` shown before the LLM call
@@ -300,7 +298,7 @@ All configuration is reloaded from disk every turn — no `/reload` command need
 | `Search.*` | Search exclusions | per-call via `SearchTools` |
 | `Todo.*` | Todo valid statuses | per-call via `TodoTool` |
 | `WebFetch.*` | HTTP timeouts | per-call via `WebFetchTool` |
-| `Memory.*` | Protected block types, reload agent file | per-turn via `BlockMemoryProvider` |
+| `Memory.*` | Reload agent file | per-turn via `BlockMemoryProvider` |
 | `Compression.*` | Compression thresholds | per-turn via `TurnProcessor` |
 
 Changes are reflected immediately on the next user turn — no restart required.

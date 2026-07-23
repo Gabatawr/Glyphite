@@ -251,16 +251,8 @@ public class ConfigurationValidationTests
     [Fact]
     public void MemoryOptions_Valid_DoesNotThrow()
     {
-        var opts = new MemoryOptions { ProtectedBlockTypes = ["agent_data"] };
+        var opts = new MemoryOptions();
         opts.Validate();
-    }
-
-    [Fact]
-    public void MemoryOptions_EmptyProtectedBlockTypes_Throws()
-    {
-        var opts = new MemoryOptions { ProtectedBlockTypes = [] };
-        var ex = Assert.Throws<InvalidOperationException>(() => opts.Validate());
-        Assert.Contains("ProtectedBlockTypes", ex.Message);
     }
 
     // ── TodoOptions ──

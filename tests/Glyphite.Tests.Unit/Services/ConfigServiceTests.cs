@@ -150,24 +150,6 @@ public class ConfigServiceTests
     }
 
     [Fact]
-    public async Task GetOptionsAsync_Loads_MemoryOptions_Correctly()
-    {
-        var store = CreateStore();
-        var config = BuildConfig(new Dictionary<string, string>
-        {
-            ["Memory:ProtectedBlockTypes:0"] = "agent_data",
-            ["Memory:ProtectedBlockTypes:1"] = "system_info"
-        });
-
-        var service = new ConfigService(store, config);
-
-        var options = await service.GetOptionsAsync<MemoryOptions>("Memory");
-
-        Assert.Contains("agent_data", options.ProtectedBlockTypes);
-        Assert.Contains("system_info", options.ProtectedBlockTypes);
-    }
-
-    [Fact]
     public async Task GetOptionsAsync_Loads_TodoOptions_Correctly()
     {
         var store = CreateStore();

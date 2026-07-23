@@ -288,87 +288,6 @@ public class BlockRepository : RepositoryBase, IBlockStore
         });
     }
 
-    public async Task<(int Removed, List<double> Protected)> DeleteBlocksAsync(string agentId, double[] numbers, HashSet<BlockType>? protectedTypes = null)
-    {
-        return await WithLockAsync(async () =>
-        {
-            var all = await LoadBlocksCoreAsync(agentId);
-            protectedTypes ??= new HashSet<BlockType>
-            {
-                BlockType.agent_data
-            };
-
-            var protectedNums = new List<double>();
-            var toRemove = new HashSet<double>();
-
-            foreach (var num in numbers)
-            {
-                var block = all.FirstOrDefault(b => b.Number == num);
-                if (block is null) continue;
-                if (protectedTypes.Contains(block.Type))
-                {
-                    protectedNums.Add(num);
-                    continue;
-                }
-                toRemove.Add(num);
-            }
-
-            var removed = 0;
-            if (toRemove.Count > 0)
-            {
-                await using var tx = await _conn.BeginTransactionAsync();
-                foreach (var num in toRemove)
-                    removed += await _conn.ExecuteAsync(
-                    SqlSoftDeleteBlock,
-                        new { sid = agentId, num });
-                await tx.CommitAsync();
-            }
-
-            return (removed, protectedNums);
-        });
-    }
-
-    public async Task<int> DeleteBlocksByFilterAsync(string agentId, string[]? types, TimeSpan? recent, HashSet<BlockType>? protectedTypes = null)
-    {
-        return await WithLockAsync(async () =>
-        {
-            var all = await LoadBlocksCoreAsync(agentId);
-            protectedTypes ??= new HashSet<BlockType>
-            {
-                BlockType.agent_data
-            };
-
-            var typeSet = types is not null ? new HashSet<string>(types, StringComparer.OrdinalIgnoreCase) : null;
-            var cutoff = recent.HasValue ? DateTime.UtcNow - recent.Value : (DateTime?)null;
-
-            var toRemove = new List<double>();
-            foreach (var block in all)
-            {
-                if (protectedTypes.Contains(block.Type))
-                    continue;
-
-                if (typeSet is not null && !typeSet.Contains(block.Type.ToString()))
-                    continue;
-
-                if (cutoff.HasValue && block.CreatedAt < cutoff.Value)
-                    continue;
-
-                toRemove.Add(block.Number);
-            }
-
-            if (toRemove.Count == 0) return 0;
-
-            await using var tx = await _conn.BeginTransactionAsync();
-            var removed = 0;
-            foreach (var num in toRemove)
-                removed += await _conn.ExecuteAsync(
-                    SqlSoftDeleteBlock,
-                    new { sid = agentId, num });
-            await tx.CommitAsync();
-            return removed;
-        });
-    }
-
     public async Task ClearAgentBlocksAsync(string agentId)
     {
         await WithLockAsync(async () =>
@@ -390,34 +309,25 @@ public class BlockRepository : RepositoryBase, IBlockStore
         });
     }
 
-    public async Task ReplaceBlocksSinceAsync(string agentId, double fromNumber, List<MemoryBlock> newBlocks, double nextNumber, HashSet<double>? softDeleteNums = null)
+    public async Task ReplaceBlocksSinceAsync(string agentId, double fromNumber, List<MemoryBlock> newBlocks, double nextNumber)
     {
         await WithLockAsync(async () =>
         {
             await using var tx = await _conn.BeginTransactionAsync();
 
-            // 1. Soft-delete individual blocks (old zone unprotected blocks)
-            if (softDeleteNums is not null && softDeleteNums.Count > 0)
-            {
-                foreach (var num in softDeleteNums)
-                    await _conn.ExecuteAsync(
-                    SqlSoftDeleteBlock,
-                        new { sid = agentId, num });
-            }
-
-            // 2. Hard-delete everything from the cutoff point
+            // 1. Hard-delete everything from the cutoff point
             await _conn.ExecuteAsync(
                 "DELETE FROM blocks WHERE agent_id = @sid AND number >= @num",
                 new { sid = agentId, num = fromNumber });
 
-            // 3. Insert new blocks (summaries + preserved newest zones)
+            // 2. Insert new blocks (summaries + preserved newest zones)
             foreach (var block in newBlocks)
             {
                 block.UpdatedAt = DateTime.UtcNow;
                 await _conn.ExecuteAsync(SqlInsertBlock, MapFromBlock(agentId, block));
             }
 
-            // 4. Update next_number
+            // 3. Update next_number
             await _conn.ExecuteAsync(
                 "UPDATE sessions SET next_number = @Next WHERE id = @Id",
                 new { Id = agentId, Next = nextNumber });

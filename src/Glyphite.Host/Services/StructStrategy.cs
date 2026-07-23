@@ -16,10 +16,10 @@ namespace Glyphite.Host.Services;
 /// The LLM sees the full conversation for the most informed summary.
 ///
 /// After summarisation:
-///   - Old turns (3+) have their unprotected blocks soft-deleted.
+///   - Old turns (3+) are hard-deleted by <c>ReplaceBlocksSinceAsync</c>.
 ///   - Already compressed zones (summary+turn from previous compactions)
-///     pass through untouched — their blocks are never soft-deleted.
-///   - Non-agent_data blocks in group 0 (before first turn) are also soft-deleted.
+///     pass through untouched.
+///   - Non-agent_data blocks in group 0 (before first turn) are also deleted.
 ///   - The last 2 turns (zones 1 &amp; 2) are preserved intact for granular access.
 ///
 /// Block order in DB/context:
@@ -36,7 +36,6 @@ internal static class StructStrategy
     internal static async Task<bool> CompactAsync(
         string agentId,
         CompressionOptions compOpts,
-        MemoryOptions memOpts,
         List<MemoryBlock> blocks,
         string? model,
         IBlockStore blockStore,
@@ -60,9 +59,6 @@ internal static class StructStrategy
 
         if (toCompressGroups.Count == 0)
             return false;
-
-        var protectedTypes = CompactionService.GetProtectedBlockTypes(memOpts);
-        var isSubagentTool = CompactionService.SubagentToolNames;
 
         // ── Build LLM input: EVERYTHING except agent_data ──
         // Send ALL blocks — group 0 (excl. agent_data), compressed, to_compress, and safe.
@@ -95,30 +91,6 @@ internal static class StructStrategy
         {
             foreach (var b in group)
                 summarizeBlocks.Add(b);
-        }
-
-        // ── Build soft-delete set: unprotected blocks from to_compress + group 0 junk ──
-        // Compressed groups and safe groups are NEVER soft-deleted.
-        var allOldNums = new HashSet<double>();
-
-        // Group 0: non-agent_data, non-compressed blocks → soft-delete
-        foreach (var b in turnGroups[0])
-        {
-            if (b.Type != BlockType.agent_data && !b.Compressed)
-                allOldNums.Add(b.Number);
-        }
-
-        // To-compress zones: unprotected blocks → soft-delete
-        foreach (var group in toCompressGroups)
-        {
-            foreach (var b in group)
-            {
-                if (!protectedTypes.Contains(b.Type) &&
-                    !(b.Type == BlockType.tool && b.ToolName is not null && isSubagentTool.Contains(b.ToolName)))
-                {
-                    allOldNums.Add(b.Number);
-                }
-            }
         }
 
         if (summarizeBlocks.Count == 0)
@@ -178,17 +150,15 @@ internal static class StructStrategy
             newBlocks.Add(turnBlock);
         }
 
-        // Atomically replace history: hard-delete everything after agent_data,
-        // soft-delete old unprotected blocks, insert new order
+        // Atomically replace history: hard-delete everything after agent_data, insert new order
         await blockStore.ReplaceBlocksSinceAsync(
             agentId,
             fromNumber: agentBlock.Number + 1,
             newBlocks,
-            nextNumber,
-            softDeleteNums: allOldNums.Count > 0 ? allOldNums : null);
+            nextNumber);
 
-        logger.LogInformation("Compacted session {SessionId}: struct summary (first), {CompressedCount} compressed preserved, {SafeCount} safe preserved, {SoftDeletedCount} soft-deleted",
-            agentId, compressedGroups.Count, safeGroups.Count, allOldNums.Count);
+        logger.LogInformation("Compacted session {SessionId}: struct summary, {CompressedCount} compressed preserved, {SafeCount} safe preserved",
+            agentId, compressedGroups.Count, safeGroups.Count);
         return true;
     }
 }

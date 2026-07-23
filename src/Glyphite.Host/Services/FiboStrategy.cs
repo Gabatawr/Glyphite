@@ -69,7 +69,6 @@ internal static class FiboStrategy
     internal static async Task<bool> CompactAsync(
         string agentId,
         CompressionOptions compOpts,
-        MemoryOptions memOpts,
         List<MemoryBlock> blocks,
         string? model,
         IBlockStore blockStore,
@@ -101,42 +100,12 @@ internal static class FiboStrategy
         if (zones.Count == 0)
             return false;
 
-        var protectedTypes = CompactionService.GetProtectedBlockTypes(memOpts);
-        var isSubagentTool = CompactionService.SubagentToolNames;
-
-        var allUnprotectedNums = new HashSet<double>();
-        var zoneProtectedBlocks = new List<List<MemoryBlock>>();
-
-        // Clean non-agent_data blocks from the agent_data group (group 0)
-        // These are blocks that ended up in the same group as agent_data (before first turn marker)
-        // and would otherwise survive compaction forever
-        var agentDataGroup = turnGroups[0];
-        foreach (var b in agentDataGroup)
-        {
-            if (b.Type != BlockType.agent_data && !b.Compressed)
-                allUnprotectedNums.Add(b.Number);
-        }
-
-        foreach (var zone in zones)
-        {
-            // Mark unprotected blocks for later soft-delete, but include ALL blocks in LLM input
-            // (the LLM sees tool results, reasoning, auto_tool — produces a richer summary)
-            foreach (var b in zone)
-            {
-                if (!protectedTypes.Contains(b.Type) &&
-                    !(b.Type == BlockType.tool && b.ToolName is not null && isSubagentTool.Contains(b.ToolName)))
-                    allUnprotectedNums.Add(b.Number);
-            }
-
-            zoneProtectedBlocks.Add(zone);
-        }
-
-        logger.LogInformation("Compacting session {SessionId}: {TotalBlocks} blocks, {ZoneCount} old zones to summarize (fibo, unfiltered), threshold {Threshold}%",
-            agentId, blocks.Count, zoneProtectedBlocks.Count, compOpts.AutoThreshold);
+        logger.LogInformation("Compacting session {SessionId}: {TotalBlocks} blocks, {ZoneCount} old zones to summarize (fibo), threshold {Threshold}%",
+            agentId, blocks.Count, zones.Count, compOpts.AutoThreshold);
 
         // Summarize all old zones via LLM in parallel
         var zoneTasks = new List<(List<MemoryBlock> zone, Task<(string? Summary, long Hit, long Miss, long Output)> task)>();
-        foreach (var zone in zoneProtectedBlocks)
+        foreach (var zone in zones)
         {
             if (zone.Count == 0) continue;
             zoneTasks.Add((zone, CompactionService.SummarizeZoneAsync(agentId, zone, model, chatClient, agentStore, logger, structured: false)));
@@ -216,11 +185,10 @@ internal static class FiboStrategy
             agentId,
             fromNumber: agentBlock.Number + 1,
             newBlocks,
-            nextNumber,
-            softDeleteNums: allUnprotectedNums.Count > 0 ? allUnprotectedNums : null);
+            nextNumber);
 
-        logger.LogInformation("Compacted session {SessionId}: {SummaryCount} summaries, {CompressedCount} compressed preserved, {FallbackCount} fallback blocks, {SafeCount} safe preserved, {SoftDeletedCount} soft-deleted (fibo)",
-            agentId, summaryResults.Count, compressedGroups.Count, summarizedFallback.Count, safeGroups.Count, allUnprotectedNums.Count);
+        logger.LogInformation("Compacted session {SessionId}: {SummaryCount} summaries, {CompressedCount} compressed preserved, {FallbackCount} fallback blocks, {SafeCount} safe preserved (fibo)",
+            agentId, summaryResults.Count, compressedGroups.Count, summarizedFallback.Count, safeGroups.Count);
         return true;
     }
 }
