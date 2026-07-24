@@ -248,3 +248,86 @@ Both chains ensure:
 - Peek detected via `extra_cfg.peek` → flat `peek` → config default → tool-specific hardcoded default
 - Timeout enforced via `CancellationTokenSource`
 - Output trimmed to configurable `maxSize`
+
+## Latest changes — InteractiveConfirmation, SafetyChecker, Reasoning auto-compact, protected blocks removal
+
+### 1. Interactive confirmation for dangerous commands
+
+| File | Changes |
+|------|---------|
+| `InteractiveConfirmation.cs` | **New** — single-line console panel with arrow-key navigation (← →), timer auto-select, KVStore persistence of last choice. Uses `pendingRead ??= Task.Run(Console.ReadKey)` to avoid accumulating abandoned read tasks in the thread pool |
+| `BashTool.cs` | After forbidden-command check, checks `CheckRequireCommands` and shows `InteractiveConfirmation` panel. `Stop` blocks command, `Check` runs SafetyChecker |
+| `Configuration.cs` | Added `CheckRequireCommands` (string[]) and `CheckRequireCommandsTimeout` (int, seconds) to `BashOptions` |
+| `appsettings.json` | Added `CheckRequireCommands` list (50+ dangerous patterns) and `CheckRequireCommandsTimeout: 5` |
+
+**Key design decisions:**
+- Single-line `\r` in-place updates — no multi-line positioning issues
+- Timer disabled on first arrow press — explicit choice required
+- Last choice persisted per-agent in KVStore (`confirmation_last_choice`)
+- Subagents skip panel → `Choice.Check` → SafetyChecker
+- Non-interactive fallback: if console is redirected, returns `Choice.Check`
+
+### 2. SafetyChecker — LLM-powered safety evaluation
+
+| File | Changes |
+|------|---------|
+| `SafetyChecker.cs` | **New** — reads conversation context, makes direct LLM call, returns `SafetyVerdict {allow, why}`. Records usage via `UsageParser.Normalize` |
+| `ISafetyChecker.cs` | **New** — interface with `CheckAsync(agentId, command, ct)` |
+| `SafetyVerdict.cs` | **New** — record with `Allow` (bool) and `Why` (string) |
+| `BashTool.cs` | Integrated `ISafetyChecker` in `ExecuteBash` for the `Check` branch |
+| `ToolRegistry.cs` | Passes `ISafetyChecker` to `BashTool.AsAIFunction` |
+| `HostServiceCollectionExtensions.cs` | Registered `SafetyChecker` as singleton |
+
+**Context loading:** reads blocks from last `turn` marker → last `user_message` → last `agent_task` → full session. LLM evaluates whether the command is safe given the current conversation.
+
+### 3. Reasoning auto-compaction (replaces PeekReasoning)
+
+| File | Changes |
+|------|---------|
+| `TurnProcessor.Streaming.cs` | `FlushReasoning` now always saves reasoning blocks (no peek marker) |
+| `TurnProcessor.cs` | At turn start, `agent_reasoning` blocks > `AutoCompressReasoningMaxSize` chars are LLM-compacted **in parallel**. `BuildPeekCleanMessage` removed |
+| `Configuration.cs` | Removed `PeekReasoning` / `PeekToolReasoning` from `AgentOptions`. Added `AutoCompressReasoning` / `AutoCompressReasoningMaxSize` to `CompressionOptions` |
+| `appsettings.json`, `Glyphite.json` | Removed `Agent.PeekReasoning` / `Agent.PeekToolReasoning`; added `Compression.AutoCompressReasoning: true` / `AutoCompressReasoningMaxSize: 6000` |
+
+### 4. Protected blocks system removed
+
+| File | Changes |
+|------|---------|
+| `Configuration.cs` | Removed `ProtectedBlockTypes` field and validation |
+| `IBlockStore.cs`, `IBlockMemoryProvider.cs` | Removed `DeleteBlocksAsync` and `DeleteBlocksByFilterAsync` (dead code) |
+| `BlockRepository.cs`, `BlockMemoryProvider.cs` | Removed dead methods; `ReplaceBlocksSinceAsync` simplified (no more `softDeleteNums`) |
+| `FiboStrategy.cs`, `StructStrategy.cs` | Removed `protectedTypes`, `allUnprotectedNums`/`allOldNums`, `softDeleteNums`, `memOpts` |
+| `CompactionService.cs` | Removed `GetProtectedBlockTypes()`, `SubagentToolNames` (no static protected lists needed) |
+| Tests | Removed 3 tests for protected blocks; 114 remain |
+
+### 5. MaxSize semantics fix for ToolConfigDecorator
+
+| Behavior | Before | After |
+|----------|--------|-------|
+| `MaxSize: -1` | `int.MaxValue` (unlimited) ✅ | `int.MaxValue` (unlimited) ✅ |
+| `MaxSize: 0` | `int.MaxValue` (unlimited) ❌ | **`0`** (hide from LLM) ✅ |
+| `MaxSize: N` | First N chars ✅ | First N chars ✅ |
+
+```csharp
+// Before:
+_contentMaxSizeDefault = contentMaxSizeDefault > 0 ? contentMaxSizeDefault : int.MaxValue;
+// After:
+_contentMaxSizeDefault = contentMaxSizeDefault == -1 ? int.MaxValue : contentMaxSizeDefault;
+```
+
+### 6. Task.Run leak fix in InteractiveConfirmation
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| Threads blocked | ∞ (new `Task.Run` per iteration, abandoned on each timer tick) | Max 1 (`pendingRead ??=`) |
+| Keystroke stealing | Yes — old read tasks steal keys from the active reader | No — single reusable read task |
+
+### 7. KV store cleanup on agent deletion
+
+Added `DELETE FROM kv_store WHERE agent_id = @sid` to `DeleteSessionAsync` — previously only `config`, `blocks`, `session_usage` tables were cleaned. `kv_store` entries for deleted agents are now removed.
+
+### Current state
+
+- **Version:** `1.3.24`
+- **Tests:** 114/114 (removed 3 protected-blocks tests + 2 timeout tests)
+- **Build:** 0 errors, 0 warnings

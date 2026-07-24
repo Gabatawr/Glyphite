@@ -18,7 +18,7 @@
 - **SessionManager** centralizes agent lifecycle — create, clone, switch, delete agents; persist/resume sessions; hot-reload config per agent
 - **InputHistory** shared between sessions — user messages and commands accessible across agent switches
 - **Built-in tools:**
-  - `bash` — shell commands
+  - `bash` — shell commands with interactive confirmation for dangerous commands
   - `read_file` / `write_file` / `patch_file` — file operations with diff highlighting
   - `fetch_web` — HTTP requests
   - `search_glob` / `search_grep` — file and content search
@@ -35,17 +35,21 @@
   - **`struct`** — full history (unfiltered) → one structured LLM summary (Goal/Progress/Decisions/Files/Next Steps); summary placed **after** preserved zones
   - If summarization fails, blocks fall back intact
   - **No UI freeze:** `[AutoTool: compression]` notification appears immediately (via `EvaluateCompactionStatusAsync`), then slow summarization runs in background
+- **Reasoning auto-compaction** — large `agent_reasoning` blocks (>6K chars) are automatically compressed by the LLM after each turn. Configurable via `Compression.AutoCompressReasoning` and `AutoCompressReasoningMaxSize`.
+- **Interactive confirmation for dangerous commands** — when `bash` is called with a command matching `CheckRequireCommands`, an interactive panel appears: `[OK] [Stop] [Check]`. Arrow keys navigate, Enter confirms, timer auto-selects. Last choice persists per-agent via KVStore. Subagents skip the panel and go directly to SafetyChecker.
+- **SafetyChecker** — LLM-powered safety evaluation for shell commands in subagents (and the `Check` option). Reads conversation context, makes a direct LLM call, and returns `allow:true/false` with a reason. Usage is recorded to session stats. Falls back to `allow` on errors.
 - **Config hot-reload per turn** — changes to `Glyphite.json` / `Glyphite.{agent}.json` are picked up on the next user turn. No restart needed. Every section (Bash, Search, ToolStreaming, McpServers, etc.) refreshes automatically. MCP servers reconnect on config change via hash comparison.
-- **ToolStreaming** — per-tool output and display control. Set `MaxSize` (`-1` full, `0` hidden, `N` trim), configure `HiddenArgs` (arguments hidden from console), and per-tool `Peek`/`Timeout`/`MaxSize` via `ToolExecution`. Works for all tools including MCP.
+- **ToolStreaming** — per-tool output and display control. Set `MaxSize` (`-1` full, `0` hidden, `N` trim), configure `HiddenArgs` (arguments hidden from console), and per-tool `Peek`/`Timeout`/`MaxSize` via `ToolExecution`. Works for all tools including MCP. Wildcard `*` support (e.g. `codegraph_*` matches all tools from that server).
+- **ToolExecution** — per-tool execution settings (timeout, maxSize, peek) configured as an array. Serverside truncation with 1/3+2/3 view and full output saved to a temp file. Works for all tools including MCP.
 - **Content deduplication** — repeated lines compressed in bash, read, and search tool outputs
 - **Rich rendering** — syntax highlighting, diffs, color schemes. Color-coded tool rendering for subagent and memory actions.
 - **Markdown table formatting** — agent-generated markdown tables are automatically detected and rendered as formatted console tables with proportional column widths, centered headers, multi-line cell support, and word-wrap. Works in streaming, replay, and subagent results.
 - **Incremental saving** — conversation blocks are saved as they're generated
 - **Live streaming** — text/reasoning chunks rendered in real-time with color transitions and mode switches
 - **Peek tool calls** — LLM can mark tool calls as `peek=true` to see the result once before it's truncated to `(peek)`. File writes/patches always execute regardless of peek.
-- **Auto-tool events** — compaction and peek-reasoning notifications shown as compact auto-tool blocks
+- **Auto-tool events** — compaction, reasoning compression, and safety-check notifications shown as compact auto-tool blocks
 - **Structured file logging** — all host service logs written to `~/.glyphite/logs/{date}-{run}.log` via Serilog + `ILogger<T>`. No console noise from subagents.
-- **Prompt prefix** — colored segments: DarkGray default, DarkYellow (good cache rate), White (bad rate / significant cost)
+- **Prompt prefix** — colored segments: DarkGray default, DarkYellow (good cache rate), White (bad rate / significant cost), Magenta (context large but all zones already compressed)
 - **Tab completion** — `/*` commands with tab completion
 - **Inline args** — `/new MyAgent`, `/use OtherAgent`, `/delete OldAgent`
 - **Versioning** — auto-increment patch on every debug build, rollover at >99, version shown in greeting and via `-v`
@@ -109,7 +113,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 
 | Tool | Description |
 |------|-------------|
-| `bash` | Execute shell commands with timeout and output limits. `back=true` runs as background process, returns taskId immediately |
+| `bash` | Execute shell commands with timeout and output limits. `back=true` runs as background process, returns taskId immediately. Commands matching `CheckRequireCommands` trigger interactive confirmation panel ([OK]/[Stop]/[Check]) with arrow keys and timer |
 | `bash_back` | Manage background bash tasks: `list` (show all tasks), `wait` (block until done, kills on timeout), `partial` (poll current output without killing) |
 | `read_file` | Read file contents with line numbers, offset/limit for partial reads, and auto-dedup for logs |
 | `write_file` | Create / overwrite a file |
@@ -289,17 +293,17 @@ All configuration is reloaded from disk every turn — no `/reload` command need
 | Section | Applied to | Refresh mechanism |
 |---------|-----------|-------------------|
 | `LLM.*` | Model, context window, API key, endpoint | per-turn via `TurnProcessor` |
-| `Agent.*` | Max tool iterations, peek settings | per-turn via `TurnProcessor` |
+| `Agent.*` | Max tool iterations | per-turn via `TurnProcessor` |
 | `ToolStreaming.*` | Per-tool display (MaxSize, HiddenArgs) | per-turn via `ConsoleRenderer.RefreshAsync` |
 | `ToolExecution.*` | Per-tool peek/timeout/maxSize defaults | per-turn via `ToolRegistry.WrapWithConfig` |
 | `McpServers.*` | MCP server connections | hash-based reconnect via `McpService` |
 | `McpExecution.*` | Per-server/per-tool MCP execution settings | per-turn via `McpService.GetToolsAsync` |
-| `Bash.*` | Shell timeouts, forbidden commands | per-call via `BashTool` + per-session via `BashSessionManager` |
+| `Bash.*` | Shell timeouts, forbidden commands, CheckRequireCommands | per-call via `BashTool` + per-session via `BashSessionManager` |
 | `Search.*` | Search exclusions | per-call via `SearchTools` |
 | `Todo.*` | Todo valid statuses | per-call via `TodoTool` |
-| `WebFetch.*` | HTTP timeouts | per-call via `WebFetchTool` |
+| `WebFetch.*` | HTTP settings | per-call via `WebFetchTool` |
 | `Memory.*` | Reload agent file | per-turn via `BlockMemoryProvider` |
-| `Compression.*` | Compression thresholds | per-turn via `TurnProcessor` |
+| `Compression.*` | Compression thresholds, AutoCompressReasoning | per-turn via `TurnProcessor` |
 
 Changes are reflected immediately on the next user turn — no restart required.
 
@@ -321,6 +325,8 @@ Control how tools are displayed and truncated in the console. Configured in `Gly
 
 Works for all tools including MCP (use prefixed name like `codegraph_explore`). Wildcard `*` matches any tool name suffix (e.g. `codegraph_*` matches all tools from the `codegraph` server). Changes are picked up per-turn without restart.
 
+> **Note:** the `ToolStreaming` and `ToolExecution` configs control **independent** MaxSize values. `ToolStreaming.MaxSize` controls what's shown in the console; `ToolExecution.MaxSize` controls what's sent to the LLM server-side (via `ToolConfigDecorator`). You can hide output from the console while still showing full output to the LLM, or vice versa.
+
 ## ToolExecution
 
 Per-tool execution settings — peek, timeout, and output size. Configured in `Glyphite.json` as an array:
@@ -336,16 +342,84 @@ Per-tool execution settings — peek, timeout, and output size. Configured in `G
 ```
 
 - **`Peek`** — whether the tool result is marked as peek by default (LLM can still override via `extra_cfg.peek`)
-- **`Timeout`** — max execution time in seconds before the tool is cancelled
-- **`MaxSize`** — max output characters (tool result is truncated server-side before the LLM sees it)
+- **`Timeout`** — max execution time in seconds before the tool is cancelled. Applied via `CancellationTokenSource` linked to the caller's token
+- **`MaxSize`** — max output characters. When exceeded:
+  - Full output is saved to a temp file: `{tmpDir}/{agentId}/{toolName}_{timestamp}.out`
+  - Truncated view shows **1/3 from top + truncation notice + 2/3 from bottom** (so the LLM sees both the beginning and the end)
+  - If no `tmpDir` is configured (subagents), simple inlined truncation with a length note
 
 The LLM can override any setting per-call via `extra_cfg` (e.g. `"extra_cfg": { "peek": true, "timeout": 600 }`).
 
 Works for all tools including MCP — use the prefixed tool name (e.g. `codegraph_explore`) or wildcard suffix (e.g. `codegraph_*`).
 
+## Interactive confirmation for dangerous commands
+
+When the model calls `bash` with a command matching `CheckRequireCommands`, an interactive panel appears in the console:
+
+```
+· 5s ⚠ [OK]  Stop  Check · rm -rf /tmp/test
+```
+
+| Key | Action |
+|-----|--------|
+| `←` `→` | Cycle highlight, **disable timer** |
+| `Enter` | Confirm highlighted choice |
+| Timer expires | Auto-selects highlighted choice |
+
+Three choices:
+
+| Choice | Behavior |
+|--------|----------|
+| **OK** | Command executes normally |
+| **Stop** | Command blocked, model receives `"Command blocked by user"` |
+| **Check** | LLM-powered safety evaluation via `SafetyChecker` |
+
+### Persistence
+
+The last selected choice is saved per-agent in KVStore under `confirmation_last_choice`. On the next confirmation prompt, the saved choice is pre-selected.
+
+### Subagent behavior
+
+Subagents (`subagent_run` / `subagent_use`) **skip the panel** entirely — the `isSubAgent` flag causes an immediate return of `Choice.Check`. The command goes directly to `SafetyChecker` for LLM evaluation.
+
+### Configuration
+
+```json
+"Bash": {
+  "CheckRequireCommands": [
+    "rm", "dd", "chmod", "chown",
+    "systemctl", "apt install", "pip install",
+    "iptables", "docker system prune", ...
+  ],
+  "CheckRequireCommandsTimeout": 5
+}
+```
+
+`CheckRequireCommandsTimeout` — seconds before timer auto-selects the highlighted choice (default 10, set to 5 in defaults).
+
+## SafetyChecker
+
+LLM-powered safety evaluation for shell commands. Used when the user selects **Check** in the interactive confirmation panel, or automatically for subagents.
+
+```
+Command → InteractiveConfirmation.ShowAsync
+  → isSubAgent? → Choice.Check (skip panel)
+  → User pressed Check? → SafetyChecker.CheckAsync
+  → Reads last N conversation blocks for context
+  → Makes a direct LLM call (same model, preserves cache)
+  → Returns {allow: true/false, why: "..."}
+  → allow → command executes
+  → block → model receives error with reason
+```
+
+- **Context-aware:** SafetyChecker reads blocks from the last `turn` marker (or `user_message` / `agent_task` fallback) to the end — full current turn context
+- **Usage recorded:** hit/miss/output tokens are saved to session stats via `UsageParser.Normalize`
+- **Fallback to safe:** on LLM failure or malformed JSON, defaults to `allow: true` with a note
+- **No blocking on errors:** if the LLM call fails, the command proceeds
+
 ## Peek tool calls
 
-The LLM can pass `"peek": true` to any tool to mark the result as transient. Per-tool peek defaults can be configured via `ToolExecution` (see below):
+The LLM can pass `"peek": true` to any tool to mark the result as transient. Per-tool peek defaults can be configured via `ToolExecution`:
 
 ```json
 "ToolExecution": [
@@ -362,12 +436,28 @@ When peek is active:
 - The LLM sees the full result **exactly once** — on the next iteration after the tool completes
 - After the LLM generates a response, the result is **truncated to `(peek)`** in the message list
 - In the database, the block's `tool_result` is never saved (skipped by `TurnProcessor`)
-- Reasoning blocks with `peek=true` are cleaned at the start of the next turn via `RemovePeekBlocksAsync`
-- The auto-tool `[AutoTool: peek_reasoning | {"count":N}]` notifies when reasoning peek blocks are cleaned
+- Reasoning blocks are **not** peek-tagged anymore — they are auto-compacted via `Compression.AutoCompressReasoning` (see below)
 
 **How it works:** `FailSafeChatClient` tracks `_pendingPeekCallIds` during tool execution. After the LLM consumes the results (reads them and generates a response), it replaces the real data with `(peek)` in `messageList`. The LLM sees the data once, then sees only `(peek)` on subsequent iterations.
 
 > Peek is for inspection — use it to read files, check command output, or fetch web pages without cluttering the conversation history.
+
+## Reasoning auto-compaction
+
+Large `agent_reasoning` blocks are automatically compressed after each turn. This replaces the old "peek reasoning" system.
+
+```json
+"Compression": {
+  "AutoCompressReasoning": true,
+  "AutoCompressReasoningMaxSize": 6000
+}
+```
+
+- **Trigger:** after each turn, all `agent_reasoning` blocks > `AutoCompressReasoningMaxSize` chars are compacted
+- **Process:** blocks are compacted **in parallel** by the LLM, each reduced to ~`maxSize/4/2` tokens (~750 chars)
+- **Result:** a new summary `agent_reasoning` block replaces the original; `AutoTool: compress_reasoning` is shown inline
+- **Usage recorded:** compaction LLM calls save hit/miss/output to session stats
+- **Parallel:** all oversized reasoning blocks are compacted concurrently via `Task.WhenAll`
 
 ## Models
 
@@ -437,7 +527,7 @@ cp ~/.glyphite/backup/glyphite.v1.0.0 ~/.glyphite/glyphite
 
 ## Testing
 
-Tests are in the `tests/Glyphite.Tests.Unit/` directory with 118 tests covering configuration validation, data layer (SessionRepository, BlockRepository), ConfigService, and FilePatchTool — written with xUnit + NSubstitute.
+Tests are in the `tests/Glyphite.Tests.Unit/` directory with 114 tests covering configuration validation, data layer (SessionRepository, BlockRepository), ConfigService, and FilePatchTool — written with xUnit + NSubstitute.
 
 ## License
 
