@@ -4,7 +4,7 @@ namespace Glyphite.Abstractions.Interfaces;
 
 /// <summary>
 /// Evaluates whether a shell command is safe to execute given recent conversation context.
-/// Used by the interactive confirmation "Проверка" option.
+/// Used by the interactive confirmation "Check" option.
 /// </summary>
 public interface ISafetyChecker
 {

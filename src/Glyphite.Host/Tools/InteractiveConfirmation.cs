@@ -18,7 +18,7 @@ internal static class InteractiveConfirmation
 {
     public enum Choice { Ok, Stop, Check }
 
-    private static readonly string[] ChoiceLabels = ["ОК", "Стоп", "Проверка"];
+    private static readonly string[] ChoiceLabels = ["OK", "Stop", "Check"];
     private const string LastChoiceKey = "confirmation_last_choice";
 
     /// <summary>
