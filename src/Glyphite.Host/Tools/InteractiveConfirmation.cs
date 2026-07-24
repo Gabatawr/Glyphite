@@ -11,6 +11,8 @@ namespace Glyphite.Host.Tools;
 /// Timer auto-selects the highlighted choice on expiry.
 /// Falls back to <see cref="Choice.Check"/> if console is redirected (non-interactive).
 /// Last choice is persisted per-agent in KVStore under "confirmation_last_choice".
+/// Uses a single reusable Task.Run(Console.ReadKey) to avoid accumulating
+/// abandoned read tasks that steal keystrokes from the active reader.
 /// </summary>
 internal static class InteractiveConfirmation
 {
@@ -23,6 +25,8 @@ internal static class InteractiveConfirmation
     /// Show an interactive confirmation prompt and wait for user input.
     /// Single-line with \r in-place updates.
     /// Saves the selected choice per-agent via KVStore for next prompt.
+    /// Uses a single reusable <c>Task.Run(Console.ReadKey)</c> — only one pending
+    /// read task exists at any time, so no keystroke-stealing between abandoned tasks.
     /// </summary>
     public static async Task<Choice> ShowAsync(
         string command,
@@ -47,14 +51,44 @@ internal static class InteractiveConfirmation
         // Write initial line
         Console.Error.Write(BuildPrompt(displayCmd, choices, selected, timerActive, timeoutMs, startTime));
 
+        // Single reusable read task — created once, nulled after a successful read,
+        // so at most ONE Task.Run(Console.ReadKey) hangs in the thread pool.
+        Task<ConsoleKeyInfo>? pendingRead = null;
+
         try
         {
             while (true)
             {
-                // Poll for key with timeout check
-                if (Console.KeyAvailable)
+                pendingRead ??= Task.Run(() => Console.ReadKey(true));
+
+                // ── Calculate delay ──
+                int delayMs;
+                if (timerActive)
                 {
-                    var key = Console.ReadKey(true).Key;
+                    var elapsed = (int)(Environment.TickCount64 - startTime);
+                    var remaining = timeoutMs - elapsed;
+                    if (remaining <= 0)
+                    {
+                        // Timer expired — auto-select
+                        var result = choices[selected];
+                        await SaveLastChoiceAsync(kvStore, agentId, result);
+                        ClearLine();
+                        return result;
+                    }
+                    delayMs = Math.Min(200, remaining);
+                }
+                else
+                {
+                    delayMs = 200;
+                }
+
+                // ── Wait for EITHER a keypress OR timer tick ──
+                var completed = await Task.WhenAny(pendingRead, Task.Delay(delayMs, ct));
+
+                if (completed == pendingRead)
+                {
+                    var key = (await pendingRead).Key;
+                    pendingRead = null; // consumed — next iteration will create fresh
 
                     switch (key)
                     {
@@ -79,38 +113,30 @@ internal static class InteractiveConfirmation
                 }
                 else
                 {
-                    // Check timer expiry
+                    // Timer tick — update display
                     if (timerActive)
                     {
                         var elapsed = (int)(Environment.TickCount64 - startTime);
                         var remaining = Math.Max(0, timeoutMs - elapsed);
 
-                        // Update timer display every ~500ms
                         if (remaining > 0)
                         {
                             Console.Error.Write('\r' + BuildPrompt(displayCmd, choices, selected, true, remaining, startTime));
-                            await Task.Delay(200, ct).ConfigureAwait(false);
                         }
                         else
                         {
-                            // Timer expired — auto-select
                             var result = choices[selected];
                             await SaveLastChoiceAsync(kvStore, agentId, result);
                             ClearLine();
                             return result;
                         }
                     }
-                    else
-                    {
-                        // Timer disabled — just brief pause before rechecking key
-                        await Task.Delay(50, ct).ConfigureAwait(false);
-                    }
                 }
             }
         }
         finally
         {
-            // Ensure line is cleared on cancellation
+            // pendingRead may still be hanging — that's fine, one thread in pool.
             if (!ct.IsCancellationRequested)
                 ClearLine();
         }
