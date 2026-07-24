@@ -16,6 +16,7 @@ public class SessionRepositoryTests : IDisposable
         using var sessionRepo = new SessionRepository(_connStr);
         using var blockRepo = new BlockRepository(_connStr);
         using var configRepo = new ConfigRepository(_connStr);
+        using var kvRepo = new KVStoreRepository(_connStr);
     }
 
     public void Dispose()

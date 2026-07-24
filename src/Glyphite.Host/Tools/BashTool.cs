@@ -3,6 +3,7 @@ using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Services;
 using Microsoft.Extensions.AI;
+using static Glyphite.Host.Tools.InteractiveConfirmation;
 
 namespace Glyphite.Host.Tools;
 
@@ -16,6 +17,9 @@ public static class BashTool
         string agentId,
         ContentDedupOptions dedupOpts,
         BashOptions bashOpts,
+        IKVStore? kvStore = null,
+        bool isSubAgent = false,
+        ISafetyChecker? safetyChecker = null,
         CancellationToken ct = default)
     {
         var trimmed = command.Trim();
@@ -44,6 +48,44 @@ public static class BashTool
             }
         }
 
+        // CheckRequireCommands — interactive confirmation for dangerous commands
+        if (bashOpts.CheckRequireCommands.Length > 0)
+        {
+            foreach (var check in bashOpts.CheckRequireCommands)
+            {
+                if (string.IsNullOrEmpty(check)) continue;
+                if (trimmed.Equals(check, StringComparison.OrdinalIgnoreCase) ||
+                    trimmed.StartsWith(check + " ", StringComparison.OrdinalIgnoreCase))
+                {
+                    var choice = await InteractiveConfirmation.ShowAsync(
+                        trimmed,
+                        bashOpts.CheckRequireCommandsTimeout * 1000,
+                        kvStore,
+                        agentId,
+                        isSubAgent,
+                        ct);
+
+                    switch (choice)
+                    {
+                        case Choice.Stop:
+                            return $"Command blocked by user: '{command}' - requires explicit approval. Model should reconsider or ask the user for clarification.";
+                        case Choice.Check:
+                            if (safetyChecker is not null)
+                            {
+                                var verdict = await safetyChecker.CheckAsync(agentId, trimmed, ct);
+                                if (!verdict.Allow)
+                                    return $"Command blocked by safety check: '{command}' - {verdict.Why}";
+                            }
+                            goto execute;
+                        case Choice.Ok:
+                        default:
+                            goto execute;
+                    }
+                }
+            }
+        }
+
+        execute:
         try
         {
             timeoutMs ??= 120_000;
@@ -60,7 +102,7 @@ public static class BashTool
         }
     }
 
-    private sealed class BashInvoker(IBashSessionManager manager, string agentId, IConfigService cfg)
+    private sealed class BashInvoker(IBashSessionManager manager, string agentId, IConfigService cfg, IKVStore? kvStore, bool isSubAgent, ISafetyChecker? safetyChecker)
     {
         [Description("Execute a bash command in a persistent shell session. Working directory and environment persist between commands. Output is auto-deduplicated (repeated lines compressed). Large outputs are truncated (1/3 top + 2/3 bottom), full output saved to a temp file. Use `workdir` to run in a specific directory (preferred over cd). Use `timeoutMs` for long-running commands. Use `back=true` to run as a background process — returns immediately with a `taskId`. Then use `bash_back` to poll/wait for results. Prefer non-interactive commands: use flags to disable pagers, auto-confirm prompts, provide input via flags rather than stdin.")]
         public async Task<string> Execute(
@@ -79,12 +121,12 @@ public static class BashTool
             }
 
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, agentId);
-            return await ExecuteBash(command, workdir, timeoutMs, manager, agentId, dedupOpts, bashOpts, ct);
+            return await ExecuteBash(command, workdir, timeoutMs, manager, agentId, dedupOpts, bashOpts, kvStore, isSubAgent, safetyChecker, ct);
         }
     }
 
-    public static AIFunction AsAIFunction(IBashSessionManager manager, string agentId, IConfigService cfg)
+    public static AIFunction AsAIFunction(IBashSessionManager manager, string agentId, IConfigService cfg, IKVStore? kvStore = null, bool isSubAgent = false, ISafetyChecker? safetyChecker = null)
         => AIFunctionFactory.Create(
-            new BashInvoker(manager, agentId, cfg).Execute,
+            new BashInvoker(manager, agentId, cfg, kvStore, isSubAgent, safetyChecker).Execute,
             "bash");
 }

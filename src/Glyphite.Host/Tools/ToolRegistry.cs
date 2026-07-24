@@ -22,6 +22,7 @@ public class ToolRegistry : IToolRegistry
     private readonly IAgentScopeFactory _scopeFactory;
     private readonly McpService _mcpService;
     private readonly ILogger _logger;
+    private readonly ISafetyChecker _safetyChecker;
     private readonly string _defaultDir;
     private readonly string _tmpDir;
     private readonly IConfiguration _glyphiteConfig;
@@ -38,7 +39,8 @@ public class ToolRegistry : IToolRegistry
         IAgentScopeFactory scopeFactory,
         McpService mcpService,
         IConfiguration configuration,
-        ILogger<ToolRegistry> logger)
+        ILogger<ToolRegistry> logger,
+        ISafetyChecker safetyChecker)
     {
         _bashManager = bashManager;
         _cfgService = cfgService;
@@ -51,6 +53,7 @@ public class ToolRegistry : IToolRegistry
         _scopeFactory = scopeFactory;
         _mcpService = mcpService;
         _logger = logger;
+        _safetyChecker = safetyChecker;
         _defaultDir = Directory.GetCurrentDirectory();
         _tmpDir = Path.Combine(AppContext.BaseDirectory, "tmp");
         _glyphiteConfig = configuration.GetSection("Glyphite");
@@ -67,7 +70,7 @@ public class ToolRegistry : IToolRegistry
 
         var tools = new List<AITool>
         {
-            WrapWithConfig(BashTool.AsAIFunction(_bashManager, agentId, _cfgService), toolExec, "bash", _tmpDir, agentId),
+            WrapWithConfig(BashTool.AsAIFunction(_bashManager, agentId, _cfgService, _kvStore, isSubAgent, _safetyChecker), toolExec, "bash", _tmpDir, agentId),
             WrapWithConfig(BashBackTool.AsAIFunction(_bashManager, _cfgService, agentId), toolExec, "bash_back", _tmpDir, agentId),
             WrapWithConfig(FileReadTool.AsAIFunction(_cfgService, _defaultDir, agentId, readFileMaxSize), toolExec, "read_file", _tmpDir, agentId),
             WrapWithConfig(FileWriteTool.AsAIFunction(_defaultDir), toolExec, "write_file", _tmpDir, agentId),

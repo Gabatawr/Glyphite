@@ -166,6 +166,7 @@ public class SessionRepository : RepositoryBase, IAgentStore
             await _conn.ExecuteAsync("DELETE FROM session_usage WHERE agent_id = @sid", new { sid = agentId });
             await _conn.ExecuteAsync("DELETE FROM blocks WHERE agent_id = @sid", new { sid = agentId });
             await _conn.ExecuteAsync("DELETE FROM config WHERE scope = 'session' AND agent_id = @sid", new { sid = agentId });
+            await _conn.ExecuteAsync("DELETE FROM kv_store WHERE agent_id = @sid", new { sid = agentId });
             await _conn.ExecuteAsync("DELETE FROM agent_launches WHERE agent_id = @sid", new { sid = agentId });
             await _conn.ExecuteAsync("DELETE FROM sessions WHERE id = @sid", new { sid = agentId });
             await tx.CommitAsync();

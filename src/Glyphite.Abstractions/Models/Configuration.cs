@@ -80,6 +80,10 @@ public class BashOptions
     public string[] AllowedExecutables { get; set; } = [];
     public string[] ForbiddenCommands { get; set; } = [];
     public string[] ForbiddenDirectories { get; set; } = [];
+    /// <summary>Commands requiring interactive confirmation (Check/OK/Stop). Timeout in seconds. 0 = no timeout.</summary>
+    public string[] CheckRequireCommands { get; set; } = [];
+    /// <summary>Timeout in seconds for interactive confirmation. Default 10s.</summary>
+    public int CheckRequireCommandsTimeout { get; set; } = 10;
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(ExecutablePath))

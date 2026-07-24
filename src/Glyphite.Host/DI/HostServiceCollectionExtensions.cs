@@ -119,6 +119,8 @@ public static class HostServiceCollectionExtensions
             var compOpts = sp.GetRequiredService<IOptions<CompressionOptions>>().Value;
             return new BlockMemoryProvider(agentStore, blockStore, cfgService, memOpts, agentOpts, llm.Model, compOpts);
         });
+        services.AddSingleton<ISafetyChecker, SafetyChecker>();
+
         services.AddScoped<IToolRegistry, ToolRegistry>();
 
         return services;
