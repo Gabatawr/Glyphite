@@ -214,8 +214,13 @@ public class ToolStreamingOptions
         {
             if (string.IsNullOrEmpty(entry.Tool)) continue;
             var opts = entry.Options ?? new ToolStreamingOptionsEntry();
-            _maxLengthLookup[entry.Tool] = opts.MaxSize;
-            _hiddenArgsLookup[entry.Tool] = opts.HiddenArgs ?? [];
+            // First entry for a tool wins — this ensures user overrides in
+            // Glyphite.json (loaded last, lower indices) take priority over
+            // appsettings.json defaults (higher indices) when arrays merge
+            // by index instead of being replaced entirely.
+            _maxLengthLookup.TryAdd(entry.Tool, opts.MaxSize);
+            if (!_hiddenArgsLookup.ContainsKey(entry.Tool))
+                _hiddenArgsLookup[entry.Tool] = opts.HiddenArgs ?? [];
         }
     }
 
