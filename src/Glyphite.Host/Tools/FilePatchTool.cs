@@ -41,16 +41,50 @@ public static class FilePatchTool
         var result = FindMatch(contentLines, searchLines);
         if (result == null)
         {
+            // Try to locate approximately: find first significant line from old text
+            var firstSearchLine = searchLines.FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
+            int? approxLine = null;
+            string? approxContent = null;
+
+            if (firstSearchLine is not null)
+            {
+                // Try the same fuzzy strategies on the single line
+                var singleResult = FindMatch(contentLines, [firstSearchLine]);
+                if (singleResult.HasValue)
+                {
+                    approxLine = singleResult.Value.StartLine + 1; // 1-indexed
+                    approxContent = singleResult.Value.MatchedText;
+                }
+            }
+
+            if (approxLine.HasValue)
+            {
+                var around = 3;
+                var start = Math.Max(0, approxLine.Value - 1 - around);
+                var end = Math.Min(contentLines.Length, approxLine.Value - 1 + around + 1);
+                var preview = new StringBuilder();
+                for (int i = start; i < end; i++)
+                {
+                    var marker = i == approxLine.Value - 1 ? '→' : ' ';
+                    preview.AppendLine($"  {i + 1,4}{marker}| {contentLines[i]}");
+                }
+
+                return $"Error: Could not find matching text in '{path}' ({contentLines.Length} lines).\n" +
+                       "Try copying the EXACT text from the file including indentation.\n" +
+                       $"Closest match found near line {approxLine} (matching \"{approxContent}\"):\n{preview}";
+            }
+
+            // Fallback: show first 20 lines
             var previewCount = Math.Min(20, contentLines.Length);
-            var preview = new StringBuilder();
+            var fallbackPreview = new StringBuilder();
             for (int i = 0; i < previewCount; i++)
-                preview.AppendLine($"  {i + 1,4} | {contentLines[i]}");
+                fallbackPreview.AppendLine($"  {i + 1,4} | {contentLines[i]}");
             if (previewCount < contentLines.Length)
-                preview.AppendLine($"  ... ({contentLines.Length - previewCount} more lines)");
+                fallbackPreview.AppendLine($"  ... ({contentLines.Length - previewCount} more lines)");
 
             return $"Error: Could not find matching text in '{path}' ({contentLines.Length} lines).\n" +
                    "Try copying the EXACT text from the file including indentation.\n" +
-                   $"Current file (first {previewCount} of {contentLines.Length} lines):\n{preview}";
+                   $"Current file (first {previewCount} of {contentLines.Length} lines):\n{fallbackPreview}";
         }
 
         var (startLine, matchedLineRange, matchedText, isFuzzy) = result.Value;
