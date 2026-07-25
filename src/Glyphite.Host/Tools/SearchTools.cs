@@ -60,7 +60,8 @@ public static class SearchTools
         SearchOptions? opts = null,
         string? defaultDirectory = null,
         ContentDedupOptions? dedupOpts = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        int? around = 1)
     {
         if (string.IsNullOrEmpty(pattern))
             return "Error: Pattern is required";
@@ -79,7 +80,8 @@ public static class SearchTools
         catch (ArgumentException ex) { return $"Error: Invalid regex pattern: {ex.Message}"; }
 
         var maxMatches = opts.MaxResultCount;
-        var results = new List<(string File, int Line, string Text, DateTime Mtime)>();
+        var ctx = around ?? 1;
+        var results = new List<(string File, int Line, string Text, DateTime Mtime, string[] Context, int ContextStart)>();
         var stoppedEarly = false;
 
         foreach (var filePath in EnumerateFiles(searchDir, excluded, opts.MaxEnumerationFiles))
@@ -122,7 +124,23 @@ public static class SearchTools
                     var lineText = lines[i].Length > opts.MaxLineLength
                         ? lines[i][..opts.MaxLineLength] + "..."
                         : lines[i];
-                    results.Add((fi.FullName, i + 1, lineText, fi.LastWriteTimeUtc));
+
+                    string[] contextLines;
+                    int contextStart;
+                    if (ctx > 0)
+                    {
+                        contextStart = Math.Max(0, i - ctx);
+                        var contextEnd = Math.Min(lines.Length - 1, i + ctx);
+                        contextLines = lines[contextStart..(contextEnd + 1)];
+                        contextStart++; // convert to 1-based line number
+                    }
+                    else
+                    {
+                        contextLines = [lines[i]];
+                        contextStart = i + 1;
+                    }
+
+                    results.Add((fi.FullName, i + 1, lineText, fi.LastWriteTimeUtc, contextLines, contextStart));
                 }
             }
             catch { logger?.LogWarning("Failed to read file: {Path}", filePath); /* skip unreadable files */ }
@@ -138,15 +156,38 @@ public static class SearchTools
         sb.AppendLine($"Found {results.Count} match(es)");
 
         string? lastFile = null;
-        foreach (var (file, line, text, _) in results)
+        foreach (var (file, line, text, _, context, contextStart) in results)
         {
             if (file != lastFile)
             {
                 sb.AppendLine();
-                sb.AppendLine(file);
                 lastFile = file;
             }
-            sb.AppendLine($"  Line {line}: {text}");
+
+            if (ctx > 0)
+            {
+                // Determine width from the last context line number
+                var lastLineNum = contextStart + context.Length - 1;
+                var width = Math.Max(3, lastLineNum.ToString().Length);
+                sb.AppendLine($"{file}:{line}");
+
+                for (int j = 0; j < context.Length; j++)
+                {
+                    var lineNum = contextStart + j;
+                    var isMatch = lineNum == line;
+                    var marker = isMatch ? "→" : " ";
+                    var truncLen = opts.MaxLineLength;
+                    var content = context[j].Length > truncLen
+                        ? context[j][..truncLen] + "..."
+                        : context[j];
+                    sb.AppendLine($"  {lineNum.ToString().PadLeft(width)}{marker}| {content}");
+                }
+            }
+            else
+            {
+                sb.AppendLine($"{file}:{line}");
+                sb.AppendLine($"  {text}");
+            }
         }
 
         if (stoppedEarly)
@@ -253,15 +294,16 @@ public static class SearchTools
             return await SearchTools.Glob(pattern, path, opts, defaultDirectory, dedupOpts, logger);
         }
 
-        [Description("Search file contents using a regex pattern. Returns file paths with line numbers and matching lines, sorted by file modification time (most recent first). Supports full .NET regex syntax. Use `include` to filter by file pattern (e.g. \"*.cs\", \"*.{ts,tsx}\"). Ideal for finding code references, imports, function definitions, error messages.")]
+        [Description("Search file contents using a regex pattern. Returns file paths with line numbers, context lines, and matching lines, sorted by file modification time (most recent first). Supports full .NET regex syntax. Use `include` to filter by file pattern (e.g. \"*.cs\", \"*.{ts,tsx}\"). Ideal for finding code references, imports, function definitions, error messages.")]
         public async Task<string> Grep(
             [Description("Regex pattern to search for. Supports .NET regex syntax (case-insensitive by default).")] string pattern,
             string? path = null,
-            [Description("File pattern to filter results, e.g. \"*.cs\", \"*.{ts,tsx}\", \"*.py\"")] string? include = null)
+            [Description("File pattern to filter results, e.g. \"*.cs\", \"*.{ts,tsx}\", \"*.py\"")] string? include = null,
+            [Description("Number of context lines to show before and after each match (default: 1). Set to 0 to show only the matching line.")] int? around = 1)
         {
             var opts = await cfg.GetOptionsAsync<SearchOptions>(SearchOptions.Section, sessionId);
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, sessionId);
-            return await SearchTools.Grep(pattern, path, include, opts, defaultDirectory, dedupOpts, logger);
+            return await SearchTools.Grep(pattern, path, include, opts, defaultDirectory, dedupOpts, logger, around);
         }
     }
 

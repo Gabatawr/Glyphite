@@ -40,8 +40,18 @@ public static class FilePatchTool
 
         var result = FindMatch(contentLines, searchLines);
         if (result == null)
-            return $"Error: Could not find matching text in '{path}'. " +
-                   "Try copying the exact text from the file including indentation.";
+        {
+            var previewCount = Math.Min(20, contentLines.Length);
+            var preview = new StringBuilder();
+            for (int i = 0; i < previewCount; i++)
+                preview.AppendLine($"  {i + 1,4} | {contentLines[i]}");
+            if (previewCount < contentLines.Length)
+                preview.AppendLine($"  ... ({contentLines.Length - previewCount} more lines)");
+
+            return $"Error: Could not find matching text in '{path}' ({contentLines.Length} lines).\n" +
+                   "Try copying the EXACT text from the file including indentation.\n" +
+                   $"Current file (first {previewCount} of {contentLines.Length} lines):\n{preview}";
+        }
 
         var (startLine, matchedLineRange, matchedText, isFuzzy) = result.Value;
 
