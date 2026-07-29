@@ -159,6 +159,11 @@ public partial class ChatRepl
             Console.ResetColor();
             _streamTextBuffer.Clear();
         }
+
+        // Ensure any trailing text without \n is physically pushed to the console.
+        // Without this, Windows console may buffer the last characters and create
+        // the illusion of a hang — the final symbol appears but nothing follows.
+        Console.Out.Flush();
     }
 
     /// <summary>Reset all streaming buffer state between turns.</summary>
