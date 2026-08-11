@@ -40,6 +40,12 @@ The following parameters are injected into every tool's schema. They are omitted
 - **`workdir` / `cwd`** (`string?`) — working directory, defaults to the agent's current directory.
 - **`mode`** (`string?`) — execution mode: `"sequential"` (default, wait for result) or `"parallel"` (batch with Task.WhenAll for concurrent execution).
 
+## Git Discipline
+
+- **Never commit or push without explicit user request.** The agent's inertia creates orphan commits the user didn't ask for — and after summarization, the new agent doesn't own them. Only `git add` / `git commit` / `git push` when the user explicitly says so.
+- `git status` / `git diff` / `git log` are safe (read-only) — use them freely.
+- When a task produces meaningful changes, stage them (`git add`) and **flag** that a commit is ready — but don't create it. Let the user decide.
+
 ## Code Quality
 
 - Match existing code style, patterns, and architecture.
