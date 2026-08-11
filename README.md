@@ -24,6 +24,7 @@
   - `search_glob` / `search_grep` — file and content search
   - `todo` — task management with create/update/list, title-based multi-list support
   - `kvstore` — key-value store with vault/config scopes, glob masks, TTL, dry-run confirm flow
+  - `pocket_list` / `pocket_add` / `pocket_set` / `pocket_remove` / `pocket_run` — user-defined tool aliases (bash templates + typed arg schemas); favorites materialize as native tools (`<name>_pocket`); local/global scope with shadows
   - `memory` — memory statistics (stats)
   - `subagent_run` / `subagent_use` / `subagent_list` — delegate tasks to worker agents
 - **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`). Every agent (main + subagents) can have its own MCP servers via `Glyphite.{agentName}.json`. Tools are prefixed with `{serverName}_` (e.g. `codegraph_explore`). Per-server and per-tool execution settings via `McpExecution` config.
@@ -124,11 +125,47 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `kvstore` | Key-value store for agent data. Two scopes: `vault` (persistent table) and `config` (agent config + session overrides). `get`/`set` actions with glob masks (`*`/`?`), TTL (vault only), dry-run confirm flow for masked sets. Empty value = delete. Ephemeral (subagent_run) agents use in-memory only — no DB leaks. |
 | `todo` | Create, update, or list todo lists — title as immutable ID for multi-list support. `create(title, items)`, `update(title, items)`, `list(title?)` — list all or by title. Statuses: pending, in_progress, done, cancelled, blocked. Update by index or by text (no index = match by text, new text = add item). |
 | `memory` | Memory statistics: `stats` (block type distribution, token usage, cache stats, cost) |
+| `pocket_list` | List pocket tools — user-defined tool aliases stored in the agent's vault. Compact by default (grouped by category), `details=true` for full cards. Glob filter on name, exact filter on category. Shows local + global entries (`[global]`, `[shadowed]` markers) |
+| `pocket_add` | Add a pocket tool: `name`, `desc`, bash `cmd` template with `{arg}` placeholders, optional `args` schema (JSON array with `req`/`def`/`raw`), `cwd`, `category`. Options: `materialize` (native tool on next turn), `scope` (`local`/`global`). Safety preflight at add |
+| `pocket_set` | Update one field of an existing pocket tool: `materialize`, `name` (rename), `scope` (move local↔global), `category`, `args`, `cwd`, `desc`, `cmd` (cmd change re-runs the safety preflight) |
+| `pocket_remove` | Remove a pocket tool — effective entry by default (removes a local shadow, the global stays); `scope="global"` removes the shared entry |
+| `pocket_run` | Execute a pocket tool immediately by name (same-turn, no reload needed) |
 | `subagent_run` | One-shot task execution (ephemeral). Without a name — auto-GUID temp agent created then deleted. With a name + agent exists — dry-run (blocks cleaned after). With a name + no agent — temp agent with config created then deleted. Ephemeral: usage restored to pre-run state, no compaction runs, blocks deleted after. Supports `mode="parallel"` |
 | `subagent_use` | Execute a task on a named subagent (auto-creates if not found). Memory and context **accumulate** across calls — the agent persists. `memory` tool is available. Supports `mode="parallel"` |
 | `subagent_list` | List all existing agents (excluding current session) with home, model, block count, cache stats |
 
 Any MCP-connected server's tools also become available automatically.
+
+## Pocket tools
+
+Pocket tools are user-defined tool aliases stored in the agent's KV vault. Each entry wraps a bash command template with a typed argument schema — a way to give the agent reusable custom tools without code changes.
+
+### Storage
+
+Entries live in `kv_store` under keys `pocket.<name>` (JSON values). Local entries are scoped to the agent's vault; global entries use the shared sentinel namespace (`agent_id = "__global__"`) and are visible to **all** agents.
+
+### Materialization
+
+- Entries with `materialize=true` (favorites) are exposed as **native typed tools** on the next tool load — named `<name>_pocket` so their origin is explicit (`git_st` → `git_st_pocket`).
+- The suffix removes collisions with builtins: a pocket entry named `bash` materializes as `bash_pocket`.
+- Non-materialized entries are executed on demand via `pocket_run`.
+- The toolset is rebuilt every turn, so materialization takes effect automatically — no restart or hot-reload needed.
+
+### Scope: local vs global
+
+| Scope | Stored | Visible to |
+|-------|--------|------------|
+| `local` (default) | agent's vault | only this agent |
+| `global` | shared namespace (`__global__`) | all agents — visible, executable, editable |
+
+- **Shadows** — a local entry with the same name takes precedence over the global one for this agent (effective resolution in `pocket_run`, editing, and materialization). The global stays intact for others.
+- **Editing** — `pocket_set` / `pocket_remove` operate on the effective entry by default (local first, else global); pass `scope="global"` to edit the shared entry explicitly, even when shadowed.
+- **Materialization is independent of scope** — a global entry with `materialize=false` stays pocket-only; with `materialize=true` it becomes a native tool for **all** agents (no per-agent flags).
+- **Moving** — `pocket_set X scope=global` moves a local entry to the shared space (and back); a collision in the target scope blocks the move.
+
+### Safety
+
+Command templates are safety-checked **once at add time**: forbidden-command/directory hard blocks, plus an interactive confirmation prompt when the template matches `CheckRequireCommands`. Approved entries skip the interactive prompt on execution (hard blocks still apply at run time). Changing `cmd` via `pocket_set` re-runs the preflight; a rejected template leaves the entry unchanged.
 
 ## Subagent architecture
 

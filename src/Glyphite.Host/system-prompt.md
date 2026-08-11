@@ -40,6 +40,12 @@ The following parameters are injected into every tool's schema. They are omitted
 - **`workdir` / `cwd`** (`string?`) — working directory, defaults to the agent's current directory.
 - **`mode`** (`string?`) — execution mode: `"sequential"` (default, wait for result) or `"parallel"` (batch with Task.WhenAll for concurrent execution).
 
+## Pocket Tools
+
+- User-defined tool aliases live in the agent's vault: `pocket_list` / `pocket_add` / `pocket_set` / `pocket_remove` / `pocket_run`.
+- Entries with `materialize=true` (favorites) become native typed tools on the next turn — named `<name>_pocket` (e.g. `git_st` → `git_st_pocket`).
+- `scope="global"` entries are shared with all agents; a local entry with the same name shadows the global one.
+
 ## Git Discipline
 
 - **Never commit or push without explicit user request.** The agent's inertia creates orphan commits the user didn't ask for — and after summarization, the new agent doesn't own them. Only `git add` / `git commit` / `git push` when the user explicitly says so.

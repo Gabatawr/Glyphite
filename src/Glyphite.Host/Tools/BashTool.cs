@@ -20,7 +20,8 @@ public static class BashTool
         IKVStore? kvStore = null,
         bool isSubAgent = false,
         ISafetyChecker? safetyChecker = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool skipInteractiveConfirm = false)
     {
         var trimmed = command.Trim();
         foreach (var forbidden in bashOpts.ForbiddenCommands)
@@ -57,6 +58,10 @@ public static class BashTool
                 if (trimmed.Equals(check, StringComparison.OrdinalIgnoreCase) ||
                     trimmed.StartsWith(check + " ", StringComparison.OrdinalIgnoreCase))
                 {
+                    // Command was already approved at add time (e.g. pocket tool) — skip the per-call prompt.
+                    if (skipInteractiveConfirm)
+                        goto execute;
+
                     var choice = await InteractiveConfirmation.ShowAsync(
                         trimmed,
                         bashOpts.CheckRequireCommandsTimeout * 1000,

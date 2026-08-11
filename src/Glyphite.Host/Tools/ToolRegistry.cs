@@ -82,6 +82,13 @@ public class ToolRegistry : IToolRegistry
             WrapWithConfig(KVStoreTool.AsKvStoreFunction(_kvStore, _cfgService, _subAgentManager, agentId), toolExec, "kvstore", _tmpDir, agentId),
         };
 
+        // Pocket tools: per-agent toolbox of user-defined aliases (available for all agents)
+        foreach (var pocketFn in PocketTool.AsManagementFunctions(
+                     _kvStore, _cfgService, _bashManager, _subAgentManager, _safetyChecker, agentId, isSubAgent))
+        {
+            tools.Add(WrapWithConfig(pocketFn, toolExec, pocketFn.Name, _tmpDir, agentId));
+        }
+
         // Memory tool: available for main agent, or for subagents with saveMemory=true
         if (!isSubAgent || includeMemory)
             tools.Add(WrapWithConfig(MemoryTool.AsAIFunction(_blockMemory, agentId, _cfgService), toolExec, "memory", _tmpDir, agentId));
@@ -97,6 +104,29 @@ public class ToolRegistry : IToolRegistry
             tools.Add(WrapWithConfig(SubAgentTool.AsSubAgentUseFunction(_subAgentManager, _agentManager, _scopeFactory, _agentStore, _blockStore, _cfgService, agentId), toolExec, "subagent_use", _tmpDir, agentId));
             tools.Add(WrapWithConfig(SubAgentTool.AsSubAgentListFunction(_subAgentManager, _agentStore, _blockStore, agentId), toolExec, "subagent_list", _tmpDir, agentId));
         }
+
+        // Materialized pocket entries → native typed tools.
+        // Only entries explicitly flagged as favorites (materialize=true) become native tools.
+        // Native names carry the "_pocket" suffix; skipped when that name collides with an already-registered tool.
+        // Local favorites are materialized first — a local entry shadows a global one with the same native name;
+        // a materialized global (shared) entry appears as a native tool for all agents.
+        async Task AddMaterialized(PocketTool.PocketEntry entry, bool isGlobal)
+        {
+            if (!entry.Materialize) return;
+
+            var nativeName = PocketTool.MaterializedName(entry.Name);
+            if (tools.Any(t => string.Equals(t.Name, nativeName, StringComparison.OrdinalIgnoreCase)))
+                return;
+
+            var runner = PocketTool.CreateRunner(_bashManager, _cfgService, _kvStore, isSubAgent, _safetyChecker, agentId);
+            tools.Add(WrapWithConfig(PocketTool.AsPocketFunction(entry, runner, isGlobal), toolExec, nativeName, _tmpDir, agentId));
+        }
+
+        foreach (var entry in await PocketTool.LoadEntriesAsync(_kvStore, agentId))
+            await AddMaterialized(entry, isGlobal: false);
+
+        foreach (var entry in await PocketTool.LoadGlobalEntriesAsync(_kvStore))
+            await AddMaterialized(entry, isGlobal: true);
 
         return tools;
     }
