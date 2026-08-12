@@ -44,7 +44,14 @@ public static class Bootstrapper
                     cfg.AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)));
                 }
 
-                // 2. Glyphite.json in working directory — hot-reload
+                // 2. Global Glyphite.json in install location (published app: ~/.glyphite/) — hot-reload.
+                //    Base user config (API key, model, ...) shared across all working directories.
+                //    Lower priority than the working-dir file below — local overrides global.
+                var installConfig = Path.Combine(AppContext.BaseDirectory, "Glyphite.json");
+                if (File.Exists(installConfig))
+                    cfg.AddJsonFile(installConfig, optional: true, reloadOnChange: true);
+
+                // 3. Glyphite.json in working directory — hot-reload (per-project overrides)
                 var cwdJson = Path.Combine(Directory.GetCurrentDirectory(), "Glyphite.json");
                 if (File.Exists(cwdJson))
                     cfg.AddJsonFile(cwdJson, optional: false, reloadOnChange: true);

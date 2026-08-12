@@ -16,21 +16,12 @@ if (args.Length > 0 && (args[0] == "-v" || args[0] == "--version"))
     return;
 }
 
-// ── Ensure Glyphite.json exists BEFORE building the host ──
-// This is critical so that Bootstrapper.AddJsonFile() can pick it up
-// with reloadOnChange=true. If we created it after host build (as was done
-// in SessionManager), LazyChatClient via IOptionsMonitor would never see it.
-var cwd = Directory.GetCurrentDirectory();
-var cwdConfig = Path.Combine(cwd, "Glyphite.json");
-if (!File.Exists(cwdConfig))
-{
-    var assembly = Assembly.GetExecutingAssembly();
-    using var stream = assembly.GetManifestResourceStream("Glyphite.Cli.appsettings.json")
-        ?? throw new InvalidOperationException("Embedded resource 'Glyphite.Cli.appsettings.json' not found.");
-    using var reader = new StreamReader(stream);
-    var defaults = reader.ReadToEnd();
-    File.WriteAllText(cwdConfig, defaults);
-}
+// ── First-run config BEFORE building the host ──
+// Ensures a global Glyphite.json exists in the install location, prompts for an
+// API key when none is configured, and asks once per folder whether to use the
+// global config or create a local Glyphite.json. Runs before the host build so
+// Bootstrapper.AddJsonFile() picks up any created files.
+FirstRunConfig.Ensure();
 
 try
 {

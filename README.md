@@ -88,9 +88,13 @@ alias glyphite='~/.glyphite/glyphite'
 glyphite
 ```
 
+The first launch creates a global config template at `~/.glyphite/Glyphite.json` — set `LLM:ApiKey` there once, and `glyphite` works from any directory without per-folder config files. The global file is a **one-time snapshot**: it is never overwritten, so new keys added later to the source `appsettings.json` flow through automatically, but **changed values of existing keys do not** — the global file wins. To pick up a changed default, edit `~/.glyphite/Glyphite.json` manually or delete it (it is recreated from the embedded template on next launch; you will need to re-enter the API key).
+
+First-run flow: when no API key is configured anywhere, Glyphite asks how to proceed — enter the key (saved to the global config), create a local `Glyphite.json` in the current folder (the API key is prompted and written into it right away), or skip. When a global key exists and you launch from a new folder, it asks once whether to use the global config or create a local one (creating a local file also prompts for the key); the choice is remembered in `state.json` next to the global config, so the prompt appears only once per folder. Non-interactive runs (redirected stdin) silently use the global config. A config file in the working directory is created **only** through this prompt — never automatically.
+
 On first launch, Glyphite will ask for an agent name. On subsequent launches, it resumes the last active agent for the current directory.
 
-Configuration is loaded in cascading order: `appsettings.json` (embedded) → `Glyphite.json` (global) → `Glyphite.{agentName}.json` (agent-specific). All keys can also be set via environment variables (e.g. `Glyphite__LLM__ApiKey` for the API key).
+Configuration is loaded in cascading order: `appsettings.json` (embedded defaults) → `~/.glyphite/Glyphite.json` (global — install location, shared across all working directories) → `Glyphite.json` in the working directory (per-project overrides) → `Glyphite.{agentName}.json` (agent-specific). All keys can also be set via environment variables (e.g. `Glyphite__LLM__ApiKey` for the API key).
 
 ## Commands
 
