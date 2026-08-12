@@ -20,7 +20,7 @@ internal static class SubAgentTool
     /// Clean up orphan agents from crashed subagent_run calls.
     /// Called at the start of each subagent tool lambda.
     /// </summary>
-    private static async Task CleanupOrphanRunsAsync(
+    internal static async Task CleanupOrphanRunsAsync(
         IAgentStore agentStore, IBlockStore blockStore,
         SubAgentManager subAgentManager)
     {
@@ -66,7 +66,7 @@ internal static class SubAgentTool
     /// that were created during this task).</summary>
     private static async Task<(string Result, double BlockCheckpoint, long CkHit, long CkMiss, long CkOutput)> RunAgentTask(
         AgentScope scope, IAgentStore agentStore, IBlockStore blockStore, string agentId, string task,
-        string mainSessionId, string defaultModel, CancellationToken ct, bool ephemeral,
+        string? mainSessionId, string defaultModel, CancellationToken ct, bool ephemeral,
         string? cwd = null)
     {
         var resolvedModel = await agentStore.GetAgentModelAsync(agentId) ?? defaultModel;
@@ -121,11 +121,16 @@ internal static class SubAgentTool
         return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput);
     }
 
-    /// <summary>Compute delta since checkpoint and record into main session's usage.</summary>
+    /// <summary>Compute delta since checkpoint and record into main session's usage.
+    /// When <paramref name="mainSessionId"/> is null (headless run — no main session),
+    /// the transfer is skipped; the agent's per-iteration usage is already on its own rows.</summary>
     private static async Task RecordSubAgentDeltaAsync(
-        IAgentStore agentStore, string agentId, string mainSessionId,
+        IAgentStore agentStore, string agentId, string? mainSessionId,
         long ckHit, long ckMiss, long ckOutput, string? model)
     {
+        if (mainSessionId is null)
+            return;
+
         var (newHit, newMiss, newOutput) = await agentStore.GetUsageAsync(agentId);
         var dHit = newHit - ckHit;
         var dMiss = newMiss - ckMiss;
@@ -157,10 +162,10 @@ internal static class SubAgentTool
     /// Does NOT delete the agent session — caller owns lifecycle.
     /// Passes CancellationToken through so Escape from parent interrupts subagent promptly.
     /// </summary>
-    private static async Task<string> RunSubAgentTaskAsync(
+    internal static async Task<string> RunSubAgentTaskAsync(
         string agentId, string task, bool ephemeral,
         SubAgentManager subAgentManager, IAgentScopeFactory scopeFactory,
-        IAgentStore agentStore, IBlockStore blockStore, string currentSessionId,
+        IAgentStore agentStore, IBlockStore blockStore, string? mainSessionId,
         string defaultModel, CancellationToken ct, string? cwd = null)
     {
         var scopeErr = await EnsureScope(subAgentManager, scopeFactory, agentStore, agentId);
@@ -185,7 +190,7 @@ internal static class SubAgentTool
         {
             return await subAgentManager.RunAsync(agentId, async s =>
             {
-                var (output, blockCk, ckHit, ckMiss, ckOutput) = await RunAgentTask(s, agentStore, blockStore, agentId, task, currentSessionId, defaultModel, ct, ephemeral, cwd);
+                var (output, blockCk, ckHit, ckMiss, ckOutput) = await RunAgentTask(s, agentStore, blockStore, agentId, task, mainSessionId, defaultModel, ct, ephemeral, cwd);
                 if (ephemeral)
                 {
                     // Restore usage to checkpoint (before the run) instead of clearing everything
@@ -224,14 +229,14 @@ internal static class SubAgentTool
     /// Handles scope registration, execution, and cleanup (remove scope + delete session).
     /// On cancellation: finally still runs, agent is cleaned up.
     /// </summary>
-    private static async Task<string> CreateAndRunSubAgentAsync(
+    internal static async Task<string> CreateAndRunSubAgentAsync(
         string agentId, string task, string homePath, string parentCwd,
         bool validateName,
         SubAgentManager subAgentManager, IAgentManager agentManager,
         IAgentScopeFactory scopeFactory, IAgentStore agentStore, IBlockStore blockStore,
         IConfigService configService, IBashSessionManager bashManager,
         string model,
-        string currentSessionId, CancellationToken ct,
+        string? mainSessionId, CancellationToken ct,
         string? cwd = null)
     {
         if (validateName && !AgentManager.IsValidAgentName(agentId))
@@ -249,7 +254,7 @@ internal static class SubAgentTool
         {
             subAgentManager.SetEphemeral(agentId, true);
             return await RunSubAgentTaskAsync(agentId, task, ephemeral: true,
-                subAgentManager, scopeFactory, agentStore, blockStore, currentSessionId, model, ct, cwd);
+                subAgentManager, scopeFactory, agentStore, blockStore, mainSessionId, model, ct, cwd);
         }
         finally
         {

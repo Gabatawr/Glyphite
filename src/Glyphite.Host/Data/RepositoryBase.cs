@@ -10,6 +10,12 @@ public abstract class RepositoryBase : IDisposable
     protected readonly string _connectionString;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
+    // Cross-process collisions (SQLITE_BUSY/LOCKED) can outlive PRAGMA busy_timeout when another
+    // process holds the write lock. Retry the whole action with exponential backoff — safe because
+    // BUSY means nothing was written, and transactional callers start a fresh transaction on retry.
+    private const int BusyRetryLimit = 5;
+    private static readonly int[] BusyBackoffMs = [50, 100, 200, 400, 800];
+
     static RepositoryBase()
     {
         Dapper.DefaultTypeMap.MatchNamesWithUnderscores = true;
@@ -44,16 +50,33 @@ public abstract class RepositoryBase : IDisposable
     protected async Task WithLockAsync(Func<Task> action)
     {
         await _writeLock.WaitAsync();
-        try { await action(); }
+        try { await RetryOnBusyAsync(action); }
         finally { _writeLock.Release(); }
     }
 
     protected async Task<T> WithLockAsync<T>(Func<Task<T>> func)
     {
         await _writeLock.WaitAsync();
-        try { return await func(); }
+        try { return await RetryOnBusyAsync(func); }
         finally { _writeLock.Release(); }
     }
+
+    private static async Task RetryOnBusyAsync(Func<Task> action)
+        => await RetryOnBusyAsync(async () => { await action(); return true; });
+
+    private static async Task<T> RetryOnBusyAsync<T>(Func<Task<T>> func)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try { return await func(); }
+            catch (SqliteException ex) when (IsBusy(ex) && attempt < BusyRetryLimit)
+            {
+                await Task.Delay(BusyBackoffMs[attempt]);
+            }
+        }
+    }
+
+    private static bool IsBusy(SqliteException ex) => ex.SqliteErrorCode is 5 or 6; // SQLITE_BUSY / SQLITE_LOCKED
 
     protected SqliteConnection CreateReadConnection()
     {

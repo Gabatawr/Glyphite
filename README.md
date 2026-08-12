@@ -94,7 +94,7 @@ First-run flow: when no API key is configured anywhere, Glyphite asks how to pro
 
 On first launch, Glyphite will ask for an agent name. On subsequent launches, it resumes the last active agent for the current directory.
 
-Configuration is loaded in cascading order: `appsettings.json` (embedded defaults) → `~/.glyphite/Glyphite.json` (global — install location, shared across all working directories) → `Glyphite.json` in the working directory (per-project overrides) → `Glyphite.{agentName}.json` (agent-specific). All keys can also be set via environment variables (e.g. `Glyphite__LLM__ApiKey` for the API key).
+Configuration is loaded in cascading order: `appsettings.json` (embedded defaults) → `~/.glyphite/Glyphite.json` (global — install location, shared across all working directories) → `Glyphite.json` in the working directory (per-project overrides) → `Glyphite.{agentName}.json` (agent-specific).
 
 ## Commands
 
