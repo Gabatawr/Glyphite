@@ -9,8 +9,10 @@ using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
-/// <summary>Per-turn state and streaming update processing.
-/// Extracted from TurnProcessor.ProcessAsync local functions for clarity.</summary>
+/// <summary>Per-turn streaming state and update processing.
+/// Extracted from TurnProcessor.ProcessAsync local functions for clarity.
+/// Responsibility: track per-turn state (accumulators, pending tool calls, next block number)
+/// and persist blocks as updates arrive. Usage tracking lives in <see cref="FailSafeChatClient"/>.</summary>
 internal sealed class TurnContext
 {
     private readonly IBlockStore _blockStore;
@@ -23,7 +25,6 @@ internal sealed class TurnContext
     public StringBuilder ReasoningAccum { get; } = new();
     public StringBuilder TextAccum { get; } = new();
     public Dictionary<string, (string name, string args, bool isPeek, double blockNumber)> PendingToolCalls { get; } = new();
-    public List<ChatMessage> ContextMessages { get; }
     public FailSafeChatClient FailSafeClient { get; }
 
     private static readonly Dictionary<string, string[]> FileToolCleanArgs = new(StringComparer.OrdinalIgnoreCase)
@@ -40,7 +41,6 @@ internal sealed class TurnContext
         string sessionId,
         string modelStr,
         double nextNum,
-        List<ChatMessage> contextMessages,
         FailSafeChatClient failSafeClient)
     {
         _blockStore = blockStore;
@@ -49,7 +49,6 @@ internal sealed class TurnContext
         SessionId = sessionId;
         ModelStr = modelStr;
         NextNum = nextNum;
-        ContextMessages = contextMessages;
         FailSafeClient = failSafeClient;
     }
 

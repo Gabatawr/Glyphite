@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Tools;
@@ -8,7 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
-public class TurnProcessor : ITurnProcessor
+public partial class TurnProcessor : ITurnProcessor
 {
     private readonly IAgentStore _agentStore;
     private readonly IBlockStore _blockStore;
@@ -21,12 +20,8 @@ public class TurnProcessor : ITurnProcessor
     private readonly ISessionConfigLoader _configLoader;
     private readonly IInstructionProvider _instructionProvider;
 
-    // Last per-iteration usage (for ChatRepl fallback after Escape/crash)
-    public long LastIterationTotalHit { get; private set; }
-    public long LastIterationTotalMiss { get; private set; }
-    public long LastIterationTotalOutput { get; private set; }
-    public long LastIterationLastHit { get; private set; }
-    public long LastIterationLastMiss { get; private set; }
+    /// <summary>Last iteration's usage snapshot — prompt fallback for ChatRepl after Escape/crash.</summary>
+    public UsageSnapshot? LastIterationUsage { get; private set; }
 
     public TurnProcessor(
         IAgentStore agentStore,
@@ -52,6 +47,7 @@ public class TurnProcessor : ITurnProcessor
         _logger = logger;
     }
 
+    /// <summary>Wires the turn pipeline: prepare → compact → stream → finalize.</summary>
     public async IAsyncEnumerable<TurnEvent> ProcessAsync(
         string agentId,
         string input,
@@ -59,227 +55,20 @@ public class TurnProcessor : ITurnProcessor
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct,
         string? agentCwd = null)
     {
-        // ── 1. PREPARATION: config, options, context ──
-
-        var parentCwd = Directory.GetCurrentDirectory();
-        agentCwd ??= await _agentStore.GetAgentHomePathAsync(agentId) ?? parentCwd;
-        await _configLoader.LoadConfigAsync(agentId, agentCwd, parentCwd);
-
-        var llmOpts = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section, agentId);
-        var agentOpts = await _cfgService.GetOptionsAsync<AgentOptions>(AgentOptions.Section, agentId);
-
-        // Lazy ApiKey check — allow startup even without a key
-        if (string.IsNullOrWhiteSpace(llmOpts.ApiKey))
+        var (prep, error) = await PrepareAsync(agentId, input, chatOptions, agentCwd);
+        if (prep is null)
         {
-            yield return new TurnErrorEvent(
-                "LLM API key is not configured. Open Glyphite.json in the current directory and set LLM:ApiKey.");
+            yield return new TurnErrorEvent(error!);
             yield break;
         }
 
-        // Apply reasoning effort from config (None = suppress, null = let provider decide)
-        if (llmOpts.ReasoningEffort is { } effortStr
-            && Enum.TryParse<ReasoningEffort>(effortStr, ignoreCase: true, out var parsedEffort))
-        {
-            chatOptions.Reasoning ??= new ReasoningOptions();
-            chatOptions.Reasoning.Effort = parsedEffort;
-        }
+        await foreach (var e in CompactIfNeededAsync(prep, ct))
+            yield return e;
 
-        var modelStr = chatOptions.ModelId ?? llmOpts.Model;
-        _logger.LogInformation("Turn start session {SessionId}, model {Model}", agentId, modelStr);
+        await foreach (var e in StreamAsync(prep, ct))
+            yield return e;
 
-        // ── Build system instructions (system-prompt.md + AGENTS.md + Glyphite.{agentId}.md) ──
-        var homePath = await _agentStore.GetAgentHomePathAsync(agentId);
-        chatOptions.Instructions = await _instructionProvider.BuildInstructionsAsync(
-            agentId, homePath, parentCwd, agentCwd);
-
-        var nextNum = await _agentStore.GetNextNumberAsync(agentId);
-        if (nextNum <= 0) nextNum = 1;
-
-        // Auto-compaction: skip only for truly ephemeral agents (subagent_run — transient, no benefit).
-        // subagent_use sets ephemeral=false so compaction runs normally.
-        var isEphemeral = chatOptions.AdditionalProperties?.TryGetValue("ephemeral", out var epVal) == true
-            && string.Equals(epVal as string, "true", StringComparison.OrdinalIgnoreCase);
-
-        if (!isEphemeral)
-        {
-            var status = await _compactionService.EvaluateCompactionStatusAsync(agentId, llmOpts.ContextWindow);
-
-            if (status.IsThresholdExceeded && status.WillCompact)
-            {
-                var compactArgs = JsonSerializer.Serialize(new
-                {
-                    AutoCompress = true,
-                    Strategy = status.Strategy,
-                    Mode = status.Mode
-                });
-
-                // Yield to UI BEFORE summarization (avoids freeze)
-                yield return new AutoToolTurnEvent("compression", compactArgs, false, "");
-
-                // 2. Actual compaction (slow — LLM summarization)
-                var compacted = await _compactionService.CompactAsync(agentId, llmOpts.ContextWindow, status.Strategy);
-
-                if (compacted)
-                {
-                    var compactBlock = MemoryBlock.AutoTool("compression", compactArgs, "", modelStr);
-                    compactBlock.Number = nextNum++;
-                    await _blockStore.AppendBlocksAsync(agentId, [compactBlock], nextNum);
-                }
-            }
-        }
-
-        var isSubagent = chatOptions.AdditionalProperties?.ContainsKey("isSubagent") == true;
-        chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(agentId, !isEphemeral)).ToList();
-
-        // ── Auto-compact large reasoning blocks from previous turn ──
-        var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
-        if (compOpts.AutoCompressReasoning)
-        {
-            var allReasoning = await _blockStore.LoadBlocksByTypeAsync(agentId, BlockType.agent_reasoning, null, false);
-            var toCompress = allReasoning
-                .Where(b => !b.Compressed && b.Content.Length > compOpts.AutoCompressReasoningMaxSize)
-                .ToList();
-
-            if (toCompress.Count > 0)
-            {
-                var maxOutputTokens = Math.Max(1, compOpts.AutoCompressReasoningMaxSize / 4 / 2);
-                var compactedCount = 0;
-
-                // Notify UI BEFORE compaction (explains why we're hanging)
-                var compressArgs = JsonSerializer.Serialize(new { count = toCompress.Count, maxTokens = maxOutputTokens });
-                yield return new AutoToolTurnEvent("compress_reasoning", compressArgs, false, "");
-
-                var tasks = toCompress.Select(async block =>
-                {
-                    try
-                    {
-                        var messages = new List<ChatMessage>
-                        {
-                            new(ChatRole.System, "You are a precise reasoning summarizer. Extract the key insights, conclusions, and decisions from the following reasoning/thinking block. Keep only what matters — discard meandering exploration, false starts, and redundant thoughts. Be concise. Output in the same language as the original."),
-                            new(ChatRole.User, block.Content)
-                        };
-
-                        var response = await _chatClient.GetResponseAsync(messages, new ChatOptions
-                        {
-                            MaxOutputTokens = maxOutputTokens,
-                            ModelId = modelStr
-                        }, ct);
-
-                        var summary = response.Messages
-                            .LastOrDefault(m => m.Role == ChatRole.Assistant)
-                            ?.Text?.Trim();
-
-                        if (!string.IsNullOrEmpty(summary) && summary.Length < block.Content.Length)
-                        {
-                            await _blockStore.UpdateBlockContentAsync(agentId, block.Number, summary);
-                            Interlocked.Increment(ref compactedCount);
-                        }
-
-                        // Record usage
-                        if (response.RawRepresentation is not null)
-                        {
-                            try
-                            {
-                                using var doc = UsageParser.Normalize(response.RawRepresentation);
-                                if (doc is not null)
-                                {
-                                    var (hit, miss, output) = UsageParser.Parse(doc);
-                                    if (hit > 0 || miss > 0 || output > 0)
-                                        await _agentStore.RecordUsageAsync(agentId, hit, miss, output, model: modelStr);
-                                }
-                            }
-                            catch { _logger.LogWarning("Failed to parse usage from reasoning compaction response"); }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to compact reasoning block {Number}", block.Number);
-                    }
-                });
-
-                await Task.WhenAll(tasks);
-
-                if (compactedCount > 0)
-                {
-                    _logger.LogInformation("Compacted {Count} reasoning blocks (max {MaxTokens} tok each)", compactedCount, maxOutputTokens);
-                }
-            }
-        }
-
-        var contextMessages = await _blockMemory.BuildContextAsync(
-            agentId, modelStr, llmOpts.ContextWindow);
-
-        var initialMessages = new List<ChatMessage>();
-        initialMessages.AddRange(contextMessages);
-        initialMessages.Add(new ChatMessage(ChatRole.User, input));
-
-        var agentClient = new AgentChatClient(_chatClient, agentId, modelStr);
-        var failSafeClient = new FailSafeChatClient(
-            agentClient, agentOpts.MaxToolIterations, _logger);
-
-        // Subscribe: write per-iteration usage immediately — survives crash/Escape
-        failSafeClient.OnIterationRecorded = (hit, miss, output) =>
-        {
-            // Save for ChatRepl fallback (used when UsageTurnEvent doesn't arrive due to Escape)
-            LastIterationTotalHit = failSafeClient.TotalCacheHitTokens;
-            LastIterationTotalMiss = failSafeClient.TotalCacheMissTokens;
-            LastIterationTotalOutput = failSafeClient.TotalOutputTokens;
-            LastIterationLastHit = failSafeClient.LastHitTokens;
-            LastIterationLastMiss = failSafeClient.LastMissTokens;
-            return _agentStore.RecordUsageAsync(agentId, hit, miss, output, hit, miss, modelStr);
-        };
-
-        _blockMemory.CurrentExecutedIds.Value = failSafeClient.ExecutedCallIds;
-
-        var userBlock = isSubagent ? MemoryBlock.AgentTask(input) : MemoryBlock.UserMessage(input);
-        userBlock.Number = nextNum++;
-        await _blockStore.AppendBlocksAsync(agentId, [userBlock], nextNum);
-
-        // ── 2. STREAMING: create TurnContext and process updates ──
-
-        var ctx = new TurnContext(
-            _blockStore, _agentStore, _logger,
-            agentId, modelStr, nextNum,
-            contextMessages, failSafeClient);
-
-        await foreach (var update in failSafeClient
-            .GetStreamingResponseAsync(initialMessages, chatOptions)
-            .WithCancellation(ct))
-        {
-            var events = await ctx.ProcessUpdate(update);
-            foreach (var e in events)
-                yield return e;
-        }
-
-        // ── 3. FINISH: flush remaining, cleanup ──
-
-        // Usage already written per-iteration via OnIterationRecorded — no batch write needed.
-        yield return new UsageTurnEvent(
-            ctx.FailSafeClient.TotalCacheHitTokens,
-            ctx.FailSafeClient.TotalCacheMissTokens,
-            ctx.FailSafeClient.TotalOutputTokens,
-            ctx.FailSafeClient.LastHitTokens,
-            ctx.FailSafeClient.LastMissTokens);
-
-        await ctx.FlushAll();
-
-        _logger.LogInformation("Turn end session {SessionId}: hit={Hit} miss={Miss} out={Output} lastHit={LastHit} lastMiss={LastMiss}",
-            agentId,
-            ctx.FailSafeClient.TotalCacheHitTokens,
-            ctx.FailSafeClient.TotalCacheMissTokens,
-            ctx.FailSafeClient.TotalOutputTokens,
-            ctx.FailSafeClient.LastHitTokens,
-            ctx.FailSafeClient.LastMissTokens);
-
-        // End-of-turn: clean peek markers on non-reasoning blocks (tool, auto_tool)
-        await _blockStore.ClearPeekMarkersAsync(agentId, false);
-
-        // Insert turn marker block with usage summary
-        var turnBlock = MemoryBlock.TurnMarker(
-            JsonSerializer.Serialize(new { hit = ctx.FailSafeClient.TotalCacheHitTokens, miss = ctx.FailSafeClient.TotalCacheMissTokens, out_ = ctx.FailSafeClient.TotalOutputTokens }));
-        turnBlock.Number = ctx.NextNum++;
-        await _blockStore.AppendBlocksAsync(agentId, [turnBlock], ctx.NextNum);
-
-        yield return new TurnCompleteEvent();
+        await foreach (var e in FinalizeAsync(prep))
+            yield return e;
     }
 }

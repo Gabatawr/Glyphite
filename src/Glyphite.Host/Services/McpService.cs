@@ -71,9 +71,9 @@ public class McpService : IAsyncDisposable
                         var execOpts = ResolveExecution(name, t.Name, execEntries);
                         return (AITool)new ToolConfigDecorator(
                             new PrefixedAIFunction(t, name),
-                            peekDefault: execOpts.Peek ?? false,
-                            contentMaxSizeDefault: execOpts.MaxSize ?? 100000,
-                            timeoutSecondsDefault: execOpts.Timeout ?? 300,
+                            peekDefault: execOpts.Peek ?? ToolExecutionDefaults.Peek,
+                            contentMaxSizeDefault: execOpts.MaxSize ?? ToolExecutionDefaults.ContentMaxSize,
+                            timeoutSecondsDefault: execOpts.Timeout ?? ToolExecutionDefaults.McpTimeoutSeconds,
                             tmpDir: _tmpDir,
                             agentId: sessionId
                         );
@@ -182,9 +182,9 @@ public class McpService : IAsyncDisposable
                 var execOpts = ResolveExecution(name, t.Name, execEntries);
                 return (AITool)new ToolConfigDecorator(
                     new PrefixedAIFunction(t, name),
-                    peekDefault: execOpts.Peek ?? false,
-                    contentMaxSizeDefault: execOpts.MaxSize ?? 100000,
-                    timeoutSecondsDefault: execOpts.Timeout ?? 300,
+                    peekDefault: execOpts.Peek ?? ToolExecutionDefaults.Peek,
+                    contentMaxSizeDefault: execOpts.MaxSize ?? ToolExecutionDefaults.ContentMaxSize,
+                    timeoutSecondsDefault: execOpts.Timeout ?? ToolExecutionDefaults.McpTimeoutSeconds,
                     tmpDir: _tmpDir,
                     agentId: sessionId
                 );
@@ -366,7 +366,7 @@ public class McpService : IAsyncDisposable
     /// Resolve execution options for a given server + tool combination.
     /// Merges hierarchically (lowest → highest priority):
     /// <list type="number">
-    ///   <item>Hardcoded defaults (<c>Timeout=300, MaxSize=100000, Peek=false</c>)</item>
+    ///   <item><see cref="ToolExecutionDefaults"/> — MCP: <c>Timeout=300s, MaxSize=100000, Peek=false</c></item>
     ///   <item><c>Mcp="*"</c> (no <c>Tool</c>) — wildcard server‑level</item>
     ///   <item>Exact <c>Mcp</c> (no <c>Tool</c>) — exact server‑level</item>
     ///   <item><c>Mcp="*", Tool="*"</c> — wildcard server + wildcard tool</item>
@@ -380,12 +380,12 @@ public class McpService : IAsyncDisposable
     private static McpExecutionOptionsEntry ResolveExecution(
         string serverName, string toolName, McpExecutionEntry[] entries)
     {
-        // Start with hardcoded defaults
+        // Start with shared execution defaults (MCP timeout is longer than builtin — remote calls)
         var result = new McpExecutionOptionsEntry
         {
-            Timeout = 300,
-            MaxSize = 100000,
-            Peek = false,
+            Timeout = ToolExecutionDefaults.McpTimeoutSeconds,
+            MaxSize = ToolExecutionDefaults.ContentMaxSize,
+            Peek = ToolExecutionDefaults.Peek,
         };
 
         foreach (var e in entries)

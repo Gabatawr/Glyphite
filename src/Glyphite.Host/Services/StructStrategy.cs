@@ -21,6 +21,8 @@ namespace Glyphite.Host.Services;
 ///     pass through untouched.
 ///   - Non-agent_data blocks in group 0 (before first turn) are also deleted.
 ///   - The last 2 turns (zones 1 &amp; 2) are preserved intact for granular access.
+///   - If summarization fails, the to-compress turns are preserved as-is
+///     (fallback — no data loss).
 ///
 /// Block order in DB/context:
 ///   agent_data → compressed zones (pass-through) → safe zones (preserved)
@@ -103,7 +105,7 @@ internal static class StructStrategy
         var (summary, _, _, summaryOutput) = await CompactionService.SummarizeZoneAsync(
             agentId, summarizeBlocks, model, chatClient, agentStore, logger, structured: true);
 
-        if (summary is null && safeGroups.Count == 0)
+        if (summary is null && safeGroups.Count == 0 && toCompressGroups.Count == 0)
             return false;
 
         // Find agent_data block
@@ -135,7 +137,9 @@ internal static class StructStrategy
             }
         }
 
-        // Summary last — covers everything, sits at end as high-level reference
+        // Summary last — covers everything, sits at end as high-level reference.
+        // If summarization failed, keep the original to-compress turns so no
+        // history is lost (mirrors fibo's fallback behavior).
         if (summary is not null)
         {
             var block = MemoryBlock.AgentMessage(summary, model: model);
@@ -149,6 +153,17 @@ internal static class StructStrategy
             turnBlock.Number = nextNumber++;
             newBlocks.Add(turnBlock);
         }
+        else
+        {
+            foreach (var group in toCompressGroups)
+            {
+                foreach (var block in group)
+                {
+                    block.Number = nextNumber++;
+                    newBlocks.Add(block);
+                }
+            }
+        }
 
         // Atomically replace history: hard-delete everything after agent_data, insert new order
         await blockStore.ReplaceBlocksSinceAsync(
@@ -157,8 +172,8 @@ internal static class StructStrategy
             newBlocks,
             nextNumber);
 
-        logger.LogInformation("Compacted session {SessionId}: struct summary, {CompressedCount} compressed preserved, {SafeCount} safe preserved",
-            agentId, compressedGroups.Count, safeGroups.Count);
+        logger.LogInformation("Compacted session {SessionId}: {SummaryCount} summary, {CompressedCount} compressed preserved, {FallbackCount} fallback blocks, {SafeCount} safe preserved (struct)",
+            agentId, summary is null ? 0 : 1, compressedGroups.Count, summary is null ? toCompressGroups.Sum(g => g.Count) : 0, safeGroups.Count);
         return true;
     }
 }

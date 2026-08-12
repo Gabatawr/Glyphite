@@ -28,7 +28,7 @@ public class McpExecutionEntry
 
 /// <summary>
 /// Execution options for MCP tools. Nullable fields allow hierarchical merging —
-/// <c>null</c> means "inherit from lower‑priority entry or use hardcoded default".
+/// <c>null</c> means "inherit from lower‑priority entry or use the shared <see cref="Glyphite.Host.Tools.ToolExecutionDefaults"/>".
 /// </summary>
 public class McpExecutionOptionsEntry
 {

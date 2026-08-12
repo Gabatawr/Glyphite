@@ -530,6 +530,14 @@ Key log events:
 - MCP connection/disconnection/reconnection events
 - Error conditions (parsing failures, process kill errors, etc.)
 
+## Architecture notes & known limitations
+
+- **Single-writer SQLite** — each agent has its own SQLite database with a single write path (serialized via `SemaphoreSlim` in the repositories; WAL mode allows concurrent reads). Only one turn writes at a time; concurrent tool writes are funneled through the same lock. Do not open the DB from a second process while the CLI is running.
+- **Per-agent scoped services** — the CLI creates a DI scope per agent session. `IConfigService`, repositories, `ToolRegistry`, `CompactionService`, etc. are scoped to the agent, so config hot-reload and tool state never leak across agents. Subagents get their own scope and DB.
+- **Compaction failure fallback** — if the summarization LLM call fails, both strategies (`fibo` and `struct`) preserve the original turn blocks intact instead of dropping them: the compaction becomes a renumbering no-op and no history is lost. This is verified by tests.
+- **Tool execution defaults** — per-tool `peek` / `maxSize` / `timeout` defaults are centralized in `ToolExecutionDefaults` (`src/Glyphite.Host/Tools/`); per-tool overrides come from `Glyphite:ToolExecution` (builtin tools) or `Glyphite:McpExecution` (MCP tools). MCP tools get a longer default timeout (300s vs 120s for builtins) because they cross process boundaries.
+- **Streaming cancellation is graceful** — Escape cancels the outer stream after the current iteration; the inner LLM stream runs to completion so partial responses are persisted. Usage is written per-iteration, so a crash mid-turn never loses token accounting.
+
 ## Versioning
 
 The version is stored in `version.txt`. On `dotnet build` in Debug mode, the patch version is auto-incremented. On `dotnet publish -c Release`, the version stays unchanged (the `publish.sh` script bumps it manually).
@@ -564,7 +572,7 @@ cp ~/.glyphite/backup/glyphite.v1.0.0 ~/.glyphite/glyphite
 
 ## Testing
 
-Tests are in the `tests/Glyphite.Tests.Unit/` directory with 114 tests covering configuration validation, data layer (SessionRepository, BlockRepository), ConfigService, and FilePatchTool — written with xUnit + NSubstitute.
+Tests are in the `tests/Glyphite.Tests.Unit/` directory with 184 tests covering the turn pipeline (TurnProcessor, FailSafeChatClient, ToolExecutor), compaction strategies (fibo/struct incl. failure fallback), BashSessionManager, usage parsing (all provider formats), ContentDedup, configuration validation, the data layer (SessionRepository, BlockRepository), and FilePatchTool — written with xUnit + NSubstitute.
 
 ## License
 

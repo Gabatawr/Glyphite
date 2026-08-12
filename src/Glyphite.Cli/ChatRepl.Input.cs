@@ -94,11 +94,9 @@ public partial class ChatRepl
     /// <summary>After Escape/error, update prompt state from last completed iteration (not total turn — but more accurate than stale values).</summary>
     private void UpdateFromLastIteration()
     {
-        var tp = TurnProcessor;
-        if (tp.LastIterationTotalHit > 0 || tp.LastIterationTotalMiss > 0 || tp.LastIterationTotalOutput > 0)
-            UpdatePromptInline(
-                tp.LastIterationTotalHit, tp.LastIterationTotalMiss, tp.LastIterationTotalOutput,
-                tp.LastIterationLastHit, tp.LastIterationLastMiss);
+        if (TurnProcessor.LastIterationUsage is { } usage
+            && (usage.TotalHit > 0 || usage.TotalMiss > 0 || usage.TotalOutput > 0))
+            UpdatePromptInline(usage.TotalHit, usage.TotalMiss, usage.TotalOutput, usage.LastHit, usage.LastMiss);
     }
 
     private (double? MissPrice, double? HitPrice, double? OutputPrice) GetPricing(string model)

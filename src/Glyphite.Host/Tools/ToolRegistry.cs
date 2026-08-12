@@ -93,7 +93,9 @@ public class ToolRegistry : IToolRegistry
         if (!isSubAgent || includeMemory)
             tools.Add(WrapWithConfig(MemoryTool.AsAIFunction(_blockMemory, agentId, _cfgService), toolExec, "memory", _tmpDir, agentId));
 
-        // MCP tools: available for all agents
+        // MCP tools: available for all agents. McpService wraps each tool with its own
+        // ToolConfigDecorator (McpExecution settings + ToolExecutionDefaults), so they
+        // are added here unwrapped — no need to re-wrap.
         var mcpTools = await _mcpService.GetToolsAsync(agentId);
         tools.AddRange(mcpTools);
 
@@ -149,8 +151,9 @@ public class ToolRegistry : IToolRegistry
                 .Select(e => KeyValuePair.Create(e.Tool, e.Options ?? new ToolExecutionOptionsEntry()))
                 .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogDebug(ex, "Failed to parse ToolExecution config section — using defaults");
             return [];
         }
     }
@@ -180,27 +183,10 @@ public class ToolRegistry : IToolRegistry
         // No config for this tool — still wrap with defaults
         return new ToolConfigDecorator(
             tool,
-            peekDefault: false,
-            contentMaxSizeDefault: 100_000,
-            timeoutSecondsDefault: 120,
+            peekDefault: ToolExecutionDefaults.Peek,
+            contentMaxSizeDefault: ToolExecutionDefaults.ContentMaxSize,
+            timeoutSecondsDefault: ToolExecutionDefaults.BuiltinTimeoutSeconds,
             tmpDir: tmpDir,
             agentId: agentId);
-    }
-
-    /// <summary>
-    /// Wraps an <see cref="AITool"/> (MCP tool) with <see cref="ToolConfigDecorator"/>.
-    /// MCP tools are returned as <see cref="AIFunction"/>, so casting is safe.
-    /// Note: MCP tools are also wrapped by McpService directly, not via this method.
-    /// </summary>
-    private static AITool WrapWithConfig(
-        AITool tool,
-        Dictionary<string, ToolExecutionOptionsEntry> toolExec,
-        string toolName,
-        string tmpDir = "",
-        string? agentId = null)
-    {
-        if (tool is AIFunction func)
-            return WrapWithConfig(func, toolExec, toolName, tmpDir, agentId);
-        return tool;
     }
 }

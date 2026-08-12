@@ -12,14 +12,6 @@ public interface ITurnProcessor
         CancellationToken ct,
         string? agentCwd = null);
 
-    /// <summary>Last iteration's cumulative hit tokens (for prompt fallback after Escape).</summary>
-    long LastIterationTotalHit { get; }
-    /// <summary>Last iteration's cumulative miss tokens.</summary>
-    long LastIterationTotalMiss { get; }
-    /// <summary>Last iteration's cumulative output tokens.</summary>
-    long LastIterationTotalOutput { get; }
-    /// <summary>Last iteration's per-iteration hit tokens.</summary>
-    long LastIterationLastHit { get; }
-    /// <summary>Last iteration's per-iteration miss tokens.</summary>
-    long LastIterationLastMiss { get; }
+    /// <summary>Last completed iteration's usage snapshot (prompt fallback after Escape/crash).</summary>
+    UsageSnapshot? LastIterationUsage { get; }
 }

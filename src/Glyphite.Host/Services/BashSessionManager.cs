@@ -484,7 +484,10 @@ public class BashSessionManager : IBashSessionManager, IDisposable
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Background stdout reader failed for {AgentId}", AgentId);
+                }
             });
 
             // Read stderr
@@ -503,7 +506,10 @@ public class BashSessionManager : IBashSessionManager, IDisposable
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Background stderr reader failed for {AgentId}", AgentId);
+                }
             });
 
             // Wait for exit
@@ -513,7 +519,10 @@ public class BashSessionManager : IBashSessionManager, IDisposable
                 {
                     _process.WaitForExit(_timeoutMs);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Background WaitForExit failed for {AgentId}", AgentId);
+                }
                 Interlocked.Exchange(ref _exited, 1);
                 _exitTcs.TrySetResult(true);
             });
@@ -565,7 +574,10 @@ public class BashSessionManager : IBashSessionManager, IDisposable
                 if (!_process.HasExited)
                     _process.Kill(entireProcessTree: true);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Background process kill failed for {AgentId}", AgentId);
+            }
             _process.Dispose();
             _process = null;
             _exitTcs.TrySetResult(true);

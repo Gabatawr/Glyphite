@@ -201,8 +201,8 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     {
                         var skipId = fcc.CallId ?? Guid.NewGuid().ToString("N");
                         var skipped = "Skipped — previous tool errored";
-                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(skipId, skipped), new TextContent(skipped)]));
-                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(skipId, skipped)] };
+                        toolResults.Add(BuildToolResultMessage(skipId, null, skipped, null));
+                        yield return BuildToolResultUpdate(skipId, null, skipped);
                     }
                     continue;
                 }
@@ -237,17 +237,9 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
                     if (isPeek) _toolExecutor.PendingPeekCallIds.Add(callId);
 
-                    if (errorText is not null)
-                    {
-                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errorText) { Exception = exception }, new TextContent(errorText)]));
-                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errorText)] };
-                        hasError = true;
-                    }
-                    else
-                    {
-                        toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText ?? ""), new TextContent(resultText ?? "")]));
-                        yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
-                    }
+                    toolResults.Add(BuildToolResultMessage(callId, resultText, errorText, exception));
+                    yield return BuildToolResultUpdate(callId, resultText, errorText);
+                    if (errorText is not null) hasError = true;
 
                     _toolExecutor.ExecutedCallIds.Add(callId);
                 }
@@ -293,17 +285,9 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                             Contents = [new FunctionCallContent(callId, toolName, fcc.Arguments ?? new Dictionary<string, object?>())]
                         };
 
-                        if (errorText is not null)
-                        {
-                            toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, errorText) { Exception = exception }, new TextContent(errorText)]));
-                            yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, errorText)] };
-                            hasError = true;
-                        }
-                        else
-                        {
-                            toolResults.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, resultText ?? ""), new TextContent(resultText ?? "")]));
-                            yield return new ChatResponseUpdate { Contents = [new FunctionResultContent(callId, resultText ?? "")] };
-                        }
+                        toolResults.Add(BuildToolResultMessage(callId, resultText, errorText, exception));
+                        yield return BuildToolResultUpdate(callId, resultText, errorText);
+                        if (errorText is not null) hasError = true;
 
                         _toolExecutor.ExecutedCallIds.Add(callId);
                     }
@@ -336,4 +320,17 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
         throw new InvalidOperationException($"Tool execution exceeded {_maxIterations} iterations.");
     }
+
+    /// <summary>Build the Tool-role message fed back to the LLM for one tool result (shared by sequential and parallel paths).</summary>
+    private static ChatMessage BuildToolResultMessage(string callId, string? resultText, string? errorText, Exception? exception)
+    {
+        var content = errorText ?? resultText ?? "";
+        return errorText is not null
+            ? new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, content) { Exception = exception }, new TextContent(content)])
+            : new ChatMessage(ChatRole.Tool, [new FunctionResultContent(callId, content), new TextContent(content)]);
+    }
+
+    /// <summary>Build the UI-facing FunctionResultContent update for one tool result (shared by sequential and parallel paths).</summary>
+    private static ChatResponseUpdate BuildToolResultUpdate(string callId, string? resultText, string? errorText)
+        => new() { Contents = [new FunctionResultContent(callId, errorText ?? resultText ?? "")] };
 }

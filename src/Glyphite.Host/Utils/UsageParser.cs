@@ -66,7 +66,7 @@ internal static class UsageParser
         }
 
         var hit = cached > 0 ? cached : 0L;
-        var miss = cached > 0 ? inputTotal - cached : inputTotal;
+        var miss = cached > 0 ? Math.Max(0, inputTotal - cached) : inputTotal;
         var output = usage.TryGetProperty("completion_tokens", out var cpt) && cpt.ValueKind == JsonValueKind.Number
             ? cpt.GetInt64() : 0L;
 
@@ -94,7 +94,7 @@ internal static class UsageParser
         }
 
         var hit = cached > 0 ? cached : 0L;
-        var miss = cached > 0 ? inputTotal - cached : inputTotal;
+        var miss = cached > 0 ? Math.Max(0, inputTotal - cached) : inputTotal;
         var output = usage.TryGetProperty("OutputTokenCount", out var otc) && otc.ValueKind == JsonValueKind.Number
             ? otc.GetInt64() : 0L;
 
@@ -119,7 +119,7 @@ internal static class UsageParser
             cacheRead = crt.GetInt64();
 
         var hit = cacheRead > 0 ? cacheRead : 0L;
-        var miss = cacheRead > 0 ? inputTotal - cacheRead : inputTotal;
+        var miss = cacheRead > 0 ? Math.Max(0, inputTotal - cacheRead) : inputTotal;
         var output = usage.TryGetProperty("output_tokens", out var ot) && ot.ValueKind == JsonValueKind.Number
             ? ot.GetInt64() : 0L;
 
@@ -158,7 +158,7 @@ internal static class UsageParser
             cached = cct.GetInt64();
 
         var hit = cached > 0 ? cached : 0L;
-        var miss = cached > 0 ? inputTotal - cached : inputTotal;
+        var miss = cached > 0 ? Math.Max(0, inputTotal - cached) : inputTotal;
         var output = usage.TryGetProperty("candidatesTokenCount", out var ctc) && ctc.ValueKind == JsonValueKind.Number
             ? ctc.GetInt64() : 0L;
 

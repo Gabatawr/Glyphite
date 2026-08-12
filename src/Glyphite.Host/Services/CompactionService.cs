@@ -313,7 +313,7 @@ public class CompactionService
         toCompressGroups.Reverse();
 
         var isHardMode = false;
-        var compressedTokens = SumCompressedOutput(compressedGroups);
+        var compressedTokens = SumCompressedOutput(compressedGroups, logger);
         if (compressedTokens >= (int)(2.0 / 3.0 * threshold) && compressedGroups.Count > 0)
         {
             logger?.LogInformation("Hard mode: {CompressedTokens} compressed tokens >= 2/3 of threshold {Threshold}, recompressing {Count} compressed zones",
@@ -336,7 +336,7 @@ public class CompactionService
     }
 
     /// <summary>Sum output tokens from turn markers in compressed groups (hard-mode threshold check).</summary>
-    public static long SumCompressedOutput(List<List<MemoryBlock>> compressedGroups)
+    public static long SumCompressedOutput(List<List<MemoryBlock>> compressedGroups, ILogger? logger = null)
     {
         long total = 0;
         foreach (var group in compressedGroups)
@@ -349,7 +349,10 @@ public class CompactionService
                         if (doc.RootElement.TryGetProperty("out_", out var outProp) && outProp.TryGetInt64(out var outVal))
                             total += outVal;
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        logger?.LogDebug(ex, "Failed to parse turn marker JSON in compaction output");
+                    }
                 }
         return total;
     }

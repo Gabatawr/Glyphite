@@ -4,6 +4,7 @@ using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Services;
 
@@ -16,7 +17,8 @@ namespace Glyphite.Host.Services;
 internal sealed partial class SafetyChecker(
     IChatClient chatClient,
     IBlockStore blockStore,
-    IAgentStore agentStore) : ISafetyChecker
+    IAgentStore agentStore,
+    ILogger<SafetyChecker> logger) : ISafetyChecker
 {
     public async Task<SafetyVerdict> CheckAsync(string agentId, string command, CancellationToken ct)
     {
@@ -77,9 +79,10 @@ internal sealed partial class SafetyChecker(
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
             // Best-effort: don't let usage recording failure block execution
+            logger.LogDebug(ex, "Failed to record usage from safety check");
         }
 
         // 5. Parse the structured JSON response
