@@ -1,6 +1,5 @@
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
-using Glyphite.Host.Data;
 using Glyphite.Host.Services;
 using Glyphite.Tests.Unit.Support;
 using Microsoft.Extensions.AI;
@@ -12,29 +11,17 @@ namespace Glyphite.Tests.Unit.Services;
 
 public class CompactionServiceTests : IDisposable
 {
-    private readonly string _dbPath;
-    private readonly string _connStr;
-    private readonly SessionRepository _sessions;
-    private readonly BlockRepository _blocks;
+    private readonly TestDb _db = new();
     private readonly IConfigService _cfg = Substitute.For<IConfigService>();
     private readonly FakeChatClient _chat = new();
     private readonly CompactionService _svc;
 
     public CompactionServiceTests()
     {
-        _dbPath = Path.Combine(Path.GetTempPath(), $"glyphite_test_{Guid.NewGuid():N}.db");
-        _connStr = $"Data Source={_dbPath}";
-        _sessions = new SessionRepository(_connStr);
-        _blocks = new BlockRepository(_connStr);
-        _svc = new CompactionService(_blocks, _sessions, _cfg, _chat, NullLogger<CompactionService>.Instance);
+        _svc = new CompactionService(_db.Blocks, _db.Sessions, _cfg, _chat, NullLogger<CompactionService>.Instance);
     }
 
-    public void Dispose()
-    {
-        _blocks.Dispose();
-        _sessions.Dispose();
-        try { if (File.Exists(_dbPath)) File.Delete(_dbPath); } catch { /* best-effort */ }
-    }
+    public void Dispose() => _db.Dispose();
 
     private void SetupCompression(CompressionOptions opts)
         => _cfg.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, Arg.Any<string?>()).Returns(opts);
@@ -80,7 +67,7 @@ public class CompactionServiceTests : IDisposable
     [Fact]
     public async Task Evaluate_NoUsage_BelowThreshold()
     {
-        await _sessions.EnsureSessionAsync("agent");
+        await _db.Sessions.EnsureSessionAsync("agent");
         SetupCompression(DefaultOpts);
 
         var status = await _svc.EvaluateCompactionStatusAsync("agent", 10_000);
@@ -93,9 +80,9 @@ public class CompactionServiceTests : IDisposable
     public async Task Evaluate_AboveThreshold_WithOldTurns_WillCompact_SoftMode()
     {
         const string agentId = "agent";
-        await _sessions.EnsureSessionAsync(agentId);
-        await TestData.AppendHistoryAsync(_blocks, agentId, turns: 3);
-        await _sessions.RecordUsageAsync(agentId, 0, 0, 0, lastRequestHit: 0, lastRequestMiss: 6_000);
+        await _db.Sessions.EnsureSessionAsync(agentId);
+        await TestData.AppendHistoryAsync(_db.Blocks, agentId, turns: 3);
+        await _db.Sessions.RecordUsageAsync(agentId, 0, 0, 0, lastRequestHit: 0, lastRequestMiss: 6_000);
         SetupCompression(DefaultOpts);
 
         var status = await _svc.EvaluateCompactionStatusAsync(agentId, 10_000);
@@ -132,16 +119,16 @@ public class CompactionServiceTests : IDisposable
     public async Task FiboCompact_SummarizesOldZones_PreservesSafeTurns()
     {
         const string agentId = "agent";
-        await _sessions.EnsureSessionAsync(agentId);
-        await TestData.AppendHistoryAsync(_blocks, agentId, turns: 3);
+        await _db.Sessions.EnsureSessionAsync(agentId);
+        await TestData.AppendHistoryAsync(_db.Blocks, agentId, turns: 3);
         _chat.QueueResponse(new ChatResponse([new ChatMessage(ChatRole.Assistant, "SUMMARY")]));
 
-        var blocks = await _blocks.LoadBlocksAsync(agentId);
+        var blocks = await _db.Blocks.LoadBlocksAsync(agentId);
         var result = await FiboStrategy.CompactAsync(
-            agentId, DefaultOpts, blocks, "test-model", _blocks, _chat, _sessions, NullLogger.Instance, contextWindow: 10_000);
+            agentId, DefaultOpts, blocks, "test-model", _db.Blocks, _chat, _db.Sessions, NullLogger.Instance, contextWindow: 10_000);
 
         Assert.True(result);
-        var after = await _blocks.LoadBlocksAsync(agentId);
+        var after = await _db.Blocks.LoadBlocksAsync(agentId);
         // agent_data + summary + turn + 2 safe turns (6 blocks) = 9
         Assert.Equal(9, after.Count);
         Assert.Contains(after, b => b.Type == BlockType.agent_message && b.Content == "SUMMARY" && b.Compressed);
@@ -154,16 +141,16 @@ public class CompactionServiceTests : IDisposable
     public async Task FiboCompact_SummaryFails_BlocksFallBackIntact()
     {
         const string agentId = "agent";
-        await _sessions.EnsureSessionAsync(agentId);
-        await TestData.AppendHistoryAsync(_blocks, agentId, turns: 3);
+        await _db.Sessions.EnsureSessionAsync(agentId);
+        await TestData.AppendHistoryAsync(_db.Blocks, agentId, turns: 3);
         _chat.ThrowOnResponse = true;
 
-        var blocks = await _blocks.LoadBlocksAsync(agentId);
+        var blocks = await _db.Blocks.LoadBlocksAsync(agentId);
         var result = await FiboStrategy.CompactAsync(
-            agentId, DefaultOpts, blocks, "test-model", _blocks, _chat, _sessions, NullLogger.Instance, contextWindow: 10_000);
+            agentId, DefaultOpts, blocks, "test-model", _db.Blocks, _chat, _db.Sessions, NullLogger.Instance, contextWindow: 10_000);
 
         Assert.True(result);
-        var after = await _blocks.LoadBlocksAsync(agentId);
+        var after = await _db.Blocks.LoadBlocksAsync(agentId);
         Assert.Equal(10, after.Count); // nothing lost
         Assert.Contains(after, b => b.Content == "answer 0");
         Assert.Contains(after, b => b.Content == "answer 1");
@@ -176,16 +163,16 @@ public class CompactionServiceTests : IDisposable
     public async Task StructCompact_SummaryReplacesOldTurns()
     {
         const string agentId = "agent";
-        await _sessions.EnsureSessionAsync(agentId);
-        await TestData.AppendHistoryAsync(_blocks, agentId, turns: 3);
+        await _db.Sessions.EnsureSessionAsync(agentId);
+        await TestData.AppendHistoryAsync(_db.Blocks, agentId, turns: 3);
         _chat.QueueResponse(new ChatResponse([new ChatMessage(ChatRole.Assistant, "STRUCT SUMMARY")]));
 
-        var blocks = await _blocks.LoadBlocksAsync(agentId);
+        var blocks = await _db.Blocks.LoadBlocksAsync(agentId);
         var result = await StructStrategy.CompactAsync(
-            agentId, DefaultOpts, blocks, "test-model", _blocks, _chat, _sessions, NullLogger.Instance, contextWindow: 10_000);
+            agentId, DefaultOpts, blocks, "test-model", _db.Blocks, _chat, _db.Sessions, NullLogger.Instance, contextWindow: 10_000);
 
         Assert.True(result);
-        var after = await _blocks.LoadBlocksAsync(agentId);
+        var after = await _db.Blocks.LoadBlocksAsync(agentId);
         // agent_data + 2 safe turns (6) + summary + turn = 9
         Assert.Equal(9, after.Count);
         Assert.Contains(after, b => b.Content == "STRUCT SUMMARY" && b.Compressed);
@@ -197,16 +184,16 @@ public class CompactionServiceTests : IDisposable
     public async Task StructCompact_SummaryFails_BlocksFallBackIntact()
     {
         const string agentId = "agent";
-        await _sessions.EnsureSessionAsync(agentId);
-        await TestData.AppendHistoryAsync(_blocks, agentId, turns: 3);
+        await _db.Sessions.EnsureSessionAsync(agentId);
+        await TestData.AppendHistoryAsync(_db.Blocks, agentId, turns: 3);
         _chat.ThrowOnResponse = true;
 
-        var blocks = await _blocks.LoadBlocksAsync(agentId);
+        var blocks = await _db.Blocks.LoadBlocksAsync(agentId);
         var result = await StructStrategy.CompactAsync(
-            agentId, DefaultOpts, blocks, "test-model", _blocks, _chat, _sessions, NullLogger.Instance, contextWindow: 10_000);
+            agentId, DefaultOpts, blocks, "test-model", _db.Blocks, _chat, _db.Sessions, NullLogger.Instance, contextWindow: 10_000);
 
         Assert.True(result);
-        var after = await _blocks.LoadBlocksAsync(agentId);
+        var after = await _db.Blocks.LoadBlocksAsync(agentId);
         Assert.Equal(10, after.Count); // nothing lost: agent_data + all 3 turns intact
         Assert.Contains(after, b => b.Content == "answer 0");
         Assert.Contains(after, b => b.Content == "answer 1");

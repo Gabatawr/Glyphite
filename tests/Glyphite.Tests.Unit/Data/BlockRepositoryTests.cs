@@ -1,30 +1,19 @@
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Data;
+using Glyphite.Tests.Unit.Support;
 using Xunit;
 
 namespace Glyphite.Tests.Unit.Data;
 
 public class BlockRepositoryTests : IDisposable
 {
-    private readonly string _dbPath;
-    private readonly string _connStr;
+    private readonly TestDb _db = new();
 
-    public BlockRepositoryTests()
-    {
-        _dbPath = Path.Combine(Path.GetTempPath(), $"glyphite_test_{Guid.NewGuid():N}.db");
-        _connStr = $"Data Source={_dbPath}";
-        // SessionRepository creates sessions + blocks tables on init
-        using var sessionRepo = new SessionRepository(_connStr);
-    }
+    public void Dispose() => _db.Dispose();
 
-    public void Dispose()
-    {
-        try { if (File.Exists(_dbPath)) File.Delete(_dbPath); }
-        catch { /* best-effort cleanup */ }
-    }
-
-    private BlockRepository CreateBlockRepo() => new(_connStr);
-    private SessionRepository CreateSessionRepo() => new(_connStr);
+    private BlockRepository CreateBlockRepo() => new(_db.ConnStr);
+    private SessionRepository CreateSessionRepo() => new(_db.ConnStr);
+// ── CRUD ──
 
     [Fact]
     public async Task Can_Create_And_Retrieve_Block()
@@ -50,6 +39,7 @@ public class BlockRepositoryTests : IDisposable
         Assert.Equal("Hi there!", loaded[1].Content);
         Assert.Equal("deepseek-chat", loaded[1].Model);
     }
+// ── Queries ──
 
     [Fact]
     public async Task Blocks_List_Filtered_By_AgentId()

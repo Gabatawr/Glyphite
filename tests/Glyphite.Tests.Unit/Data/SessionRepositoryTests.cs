@@ -1,31 +1,16 @@
 using Glyphite.Host.Data;
+using Glyphite.Tests.Unit.Support;
 using Xunit;
 
 namespace Glyphite.Tests.Unit.Data;
 
 public class SessionRepositoryTests : IDisposable
 {
-    private readonly string _dbPath;
-    private readonly string _connStr;
+    private readonly TestDb _db = new();
 
-    public SessionRepositoryTests()
-    {
-        _dbPath = Path.Combine(Path.GetTempPath(), $"glyphite_test_{Guid.NewGuid():N}.db");
-        _connStr = $"Data Source={_dbPath}";
-        // Create all tables (sessions, blocks, config) by initializing repositories
-        using var sessionRepo = new SessionRepository(_connStr);
-        using var blockRepo = new BlockRepository(_connStr);
-        using var configRepo = new ConfigRepository(_connStr);
-        using var kvRepo = new KVStoreRepository(_connStr);
-    }
-
-    public void Dispose()
-    {
-        try { if (File.Exists(_dbPath)) File.Delete(_dbPath); }
-        catch { /* best-effort cleanup */ }
-    }
-
-    private SessionRepository CreateRepo() => new(_connStr);
+    public void Dispose() => _db.Dispose();
+    private SessionRepository CreateRepo() => new(_db.ConnStr);
+// ── Session lifecycle ──
 
     [Fact]
     public async Task Can_Create_And_Retrieve_Agent()
@@ -116,6 +101,7 @@ public class SessionRepositoryTests : IDisposable
         var agents = await repo.ListAgentsAsync();
         Assert.DoesNotContain(agentId, agents);
     }
+// ── Usage tracking ──
 
     [Fact]
     public async Task Usage_Stats_Tracking()
@@ -205,6 +191,7 @@ public class SessionRepositoryTests : IDisposable
         Assert.Equal(0, usage.Miss);
         Assert.Equal(0, usage.Output);
     }
+// ── Launch tracking ──
 
     [Fact]
     public async Task RecordLaunch_And_GetLaunches_Works()

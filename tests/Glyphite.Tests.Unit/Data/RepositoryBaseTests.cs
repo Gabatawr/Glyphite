@@ -25,6 +25,7 @@ public class RepositoryBaseTests : IDisposable
         _dbPaths.Add(dbPath);
         return new BusyFakeRepository(dbPath, failAttempts, failCode);
     }
+// ── Busy retry ──
 
     [Fact]
     public async Task Write_RetriesOnBusy_ThenSucceeds()

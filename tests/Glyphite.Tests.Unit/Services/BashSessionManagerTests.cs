@@ -33,6 +33,7 @@ public class BashSessionManagerTests : IDisposable
         _manager.Dispose();
         try { if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, recursive: true); } catch { /* best-effort */ }
     }
+// ── Execute ──
 
     [Fact]
     public async Task Execute_ReturnsCommandOutput()

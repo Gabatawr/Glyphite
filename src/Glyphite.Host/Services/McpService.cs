@@ -377,7 +377,7 @@ public class McpService : IAsyncDisposable
     /// Each step only overrides non‑null fields, so higher‑priority entries
     /// can override just <c>Peek</c> while inheriting <c>Timeout</c> and <c>MaxSize</c>.
     /// </summary>
-    private static McpExecutionOptionsEntry ResolveExecution(
+    internal static McpExecutionOptionsEntry ResolveExecution(
         string serverName, string toolName, McpExecutionEntry[] entries)
     {
         // Start with shared execution defaults (MCP timeout is longer than builtin — remote calls)

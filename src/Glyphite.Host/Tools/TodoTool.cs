@@ -58,7 +58,7 @@ public static class TodoTool
         var dictItems = items.Select(i => new Dictionary<string, object?>
         {
             ["text"] = i.Text ?? "",
-            ["status"] = opts.ValidStatuses.Contains(i.Status ?? opts.DefaultStatus) ? i.Status! : opts.DefaultStatus,
+            ["status"] = ResolveStatus(i.Status, opts),
             ["priority"] = i.Priority ?? opts.DefaultPriority
         }).ToList();
 
@@ -178,7 +178,7 @@ public static class TodoTool
                 var newItem = new Dictionary<string, object?>
                 {
                     ["text"] = item.Text,
-                    ["status"] = opts.ValidStatuses.Contains(item.Status ?? opts.DefaultStatus) ? item.Status! : opts.DefaultStatus,
+                    ["status"] = ResolveStatus(item.Status, opts),
                     ["priority"] = item.Priority ?? opts.DefaultPriority
                 };
                 currentItems.Add(newItem);
@@ -232,6 +232,13 @@ public static class TodoTool
         if (string.IsNullOrEmpty(title)) return null;
         var all = await blockStore.LoadBlocksByTypeAsync(agentId, BlockType.todo, null, false);
         return all.FirstOrDefault(b => string.Equals(b.Content, title, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Resolve the effective status: explicit value if valid, otherwise the configured default.</summary>
+    private static string ResolveStatus(string? status, TodoOptions opts)
+    {
+        var resolved = status ?? opts.DefaultStatus;
+        return opts.ValidStatuses.Contains(resolved) ? resolved : opts.DefaultStatus;
     }
 
     /// <summary>Deserialize items from a todo block's Data["items"]. Returns empty list on failure.</summary>

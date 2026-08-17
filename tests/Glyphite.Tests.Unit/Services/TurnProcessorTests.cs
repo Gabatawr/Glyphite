@@ -1,6 +1,5 @@
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
-using Glyphite.Host.Data;
 using Glyphite.Host.Services;
 using Glyphite.Tests.Unit.Support;
 using Microsoft.Extensions.AI;
@@ -14,10 +13,7 @@ public class TurnProcessorTests : IDisposable
 {
     private const string AgentId = "test-agent";
 
-    private readonly string _dbPath;
-    private readonly string _connStr;
-    private readonly SessionRepository _sessions;
-    private readonly BlockRepository _blocks;
+    private readonly TestDb _db = new();
     private readonly FakeChatClient _chat = new();
     private readonly IConfigService _cfg = Substitute.For<IConfigService>();
     private readonly IBlockMemoryProvider _memory = Substitute.For<IBlockMemoryProvider>();
@@ -28,11 +24,7 @@ public class TurnProcessorTests : IDisposable
 
     public TurnProcessorTests()
     {
-        _dbPath = Path.Combine(Path.GetTempPath(), $"glyphite_test_{Guid.NewGuid():N}.db");
-        _connStr = $"Data Source={_dbPath}";
-        _sessions = new SessionRepository(_connStr);
-        _blocks = new BlockRepository(_connStr);
-        _compaction = new CompactionService(_blocks, _sessions, _cfg, _chat, NullLogger<CompactionService>.Instance);
+        _compaction = new CompactionService(_db.Blocks, _db.Sessions, _cfg, _chat, NullLogger<CompactionService>.Instance);
 
         _memory.CurrentExecutedIds.Returns(new AsyncLocal<HashSet<string>?>());
         _memory.BuildContextAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<int?>())
@@ -45,15 +37,10 @@ public class TurnProcessorTests : IDisposable
             .Returns(Task.FromResult("test instructions"));
     }
 
-    public void Dispose()
-    {
-        _blocks.Dispose();
-        _sessions.Dispose();
-        try { if (File.Exists(_dbPath)) File.Delete(_dbPath); } catch { /* best-effort */ }
-    }
+    public void Dispose() => _db.Dispose();
 
     private TurnProcessor CreateProcessor() => new(
-        _sessions, _blocks, _memory, _chat, _tools, _cfg,
+        _db.Sessions, _db.Blocks, _memory, _chat, _tools, _cfg,
         _compaction, _configLoader, _instructions,
         NullLogger<TurnProcessor>.Instance);
 
@@ -84,11 +71,12 @@ public class TurnProcessorTests : IDisposable
             events.Add(e);
         return events;
     }
+// ── Turn lifecycle ──
 
     [Fact]
     public async Task LastIterationUsage_PopulatedAfterTurn()
     {
-        await _sessions.EnsureSessionAsync(AgentId);
+        await _db.Sessions.EnsureSessionAsync(AgentId);
         SetupOptions();
         _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("hi")])]);
 
@@ -100,11 +88,12 @@ public class TurnProcessorTests : IDisposable
         // OnIterationRecorded fires per iteration → the immutable fallback snapshot is set
         Assert.NotNull(processor.LastIterationUsage);
     }
+// ── Validation ──
 
     [Fact]
     public async Task MissingApiKey_YieldsError_NoChatCall()
     {
-        await _sessions.EnsureSessionAsync(AgentId);
+        await _db.Sessions.EnsureSessionAsync(AgentId);
         SetupOptions(llm: new LlmOptions
         {
             Endpoint = "http://localhost",
@@ -121,11 +110,12 @@ public class TurnProcessorTests : IDisposable
         Assert.Equal(0, _chat.StreamCallCount);
         Assert.Equal(0, _chat.ResponseCallCount);
     }
+// ── Happy path ──
 
     [Fact]
     public async Task HappyPath_AppendsBlocks_EmitsUsageAndComplete()
     {
-        await _sessions.EnsureSessionAsync(AgentId);
+        await _db.Sessions.EnsureSessionAsync(AgentId);
         SetupOptions();
         _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("hi there")])]);
 
@@ -137,16 +127,17 @@ public class TurnProcessorTests : IDisposable
         Assert.DoesNotContain(events, e => e is TurnErrorEvent);
         Assert.Equal(1, _chat.StreamCallCount);
 
-        var blocks = await _blocks.LoadBlocksAsync(AgentId);
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
         Assert.Contains(blocks, b => b.Type == BlockType.user_message && b.Content == "hello");
         Assert.Contains(blocks, b => b.Type == BlockType.agent_message && b.Content == "hi there");
         Assert.Contains(blocks, b => b.Type == BlockType.turn);
     }
+// ── Compaction ──
 
     [Fact]
     public async Task CompactionTrigger_YieldsAutoToolEvent_AppendsCompactedHistory()
     {
-        await _sessions.EnsureSessionAsync(AgentId);
+        await _db.Sessions.EnsureSessionAsync(AgentId);
         SetupOptions(
             llm: new LlmOptions
             {
@@ -157,8 +148,8 @@ public class TurnProcessorTests : IDisposable
                 Models = [new LlmModel { Name = "test-model" }],
             },
             compression: new CompressionOptions { AutoCompress = true, AutoThreshold = 50, AutoCompressReasoning = false });
-        await TestData.AppendHistoryAsync(_blocks, AgentId, turns: 3);
-        await _sessions.RecordUsageAsync(AgentId, 0, 0, 0, lastRequestHit: 0, lastRequestMiss: 6_000);
+        await TestData.AppendHistoryAsync(_db.Blocks, AgentId, turns: 3);
+        await _db.Sessions.RecordUsageAsync(AgentId, 0, 0, 0, lastRequestHit: 0, lastRequestMiss: 6_000);
         _chat.QueueResponse(new ChatResponse([new ChatMessage(ChatRole.Assistant, "SUMMARY")]));
         _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("hi")])]);
 
@@ -168,16 +159,17 @@ public class TurnProcessorTests : IDisposable
         Assert.Contains("AutoCompress", autoTool.Args);
         Assert.Contains(events, e => e is TextChunkEvent { Chunk: "hi" });
 
-        var blocks = await _blocks.LoadBlocksAsync(AgentId);
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
         Assert.Contains(blocks, b => b.Type == BlockType.auto_tool && b.ToolName == "compression");
         Assert.Contains(blocks, b => b.Type == BlockType.agent_message && b.Content == "SUMMARY" && b.Compressed);
         Assert.DoesNotContain(blocks, b => b.Content == "answer 0"); // old turn compacted
     }
+// ── Reasoning compression ──
 
     [Fact]
     public async Task ReasoningCompression_CompactsLargeReasoningBlock()
     {
-        await _sessions.EnsureSessionAsync(AgentId);
+        await _db.Sessions.EnsureSessionAsync(AgentId);
         SetupOptions(compression: new CompressionOptions
         {
             AutoCompress = false,
@@ -186,7 +178,7 @@ public class TurnProcessorTests : IDisposable
         });
         var reasoningBlock = MemoryBlock.AgentReasoning(new string('x', 500));
         reasoningBlock.Number = 1;
-        await _blocks.AppendBlocksAsync(AgentId, [reasoningBlock], nextNumber: 2);
+        await _db.Blocks.AppendBlocksAsync(AgentId, [reasoningBlock], nextNumber: 2);
         _chat.QueueResponse(new ChatResponse([new ChatMessage(ChatRole.Assistant, "SHORT")]));
         _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("hi")])]);
 
@@ -194,7 +186,7 @@ public class TurnProcessorTests : IDisposable
 
         Assert.Contains(events, e => e is AutoToolTurnEvent { Name: "compress_reasoning" });
 
-        var blocks = await _blocks.LoadBlocksAsync(AgentId);
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
         var reasoning = blocks.First(b => b.Type == BlockType.agent_reasoning);
         Assert.Equal("SHORT", reasoning.Content);
     }

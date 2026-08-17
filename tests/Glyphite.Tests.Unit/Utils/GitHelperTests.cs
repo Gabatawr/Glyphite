@@ -5,6 +5,7 @@ namespace Glyphite.Tests.Unit.Utils;
 
 public class GitHelperTests
 {
+// ── ParseUnifiedDiff ──
     [Fact]
     public void ParseUnifiedDiff_Empty_ReturnsEmpty()
     {
