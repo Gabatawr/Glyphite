@@ -50,6 +50,23 @@ public sealed class FailSafeChatClient : DelegatingChatClient
         _usageTracker.OnUsage += (hit, miss, output) => OnUsage?.Invoke(hit, miss, output);
     }
 
+    /// <summary>Move the stream forward, mapping user cancellation to a null (end-of-stream) signal.
+    /// C# forbids yield inside try/catch, so cancellation is converted here instead.</summary>
+    private static async Task<ChatResponseUpdate?> TryGetNextUpdateAsync(
+        IAsyncEnumerator<ChatResponseUpdate> enumerator, CancellationToken ct)
+    {
+        try
+        {
+            return await enumerator.MoveNextAsync()
+                ? enumerator.Current
+                : null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return null; // user cancelled — graceful end of stream
+        }
+    }
+
     public override async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages, ChatOptions? options, CancellationToken ct)
     {
@@ -86,9 +103,17 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             var allUpdates = new List<ChatResponseUpdate>();
             var hasToolCall = false;
 
-            // Don't cancel mid-stream — let LLM complete its current response
-            await foreach (var update in base.GetStreamingResponseAsync(messageList, options, CancellationToken.None))
+            // Cancel on user request (Escape) — blocks are saved incrementally and usage
+            // is recorded below, so interruption stays graceful. User cancellation is mapped
+            // to an end-of-stream signal inside TryGetNextUpdateAsync (no try/catch around yield).
+            await using var enumerator = base.GetStreamingResponseAsync(messageList, options, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
+
+            while (true)
             {
+                var update = await TryGetNextUpdateAsync(enumerator, cancellationToken);
+                if (update is null) break;
+
                 allUpdates.Add(update);
 
                 if (update.Contents.OfType<FunctionCallContent>().Any(fc => fc.Name is not null))

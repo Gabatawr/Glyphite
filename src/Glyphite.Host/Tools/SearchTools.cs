@@ -28,7 +28,7 @@ public static class SearchTools
 
         opts ??= new();
         var excluded = new HashSet<string>(opts.ExcludedDirectories, StringComparer.OrdinalIgnoreCase);
-        var regex = GlobToRegex(pattern);
+        var regex = GlobHelper.ToRegex(pattern, pathAware: true);
 
         var matches = await Task.Run(() =>
             EnumerateFiles(searchDir, excluded, opts.MaxEnumerationFiles, logger)
@@ -94,7 +94,7 @@ public static class SearchTools
             if (!string.IsNullOrEmpty(include))
             {
                 var relative = Path.GetRelativePath(searchDir, filePath).Replace('\\', '/');
-                var incRegex = GlobToRegex(include);
+                var incRegex = GlobHelper.ToRegex(include, pathAware: true);
                 if (!incRegex.IsMatch(relative) && !incRegex.IsMatch(Path.GetFileName(relative)))
                     continue;
             }
@@ -252,34 +252,17 @@ public static class SearchTools
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite, opts.DetectBinarySampleSize, FileOptions.Asynchronous);
 
-            var readTask = fs.ReadExactlyAsync(buffer).AsTask();
-            var timeout = Task.Delay(TimeSpan.FromSeconds(2));
-            var completed = await Task.WhenAny(readTask, timeout);
-
-            if (completed == timeout)
-                return false;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await fs.ReadExactlyAsync(buffer, cts.Token);
 
             return !buffer.Contains((byte)0);
         }
+        catch (OperationCanceledException)
+        {
+            // 2s read timeout (slow/network filesystem) — treat as binary, skip quietly
+            return false;
+        }
         catch { logger?.LogWarning("Failed to check text file: {Path}", path); return false; }
-    }
-
-    private static Regex GlobToRegex(string pattern)
-    {
-        var escaped = Regex.Escape(pattern)
-            .Replace("\\*\\*", "__DBLSTAR__")
-            .Replace("\\*", "[^/\\\\]*")
-            .Replace("\\?", "[^/\\\\]");
-
-        // ** matches everything including empty (zero path segments).
-        // Replace **/ → (.*/)? so files in root aren't missed (e.g. "**/*.cs" matches "foo.cs").
-        // Replace /** → (/.*)? so trailing ** works (e.g. "src/**" matches "src/foo.cs").
-        // Standalone ** → .* matches everything.
-        escaped = escaped.Replace("__DBLSTAR__/", "(.*/)?")
-                         .Replace("/__DBLSTAR__", "(/.*)?")
-                         .Replace("__DBLSTAR__", ".*");
-
-        return new Regex($"^{escaped}$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     }
 
     private sealed class SearchInvoker(IConfigService cfg, string? defaultDirectory, string? sessionId, ILogger logger)

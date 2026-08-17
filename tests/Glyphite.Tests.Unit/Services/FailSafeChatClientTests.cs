@@ -155,7 +155,7 @@ public class FailSafeChatClientTests
     // ── Cancellation ──
 
     [Fact]
-    public async Task CancelMidStream_InnerStreamRunsToCompletion()
+    public async Task CancelMidStream_StopsAfterCurrentUpdate()
     {
         var fake = new FakeChatClient { DelayPerUpdate = TimeSpan.FromMilliseconds(30) };
         fake.QueueStream([TextUpdate("a"), TextUpdate("b")]);
@@ -169,9 +169,9 @@ public class FailSafeChatClientTests
             cts.Cancel();
         }
 
-        // Inner stream is not cancelled (FailSafe passes CancellationToken.None) — both updates delivered
-        Assert.Equal(2, updates.Count);
-        Assert.False(fake.StreamTokens[0].IsCancellationRequested);
+        // User cancellation interrupts the inner stream — only the first update is delivered
+        Assert.Single(updates);
+        Assert.True(fake.StreamTokens[0].IsCancellationRequested);
     }
 
     [Fact]

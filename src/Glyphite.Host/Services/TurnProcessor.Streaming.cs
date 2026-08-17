@@ -6,6 +6,7 @@ using Glyphite.Abstractions.Models;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Glyphite.Host.Tools;
 
 namespace Glyphite.Host.Services;
 
@@ -18,6 +19,9 @@ internal sealed class TurnContext
     private readonly IBlockStore _blockStore;
     private readonly IAgentStore _agentStore;
     private readonly ILogger _logger;
+    private readonly int _writeFileMaxSize;
+
+    private static readonly string TmpDir = Path.Combine(AppContext.BaseDirectory, "tmp");
 
     public string SessionId { get; }
     public string ModelStr { get; }
@@ -41,7 +45,8 @@ internal sealed class TurnContext
         string sessionId,
         string modelStr,
         double nextNum,
-        FailSafeChatClient failSafeClient)
+        FailSafeChatClient failSafeClient,
+        int writeFileMaxSize = ToolExecutionDefaults.ContentMaxSize)
     {
         _blockStore = blockStore;
         _agentStore = agentStore;
@@ -50,6 +55,7 @@ internal sealed class TurnContext
         ModelStr = modelStr;
         NextNum = nextNum;
         FailSafeClient = failSafeClient;
+        _writeFileMaxSize = writeFileMaxSize;
     }
 
     public async Task<List<TurnEvent>> ProcessUpdate(ChatResponseUpdate update)
@@ -125,6 +131,9 @@ internal sealed class TurnContext
                         {
                             try { fileContent = await File.ReadAllTextAsync(fPath); }
                             catch { _logger.LogWarning("Failed to read written file"); fileContent = output; /* fallback to raw output */ }
+                            // The decorator truncates the tool's returned string, but we re-read the file
+                            // to show the LLM what was written — apply the same limit so context can't blow up.
+                            fileContent = ToolConfigDecorator.Truncate(fileContent, _writeFileMaxSize, TmpDir, name, SessionId);
                         }
                         else
                         {

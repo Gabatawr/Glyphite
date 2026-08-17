@@ -192,7 +192,9 @@ public static class TodoTool
         await blockStore.UpdateBlockDataAsync(agentId, existing.Number, updatedData);
 
         var displayTitle = existing.Content ?? "Updated";
-        return displayTitle + "\n" + FormatItems(currentItems);
+        if (results.Count == 0)
+            return displayTitle + "\n" + FormatItems(currentItems);
+        return string.Join("\n", results) + "\n\n" + displayTitle + "\n" + FormatItems(currentItems);
     }
 
     private static async Task<string> List(

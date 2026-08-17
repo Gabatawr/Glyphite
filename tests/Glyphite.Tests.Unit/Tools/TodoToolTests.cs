@@ -130,7 +130,9 @@ public class TodoToolTests : IDisposable
             new TodoItem("new task"),
             new TodoItem("existing", Status: "done", Index: 0));
 
-        // Return shows final state of the list
+        // Return shows operation diagnostics + final state of the list
+        Assert.Contains("add: appended 'new task' at [1]", result);
+        Assert.Contains("[0] status pending→done", result);
         Assert.Contains("new task", result);
         Assert.Contains("existing", result); // existing item kept, status changed
 
@@ -145,8 +147,9 @@ public class TodoToolTests : IDisposable
     {
         await Execute("create", "List", new TodoItem("pick me"));
 
-        await Execute("update", "List", new TodoItem("PICK ME", Status: "done"));
+        var result = await Execute("update", "List", new TodoItem("PICK ME", Status: "done"));
 
+        Assert.Contains("[0] status pending→done", result);
         var items = await GetItemsAsync("List");
         Assert.Equal("done", items[0]["status"]);
     }
@@ -158,7 +161,8 @@ public class TodoToolTests : IDisposable
 
         var result = await Execute("update", "List", new TodoItem(Index: 1, Remove: true));
 
-        Assert.DoesNotContain("remove-me", result);
+        Assert.Contains("remove: 'remove-me' at [1]", result);
+        Assert.DoesNotContain("[ ] remove-me", result);
         var items = await GetItemsAsync("List");
         var item = Assert.Single(items);
         Assert.Equal("keep", item["text"]);
@@ -171,6 +175,7 @@ public class TodoToolTests : IDisposable
 
         var result = await Execute("update", "List", new TodoItem(Index: 5, Remove: true));
 
+        Assert.Contains("remove: index 5 out of range", result);
         Assert.Contains("only", result);
         Assert.Single(await GetItemsAsync("List"));
     }
@@ -180,8 +185,9 @@ public class TodoToolTests : IDisposable
     {
         await Execute("create", "List", new TodoItem("t"));
 
-        await Execute("update", "List", new TodoItem("t", Status: "bogus", Index: 0));
+        var result = await Execute("update", "List", new TodoItem("t", Status: "bogus", Index: 0));
 
+        Assert.Contains("update: invalid status 'bogus'", result);
         var items = await GetItemsAsync("List");
         Assert.Equal("pending", items[0]["status"]);
     }
@@ -210,6 +216,7 @@ public class TodoToolTests : IDisposable
 
         var result = await Execute("update", items: new TodoItem("c"));
 
+        Assert.Contains("add: appended 'c' at [1]", result);
         Assert.Contains("c", result);
         Assert.Single(await GetItemsAsync("First"));            // unchanged
         Assert.Equal(2, (await GetItemsAsync("Second")).Count); // latest got the item
@@ -220,8 +227,9 @@ public class TodoToolTests : IDisposable
     {
         await Execute("create", "List", new TodoItem("a"));
 
-        await Execute("update", "List", new TodoItem());
+        var result = await Execute("update", "List", new TodoItem());
 
+        Assert.Contains("add: missing text", result);
         Assert.Single(await GetItemsAsync("List"));
     }
 

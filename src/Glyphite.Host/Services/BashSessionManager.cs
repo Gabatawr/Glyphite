@@ -4,6 +4,7 @@ using System.Text;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Extensions.Logging;
+using Glyphite.Host.Utils;
 
 namespace Glyphite.Host.Services;
 
@@ -192,7 +193,7 @@ public class BashSession : IDisposable
 
             var effectiveCommand = string.IsNullOrEmpty(workdir)
                 ? command
-                : $"(cd '{workdir.Replace("'", "'\\''")}' && {command})";
+                : $"(cd {ShellHelper.QuoteSingle(workdir)} && {command})";
 
             await _stdin.WriteLineAsync($"{effectiveCommand} 2>&1");
             await _stdin.WriteLineAsync($"echo");
@@ -416,6 +417,9 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         private readonly TaskCompletionSource<bool> _exitTcs = new();
         private int _exited;
 
+        /// <summary>Cap on accumulated background output — prevents memory blowup for long-running processes.</summary>
+        private const int MaxOutputChars = 500_000;
+
         public ProcessStatus Status
         {
             get
@@ -442,7 +446,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         {
             var effectiveCommand = string.IsNullOrEmpty(_workdir)
                 ? _command
-                : $"(cd '{_workdir.Replace("'", "'\\''")}' && {_command})";
+                : $"(cd {ShellHelper.QuoteSingle(_workdir)} && {_command})";
 
             var psi = new ProcessStartInfo
             {
@@ -478,10 +482,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
                     int charsRead;
                     while ((charsRead = await reader.ReadAsync(buf, 0, buf.Length)) > 0)
                     {
-                        lock (_output)
-                        {
-                            _output.Append(buf, 0, charsRead);
-                        }
+                        AppendOutput(buf, charsRead);
                     }
                 }
                 catch (Exception ex)
@@ -500,10 +501,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
                     int charsRead;
                     while ((charsRead = await reader.ReadAsync(buf, 0, buf.Length)) > 0)
                     {
-                        lock (_output)
-                        {
-                            _output.Append(buf, 0, charsRead);
-                        }
+                        AppendOutput(buf, charsRead);
                     }
                 }
                 catch (Exception ex)
@@ -547,6 +545,24 @@ public class BashSessionManager : IBashSessionManager, IDisposable
                 if (ct.IsCancellationRequested)
                     throw;
                 return false; // timeout
+            }
+        }
+
+        private void AppendOutput(char[] buf, int charsRead)
+        {
+            lock (_output)
+            {
+                var remaining = MaxOutputChars - _output.Length;
+                if (remaining <= 0) return;
+                if (charsRead > remaining)
+                {
+                    _output.Append(buf, 0, remaining);
+                    _output.Append("\n[background output truncated]\n");
+                }
+                else
+                {
+                    _output.Append(buf, 0, charsRead);
+                }
             }
         }
 

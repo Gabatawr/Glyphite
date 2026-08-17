@@ -39,6 +39,9 @@ public sealed class ToolConfigDecorator : AIFunction
     /// <summary>Default peek value for this tool, from config.</summary>
     public bool DefaultPeek => _peekDefault;
 
+    /// <summary>Effective max result size in chars (int.MaxValue = unlimited).</summary>
+    public int ContentMaxSize => _contentMaxSizeDefault;
+
     private static readonly HashSet<string> InjectedParamNames = new(StringComparer.OrdinalIgnoreCase)
     {
         ExtraCfgParamName,
@@ -117,38 +120,8 @@ public sealed class ToolConfigDecorator : AIFunction
             var result = await _inner.InvokeAsync(cleanedArgs ?? args, effectiveCt);
 
             // ── Enforce contentMaxSize: 1/3 top + truncation notice + 2/3 bottom ──
-            if (contentMaxSize < int.MaxValue && result is string str && str.Length > contentMaxSize)
-            {
-                // Save full output to temp file
-                if (!string.IsNullOrEmpty(_tmpDir))
-                {
-                    var agentTmp = Path.Combine(_tmpDir, SanitizeForPath(_agentId ?? "unknown"));
-                    Directory.CreateDirectory(agentTmp);
-                    var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-                    var safeName = SanitizeForPath(Name);
-                    var outPath = Path.Combine(agentTmp, $"{safeName}_{timestamp}.out");
-                    File.WriteAllText(outPath, str);
-
-                    // Build truncated view: 1/3 from top + notice + 2/3 from bottom
-                    var topChars = contentMaxSize / 3;
-                    var bottomChars = contentMaxSize - topChars;
-
-                    ReadOnlySpan<char> span = str.AsSpan();
-                    var top = span[..topChars];
-                    var bottom = span[^bottomChars..];
-
-                    var note = $"[Output truncated: showing 1/3 ({topChars} chars) and 2/3 ({bottomChars} chars) of {str.Length} total]\n" +
-                               $"[Full output saved to: {outPath}]\n";
-
-                    result = string.Concat(top.ToString(), "\n", note, bottom.ToString());
-                }
-                else
-                {
-                    // No tmp dir configured — simple truncation
-                    result = str[..contentMaxSize] +
-                        $"\n\n[Content truncated at {contentMaxSize} chars. Full result length: {str.Length}]";
-                }
-            }
+            if (contentMaxSize < int.MaxValue && result is string str)
+                result = Truncate(str, contentMaxSize, _tmpDir, Name, _agentId);
 
             return result;
         }
@@ -156,6 +129,45 @@ public sealed class ToolConfigDecorator : AIFunction
         {
             timeoutCts?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Truncates a tool result string to <paramref name="contentMaxSize"/> chars.
+    /// With a tmp dir, saves the full output to a file and shows 1/3 top + 2/3 bottom;
+    /// without it, keeps the first N chars and appends a notice.
+    /// Shared with the streaming pipeline so re-read file content obeys the same limit.
+    /// </summary>
+    internal static string Truncate(string result, int contentMaxSize, string tmpDir, string toolName, string? agentId)
+    {
+        if (contentMaxSize >= int.MaxValue || result.Length <= contentMaxSize)
+            return result;
+
+        if (!string.IsNullOrEmpty(tmpDir))
+        {
+            var agentTmp = Path.Combine(tmpDir, SanitizeForPath(agentId ?? "unknown"));
+            Directory.CreateDirectory(agentTmp);
+            var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+            var safeName = SanitizeForPath(toolName);
+            var outPath = Path.Combine(agentTmp, $"{safeName}_{timestamp}.out");
+            File.WriteAllText(outPath, result);
+
+            // Build truncated view: 1/3 from top + notice + 2/3 from bottom
+            var topChars = contentMaxSize / 3;
+            var bottomChars = contentMaxSize - topChars;
+
+            ReadOnlySpan<char> span = result.AsSpan();
+            var top = span[..topChars];
+            var bottom = span[^bottomChars..];
+
+            var note = $"[Output truncated: showing 1/3 ({topChars} chars) and 2/3 ({bottomChars} chars) of {result.Length} total]\n" +
+                       $"[Full output saved to: {outPath}]\n";
+
+            return string.Concat(top.ToString(), "\n", note, bottom.ToString());
+        }
+
+        // No tmp dir configured — simple truncation
+        return result[..contentMaxSize] +
+            $"\n\n[Content truncated at {contentMaxSize} chars. Full result length: {result.Length}]";
     }
 
     private static string SanitizeForPath(string input)

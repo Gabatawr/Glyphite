@@ -8,6 +8,7 @@ using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Services;
 using Microsoft.Extensions.AI;
+using Glyphite.Host.Utils;
 
 namespace Glyphite.Host.Tools;
 
@@ -229,7 +230,7 @@ public static class PocketTool
     {
         if (value.Length == 0) return "''";
         if (Regex.IsMatch(value, @"^[A-Za-z0-9_\-./:=@%+,]+$")) return value;
-        return "'" + value.Replace("'", "'\\''") + "'";
+        return ShellHelper.QuoteSingle(value);
     }
 
     private static string? ArgToString(object? v) => v switch
@@ -351,7 +352,7 @@ public static class PocketTool
         items.AddRange(global.Select(g => (g, true, localNames.Contains(g.Name))));
 
         if (!string.IsNullOrWhiteSpace(pattern) && pattern != "*")
-            items = items.Where(t => GlobToRegex(pattern).IsMatch(t.Entry.Name)).ToList();
+            items = items.Where(t => GlobHelper.ToRegex(pattern).IsMatch(t.Entry.Name)).ToList();
 
         if (!string.IsNullOrWhiteSpace(category) && category != "*")
         {
@@ -813,12 +814,6 @@ public static class PocketTool
             .Where(p => !defined.Contains(p))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
-
-    private static Regex GlobToRegex(string pattern)
-    {
-        var escaped = Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".");
-        return new Regex($"^{escaped}$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
     }
 
     private static string FormatEntry(PocketEntry e, bool global = false, bool shadowed = false)

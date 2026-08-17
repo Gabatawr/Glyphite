@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Tools;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -214,10 +215,17 @@ public partial class TurnProcessor
         userBlock.Number = prep.NextNum++;
         await _blockStore.AppendBlocksAsync(prep.AgentId, [userBlock], prep.NextNum);
 
+        // write_file results are re-read from disk in the streaming pipeline — carry the same
+        // MaxSize limit that ToolConfigDecorator applies, so the re-read content can't blow up context.
+        var writeFileMaxSize = prep.ChatOptions.Tools?
+            .OfType<ToolConfigDecorator>()
+            .FirstOrDefault(t => string.Equals(t.Name, "write_file", StringComparison.OrdinalIgnoreCase))
+            ?.ContentMaxSize ?? ToolExecutionDefaults.ContentMaxSize;
+
         var ctx = new TurnContext(
             _blockStore, _agentStore, _logger,
             prep.AgentId, prep.ModelStr, prep.NextNum,
-            failSafeClient);
+            failSafeClient, writeFileMaxSize);
         prep.FailSafeClient = failSafeClient;
         prep.Ctx = ctx;
 

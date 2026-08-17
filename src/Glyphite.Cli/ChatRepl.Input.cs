@@ -189,26 +189,59 @@ public partial class ChatRepl
     private async Task<string?> HandleCtrlCAsync(List<char> buffer)
     {
         var text = new string(buffer.ToArray());
-        if (text.Length > 0 && OperatingSystem.IsWindows())
-        {
-            try
-            {
-                var psi = new ProcessStartInfo("clip")
-                {
-                    RedirectStandardInput = true,
-                    UseShellExecute = false
-                };
-                var proc = Process.Start(psi);
-                if (proc is not null)
-                {
-                    await proc.StandardInput.WriteAsync(text);
-                    proc.StandardInput.Close();
-                }
-            }
-            catch { /* clip not available */ }
-        }
+        if (text.Length > 0)
+            await CopyToClipboardAsync(text);
         Console.WriteLine();
         return "";
+    }
+
+    /// <summary>Copy text to the system clipboard (Ctrl+C UX). Platform commands:
+    /// clip (Windows), pbcopy (macOS), wl-copy/xclip/xsel (Linux Wayland/X11). Best-effort.</summary>
+    private static async Task CopyToClipboardAsync(string text)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            await RunClipAsync("clip", text);
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            await RunClipAsync("pbcopy", text);
+        }
+        else
+        {
+            if (!await RunClipAsync("wl-copy", text))
+                if (!await RunClipAsync("xclip", text, "-selection", "clipboard"))
+                    await RunClipAsync("xsel", text, "--clipboard", "--input");
+        }
+    }
+
+    private static async Task<bool> RunClipAsync(string command, string text, params string[] args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(command)
+            {
+                RedirectStandardInput = true,
+                UseShellExecute = false
+            };
+            foreach (var a in args)
+                psi.ArgumentList.Add(a);
+
+            var proc = Process.Start(psi);
+            if (proc is null) return false;
+
+            await proc.StandardInput.WriteAsync(text);
+            proc.StandardInput.Close();
+
+            // Don't hang if the clipboard command stalls (e.g. no Wayland session)
+            try { await proc.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch (TimeoutException) { try { proc.Kill(entireProcessTree: true); } catch { } }
+            return true;
+        }
+        catch
+        {
+            return false; // command not available
+        }
     }
 
     private string? HandleEnter(List<char> buffer)

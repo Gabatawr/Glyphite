@@ -1,10 +1,10 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Text;
-using System.Text.RegularExpressions;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Host.Services;
 using Microsoft.Extensions.AI;
+using Glyphite.Host.Utils;
 
 namespace Glyphite.Host.Tools;
 
@@ -317,7 +317,7 @@ public static class KVStoreTool
         if (string.IsNullOrEmpty(pattern) || pattern == "*")
             return new Dictionary<string, string>(source, StringComparer.OrdinalIgnoreCase);
 
-        var regex = GlobToRegex(pattern);
+        var regex = GlobHelper.ToRegex(pattern);
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (k, v) in source)
         {
@@ -325,16 +325,6 @@ public static class KVStoreTool
                 result[k] = v;
         }
         return result;
-    }
-
-    /// <summary>Convert glob pattern (*, ?) to compiled Regex for in-memory matching (config scope).</summary>
-    private static Regex GlobToRegex(string pattern)
-    {
-        var escaped = Regex.Escape(pattern)
-            .Replace("\\*", ".*")
-            .Replace("\\?", ".");
-
-        return new Regex($"^{escaped}$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
     }
 
     private static string FormatEntries(Dictionary<string, string> entries)

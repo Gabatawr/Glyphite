@@ -186,4 +186,50 @@ public class ToolConfigDecoratorTests
 
         Assert.Equal(10_000, ((string)result!).Length);
     }
+
+    // ── Truncate (shared with the streaming pipeline) ──
+
+    [Fact]
+    public void Truncate_UnderLimit_ReturnsAsIs()
+    {
+        var result = ToolConfigDecorator.Truncate("short text", contentMaxSize: 1000, tmpDir: "", toolName: "write_file", agentId: "a");
+
+        Assert.Equal("short text", result);
+    }
+
+    [Fact]
+    public void Truncate_OverLimit_NoTmpDir_SimpleTruncation()
+    {
+        var result = ToolConfigDecorator.Truncate(new string('x', 1000), contentMaxSize: 100, tmpDir: "", toolName: "write_file", agentId: "a");
+
+        Assert.StartsWith(new string('x', 100), result);
+        Assert.Contains("[Content truncated at 100 chars. Full result length: 1000]", result);
+    }
+
+    [Fact]
+    public void Truncate_OverLimit_WithTmpDir_SavesFullOutput_Shows13Plus23()
+    {
+        var tmpDir = Path.Combine(Path.GetTempPath(), "GlyphiteTest_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            var full = new string('y', 900);
+            var result = ToolConfigDecorator.Truncate(full, contentMaxSize: 300, tmpDir: tmpDir, toolName: "write_file", agentId: "test-agent");
+
+            Assert.Contains("[Output truncated: showing 1/3 (100 chars) and 2/3 (200 chars) of 900 total]", result);
+            Assert.Contains("[Full output saved to:", result);
+            // 1/3 top + notice + 2/3 bottom
+            Assert.StartsWith(new string('y', 100), result);
+            Assert.EndsWith(new string('y', 200), result);
+
+            // Full output is on disk
+            var saved = Directory.GetFiles(Path.Combine(tmpDir, "test-agent"), "write_file_*.out");
+            var file = Assert.Single(saved);
+            Assert.Equal(full, File.ReadAllText(file));
+        }
+        finally
+        {
+            try { Directory.Delete(tmpDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
 }

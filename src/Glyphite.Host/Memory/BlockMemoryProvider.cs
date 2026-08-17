@@ -1,5 +1,4 @@
 using System.Text.Encodings.Web;
-using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Microsoft.Agents.AI;
@@ -185,11 +184,4 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
         state.Blocks.Add(block);
     }
 
-    private static int ExtractInt(object? val)
-    {
-        if (val is JsonElement je && je.ValueKind == JsonValueKind.Number)
-            return je.GetInt32();
-        if (val is int i) return i;
-        return -1;
-    }
 }

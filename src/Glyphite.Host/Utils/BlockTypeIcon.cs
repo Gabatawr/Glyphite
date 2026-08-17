@@ -14,7 +14,6 @@ public static class BlockTypeIcon
         ["auto_tool"] = "🤖",
         ["todo"] = "📋",
         ["todo_update"] = "🔄",
-        ["todo_write"] = "📋",
         ["system_info"] = "ℹ️",
         ["agent_data"] = "📁",
         ["agent_task"] = "📋",
