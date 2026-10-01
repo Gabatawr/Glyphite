@@ -1,5 +1,6 @@
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Images;
 using Glyphite.Host.Services;
 using Glyphite.Tests.Unit.Support;
 using Microsoft.Extensions.AI;
@@ -42,6 +43,7 @@ public class TurnProcessorTests : IDisposable
     private TurnProcessor CreateProcessor() => new(
         _db.Sessions, _db.Blocks, _memory, _chat, _tools, _cfg,
         _compaction, _configLoader, _instructions,
+        new ImageLoader(), new ImageAttachmentSink(),
         NullLogger<TurnProcessor>.Instance);
 
     private void SetupOptions(
@@ -62,6 +64,7 @@ public class TurnProcessorTests : IDisposable
         _cfg.GetOptionsAsync<LlmOptions>(LlmOptions.Section, Arg.Any<string?>()).Returns(llm);
         _cfg.GetOptionsAsync<AgentOptions>(AgentOptions.Section, Arg.Any<string?>()).Returns(agent);
         _cfg.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, Arg.Any<string?>()).Returns(compression);
+        _cfg.GetOptionsAsync<ImageOptions>(ImageOptions.Section, Arg.Any<string?>()).Returns(new ImageOptions());
     }
 
     private async Task<List<TurnEvent>> RunTurnAsync(string input = "hello", CancellationToken ct = default)
@@ -132,6 +135,72 @@ public class TurnProcessorTests : IDisposable
         Assert.Contains(blocks, b => b.Type == BlockType.agent_message && b.Content == "hi there");
         Assert.Contains(blocks, b => b.Type == BlockType.turn);
     }
+// ── Images ──
+
+    [Fact]
+    public async Task ImagePathInMessage_IsAttachedToTheUserMessage_AndMarkedInTheBlock()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("вижу")])]);
+
+        using var dir = new TempDir();
+        var imagePath = dir.Write("shot.png", TestImages.Png(320, 200));
+
+        var events = await RunTurnAsync($"что на {imagePath}?");
+
+        // The UI is told, the model gets a real image part, and the stored block gets a cheap marker.
+        var notice = Assert.Single(events.OfType<ImageAttachedTurnEvent>());
+        Assert.Contains("shot.png", notice.Description);
+        Assert.Contains("320×200", notice.Description);
+
+        var sent = _chat.ReceivedMessages[0];
+        var userMessage = Assert.Single(sent, m => m.Role == ChatRole.User);
+        Assert.Contains(userMessage.Contents.OfType<DataContent>(), c => c.MediaType == "image/png");
+
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
+        var userBlock = Assert.Single(blocks, b => b.Type == BlockType.user_message);
+        Assert.Contains("[image attached:", userBlock.Content);
+        Assert.Contains("shot.png", userBlock.Content);
+    }
+
+    [Fact]
+    public async Task BrokenImagePath_LeavesTheTurnIntact()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("ok")])]);
+
+        var events = await RunTurnAsync("посмотри /nowhere/gone.png");
+
+        Assert.DoesNotContain(events, e => e is ImageAttachedTurnEvent);
+        Assert.Contains(events, e => e is TurnCompleteEvent);
+        Assert.Equal(1, _chat.StreamCallCount);
+
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
+        var userBlock = Assert.Single(blocks, b => b.Type == BlockType.user_message);
+        Assert.DoesNotContain("[image attached:", userBlock.Content);
+    }
+
+    [Fact]
+    public async Task AutoAttachDisabled_NoImageIsSent()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+        _cfg.GetOptionsAsync<ImageOptions>(ImageOptions.Section, Arg.Any<string?>())
+            .Returns(new ImageOptions { AutoAttach = false });
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("ok")])]);
+
+        using var dir = new TempDir();
+        var imagePath = dir.Write("shot.png", TestImages.Png1x1);
+
+        var events = await RunTurnAsync($"что на {imagePath}?");
+
+        Assert.DoesNotContain(events, e => e is ImageAttachedTurnEvent);
+        var sent = _chat.ReceivedMessages[0];
+        Assert.DoesNotContain(sent.SelectMany(m => m.Contents).OfType<DataContent>(), _ => true);
+    }
+
 // ── Compaction ──
 
     [Fact]

@@ -2,6 +2,22 @@
 
 All notable changes to Glyphite will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Image support** — `view_image` tool plus automatic attachment of image paths/URLs found in a user message. New `Image` config section (`ImageOptions`): `Enabled`, `AutoAttach`, `UrlMode`, `UrlMatching`, `Detail`, `MaxImageBytes`, `MaxTotalBytes`, `MaxImagesPerRequest`, `MaxUrlLength`, `MaxDimension`, `DownloadTimeoutSeconds`, `Extensions`
+- Container detected from magic bytes (JPEG / PNG / GIF / WebP) and dimensions read from container headers — the file name is never trusted
+- Provider limits (per-image size, total inline size, image count, URL length, per-side dimension) are enforced before the request is built
+- `ImageAttachedTurnEvent` — UI notice when an image joins the conversation
+- `ImageLoader`, `ImageAttachmentSink`, `ImageFormats`, `ImageTool` in `Glyphite.Host/Images` + `Glyphite.Host/Tools`
+- README `## Images` section, AGENTS.md change notes, and ~60 unit tests (formats, loader, spec extraction, tool, pipeline, wire format)
+- `read_file` and `fetch_web` refuse an image with a pointer to `view_image` — a picture decoded as text is only junk. `fetch_web` sniffs the body before trusting the declared `Content-Type`; SVG stays a document
+- `ImageFormats.DescribeImageFile` — bounded-header description (media type, pixel size, byte size) used by those refusals
+
+### Changed
+- Images loaded by tools are injected as a **user** message after the tool batch (`FailSafeChatClient` + `ImageAttachmentSink`) — the API rejects images in tool/assistant/system roles
+- User message blocks store a text marker instead of base64, keeping history small and letting the agent re-open the image later with `view_image`
+
 ## [1.3.24] — 2026-07-24
 
 ### Added

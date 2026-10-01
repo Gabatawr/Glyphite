@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Images;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -19,6 +20,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     private readonly ILogger _logger;
     private readonly ToolExecutor _toolExecutor;
     private readonly UsageTracker _usageTracker;
+    private readonly ImageAttachmentSink? _imageSink;
 
     public HashSet<string> ExecutedCallIds => _toolExecutor.ExecutedCallIds;
 
@@ -41,10 +43,11 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     /// <summary>Called after each batch of tool executions completes. Returns text to append to tool results (or null).</summary>
     public Func<Task<string?>>? OnBatchComplete { get; set; }
 
-    public FailSafeChatClient(IChatClient inner, int maxIterations, ILogger logger) : base(inner)
+    public FailSafeChatClient(IChatClient inner, int maxIterations, ILogger logger, ImageAttachmentSink? imageSink = null) : base(inner)
     {
         _maxIterations = maxIterations;
         _logger = logger;
+        _imageSink = imageSink;
         _toolExecutor = new ToolExecutor(logger);
         _usageTracker = new UsageTracker();
         _usageTracker.OnUsage += (hit, miss, output) => OnUsage?.Invoke(hit, miss, output);
@@ -83,6 +86,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
             messageList.Add(assistantMsg);
             messageList.AddRange(await _toolExecutor.ExecuteTools(fccs, options, ct));
+            InjectPendingImages(messageList);
         }
 
         throw new InvalidOperationException($"Tool execution exceeded {_maxIterations} iterations.");
@@ -321,6 +325,10 @@ public sealed class FailSafeChatClient : DelegatingChatClient
 
             messageList.AddRange(toolResults);
 
+            // Images a tool just loaded travel in a user message — the provider rejects
+            // images in tool/assistant/system roles.
+            InjectPendingImages(messageList);
+
             // Flush queued parallel subagent tasks; append results to tool messages for LLM
             if (OnBatchComplete is not null)
             {
@@ -344,6 +352,38 @@ public sealed class FailSafeChatClient : DelegatingChatClient
         }
 
         throw new InvalidOperationException($"Tool execution exceeded {_maxIterations} iterations.");
+    }
+
+    /// <summary>
+    /// Deliver images queued by tools (see <see cref="ImageAttachmentSink"/>) as one user message.
+    /// A tool result cannot carry them: the provider accepts images only in user messages, and a
+    /// tool-role message is text-only. Order is caption → image → caption → image so each picture
+    /// stays next to the line that describes it.
+    /// </summary>
+    private void InjectPendingImages(List<ChatMessage> messageList)
+    {
+        if (_imageSink is null) return;
+
+        var pending = _imageSink.Drain();
+        if (pending.Count == 0) return;
+
+        var contents = new List<AIContent>
+        {
+            new TextContent(pending.Count == 1
+                ? "Attached image from tool output — look at it directly and answer."
+                : $"Attached {pending.Count} images from tool output — look at them directly and answer.")
+        };
+
+        foreach (var item in pending)
+        {
+            if (!string.IsNullOrWhiteSpace(item.Note))
+                contents.Add(new TextContent(item.Note));
+            contents.Add(item.Payload.Content);
+            contents.Add(new TextContent($"↑ {item.Payload.Describe()}"));
+        }
+
+        messageList.Add(new ChatMessage(ChatRole.User, contents));
+        _logger.LogInformation("Injected {Count} image(s) from tool output into the conversation", pending.Count);
     }
 
     /// <summary>Build the Tool-role message fed back to the LLM for one tool result (shared by sequential and parallel paths).</summary>

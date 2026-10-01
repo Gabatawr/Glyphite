@@ -20,6 +20,7 @@
 - **Built-in tools:**
   - `bash` — shell commands with interactive confirmation for dangerous commands
   - `read_file` / `write_file` / `patch_file` — file operations with diff highlighting
+  - `view_image` — load a picture (path, http(s) URL or data URL) so the model can actually see it
   - `fetch_web` — HTTP requests
   - `search_glob` / `search_grep` — file and content search
   - `todo` — task management with create/update/list, title-based multi-list support
@@ -27,6 +28,7 @@
   - `pocket_list` / `pocket_add` / `pocket_set` / `pocket_remove` / `pocket_run` — user-defined tool aliases (bash templates + typed arg schemas); favorites materialize as native tools (`<name>_pocket`); local/global scope with shadows
   - `memory` — memory statistics (stats)
   - `subagent_run` / `subagent_use` / `subagent_list` — delegate tasks to worker agents
+- **Image support** — the agent can look at pictures. Reference an image path or URL in your message and it is attached automatically, or the model pulls one itself with `view_image`. The container is detected from the bytes (JPEG / PNG / GIF / WebP), provider limits are enforced before the request, and images travel as *user* messages — the only role the API accepts them in. See [Images](#images).
 - **MCP protocol** — Model Context Protocol support (`stdio` / `streamablehttp` / `sse`). Every agent (main + subagents) can have its own MCP servers via `Glyphite.{agentName}.json`. Tools are prefixed with `{serverName}_` (e.g. `codegraph_explore`). Per-server and per-tool execution settings via `McpExecution` config.
 - **Block-based memory** — full conversation history stored in SQLite with smart deduplication and compression
   - **Todo chain** — only one active list exists; each `todo_update` snapshots the previous one, forming a forward chain you can clip at any point
@@ -482,6 +484,89 @@ When peek is active:
 **How it works:** `FailSafeChatClient` tracks `_pendingPeekCallIds` during tool execution. After the LLM consumes the results (reads them and generates a response), it replaces the real data with `(peek)` in `messageList`. The LLM sees the data once, then sees only `(peek)` on subsequent iterations.
 
 > Peek is for inspection — use it to read files, check command output, or fetch web pages without cluttering the conversation history.
+
+## Images
+
+The agent can see pictures. Two ways in, one delivery mechanism.
+
+```
+> что на /home/me/shot.png?                 ← attached automatically (path exists, sniffs as an image)
+> сравни с https://cdn.example.com/a.png    ← attached automatically (URL looks like an image)
+> посмотри скриншот в "my shot.png"         ← quoted paths survive spaces
+
+# or the model pulls one itself:
+view_image(source: "/tmp/chart.webp", question: "какой здесь тренд?")
+```
+
+### `view_image`
+
+| Argument | Meaning |
+|----------|---------|
+| `source` | Local path, `http(s)` URL, `file://` URL or `data:` URL |
+| `detail` | `auto` (default), `low` (provider downscales to 512×512), `high`, `original` |
+| `question` | Optional — written next to the image to keep the request focused |
+
+The tool does **not** return the image. A tool result is a `tool`-role message, and the provider rejects images outside `user` messages — so the picture is queued on a per-scope `ImageAttachmentSink` and `FailSafeChatClient` injects it as one user message after the tool batch. The model sees it on the very next iteration.
+
+### Automatic attachment
+
+`TurnProcessor` scans each user message before sending it:
+
+- **Local paths** must have a known image extension *and* exist *and* sniff as a real image — a `.txt` mentioned in the message is never opened.
+- **URLs** must end in an image extension by default (see `UrlMatching`).
+- **Quoted runs** are scanned first, so paths containing spaces work: `"my shot.png"`.
+
+Only references that are certainly images qualify — a wrong attachment is worse than a missed one. A broken reference is logged and the turn continues untouched.
+
+### Where the images go
+
+| | |
+|---|---|
+| In the request | A `user` message part — the API accepts images in no other role |
+| In memory | A cheap text marker — `[image attached: path (image/png, 1920×1080, 412 KB)]` — instead of base64, so history stays small and the agent can re-open the picture later with `view_image` |
+| On screen | `[image: …]` before the model is called |
+
+### One way in, by design
+
+Reading a picture as text produces junk, so both text tools refuse one and name the tool that can actually show it:
+
+| Tool | Answer on an image |
+|------|--------------------|
+| `read_file` | `Error: … is an image (image/png, 1920×1080, 412 KB), not text — read_file returns text. Use view_image to look at it.` |
+| `fetch_web` | `Error: <url> is an image (image/png, 1920×1080, 412 KB), not a document — fetch_web returns text. If you really need to look at it, open it explicitly with view_image.` |
+
+`fetch_web` decides from the body bytes first and only then from the declared `Content-Type`, so a server that mislabels an image is still caught, while a `.png` URL that actually serves HTML stays a document. SVG is text and is not refused. `search_grep` already skips images — known extensions plus a NUL-byte check over the first 1 KB.
+
+### Configuration
+
+```json
+"Image": {
+  "Enabled": true,
+  "AutoAttach": true,
+  "UrlMode": "auto",
+  "UrlMatching": "extension",
+  "Detail": "auto",
+  "MaxImageBytes": 33554432,
+  "MaxTotalBytes": 41943040,
+  "MaxImagesPerRequest": 10,
+  "MaxUrlLength": 8192,
+  "MaxDimension": 8192,
+  "DownloadTimeoutSeconds": 60,
+  "Extensions": [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `Enabled` | Master switch — off makes `view_image` refuse and disables auto-attach |
+| `AutoAttach` | Scan user messages for image references |
+| `UrlMode` | `auto` passes the URL through for public hosts (the provider downloads it — no bytes through the agent) and inlines it for hosts the provider cannot reach: `localhost`, `10.x`, `192.168.x`, `172.16-31.x`, `169.254.x`, `.local`, `.lan`, `.internal`, bare intranet names. `inline` / `passthrough` force one behaviour |
+| `UrlMatching` | What a URL must look like to be auto-attached: `extension` (default), `always`, `never` |
+| `Detail` | `auto` omits the field entirely; `low` / `high` / `original` are sent as `image_url.detail` |
+
+Size, count, URL-length and dimension defaults mirror the provider's documented limits, so requests stay valid without tuning.
+
+> **Worth knowing:** the container is detected from the bytes, never from the file name — a PNG named `.txt` is still a PNG. URLs past `MaxUrlLength` are inlined even in `passthrough` mode, because the provider would reject them. Each image costs tokens (up to ~1024 per image after provider-side resizing, largely independent of file size).
 
 ## Reasoning auto-compaction
 

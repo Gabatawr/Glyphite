@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Images;
 using Glyphite.Host.Services;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
@@ -28,6 +29,11 @@ public static class FileReadTool
 
         if (!File.Exists(path))
             return $"Error: File not found: {path}";
+
+        // An image read as text is junk. Say what it is and point at the tool that can show it.
+        if (ImageFormats.DescribeImageFile(path) is { } image)
+            return $"Error: {path} is an image ({image}), not text — read_file returns text. "
+                 + "Use `view_image` to look at it.";
 
         var lines = await File.ReadAllLinesAsync(path);
 

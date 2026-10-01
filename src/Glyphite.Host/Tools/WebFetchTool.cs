@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Images;
 using Microsoft.Extensions.AI;
 
 namespace Glyphite.Host.Tools;
@@ -11,7 +12,7 @@ public static partial class WebFetchTool
 {
     private sealed class FetchInvoker(IConfigService cfg, string? sessionId)
     {
-        [Description("Fetch the content of a web page by URL. Returns content as plain text (default) or markdown. Handles redirects automatically. Use for reading documentation, API specs, or any online resource needed for the task.")]
+        [Description("Fetch the content of a web page by URL. Returns content as plain text (default) or markdown. Handles redirects automatically. Use for reading documentation, API specs, or any online resource needed for the task. This tool returns text only — it never opens a picture; a URL that turns out to be an image is refused with a pointer to `view_image`.")]
         public async Task<string> Execute(
             [Description("URL to fetch (must start with http:// or https://)")] string url,
             [Description("Output format: 'text' (default, strips HTML) or 'markdown'")] string? format = null,
@@ -45,8 +46,16 @@ public static partial class WebFetchTool
 
         try
         {
-            var response = await http.GetAsync(uri, ct);
+            using var response = await http.GetAsync(uri, ct);
             response.EnsureSuccessStatusCode();
+
+            // A picture is not a document: decoding one as text yields mojibake, so refuse it and
+            // point at the tool that can actually show it. Sniffing the bytes catches servers that
+            // mislabel an image; the declared type catches the ones that label it correctly.
+            var bytes = await response.Content.ReadAsByteArrayAsync(ct);
+            if (FindImageMediaType(bytes, response.Content.Headers.ContentType?.MediaType) is { } mediaType)
+                return DescribeImageInsteadOfText(uri, mediaType, bytes);
+
             var content = await response.Content.ReadAsStringAsync(ct);
             var trimmed = content.Trim();
 
@@ -65,6 +74,33 @@ public static partial class WebFetchTool
         {
             return $"Error: Request timed out after {http.Timeout.TotalSeconds} seconds";
         }
+    }
+
+    /// <summary>
+    /// Image container of a fetched body, or null when the body is a document.
+    /// Only the containers <c>view_image</c> can actually display count — SVG, for instance,
+    /// is text and stays a document.
+    /// </summary>
+    internal static string? FindImageMediaType(byte[] body, string? declaredMediaType)
+    {
+        if (ImageFormats.SniffMediaType(body) is { } sniffed)
+            return sniffed;
+
+        if (declaredMediaType is not null
+            && ImageFormats.Supported.Contains(declaredMediaType, StringComparer.OrdinalIgnoreCase))
+            return declaredMediaType.ToLowerInvariant();
+
+        return null;
+    }
+
+    private static string DescribeImageInsteadOfText(Uri uri, string mediaType, byte[] body)
+    {
+        var dimensions = ImageFormats.ReadDimensions(body, mediaType);
+        var shape = dimensions is { } d ? $"{d.Width}×{d.Height}, " : "";
+        var size = ImageFormats.DescribeBytes(body.LongLength);
+
+        return $"Error: {uri} is an image ({mediaType}, {shape}{size}), not a document — fetch_web returns text. "
+             + "If you really need to look at it, open it explicitly with `view_image`.";
     }
 
     private static string StripHtmlTags(string html)

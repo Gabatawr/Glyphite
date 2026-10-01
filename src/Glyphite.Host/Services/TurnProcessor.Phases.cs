@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Images;
 using Glyphite.Host.Tools;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
@@ -21,7 +22,8 @@ public partial class TurnProcessor
         LlmOptions LlmOpts,
         CompressionOptions CompOpts,
         List<ChatMessage> ContextMessages,
-        List<ChatMessage> InitialMessages)
+        List<ChatMessage> InitialMessages,
+        IReadOnlyList<ImagePayload> Attachments)
     {
         public double NextNum { get; set; }
         public FailSafeChatClient? FailSafeClient { get; set; }
@@ -30,8 +32,12 @@ public partial class TurnProcessor
 
     /// <summary>Phase 1 — load config, build options/instructions/context, produce the per-turn state.</summary>
     private async Task<(PreparedTurn? Turn, string? Error)> PrepareAsync(
-        string agentId, string input, ChatOptions chatOptions, string? agentCwd)
+        string agentId, string input, ChatOptions chatOptions, string? agentCwd, CancellationToken ct)
     {
+        // A cancelled turn can leave images queued by tools. Drop them so they never
+        // surface in an unrelated later turn.
+        _imageSink.Clear();
+
         var parentCwd = Directory.GetCurrentDirectory();
         agentCwd ??= await _agentStore.GetAgentHomePathAsync(agentId) ?? parentCwd;
         await _configLoader.LoadConfigAsync(agentId, agentCwd, parentCwd);
@@ -72,17 +78,88 @@ public partial class TurnProcessor
         var contextMessages = await _blockMemory.BuildContextAsync(
             agentId, modelStr, llmOpts.ContextWindow);
 
+        var attachments = await ResolveAttachmentsAsync(agentId, input, agentCwd, ct);
+
         var initialMessages = new List<ChatMessage>();
         initialMessages.AddRange(contextMessages);
-        initialMessages.Add(new ChatMessage(ChatRole.User, input));
+        initialMessages.Add(BuildUserMessage(input, attachments));
 
         return (new PreparedTurn(
             agentId, input, modelStr, isEphemeral, isSubagent, chatOptions,
-            agentOpts, llmOpts, compOpts, contextMessages, initialMessages)
+            agentOpts, llmOpts, compOpts, contextMessages, initialMessages, attachments)
         {
             NextNum = nextNum
         }, null);
     }
+
+    /// <summary>
+    /// Load the images referenced by path or URL in the user's message.
+    /// Only references that are certainly images qualify — the model should never receive a
+    /// surprise attachment, and a broken path must not fail the turn.
+    /// </summary>
+    private async Task<IReadOnlyList<ImagePayload>> ResolveAttachmentsAsync(
+        string agentId, string input, string? agentCwd, CancellationToken ct)
+    {
+        var opts = await _cfgService.GetOptionsAsync<ImageOptions>(ImageOptions.Section, agentId);
+        if (!opts.Enabled || !opts.AutoAttach) return [];
+
+        var specs = ImageLoader.ExtractSpecs(input, opts, agentCwd);
+        if (specs.Count == 0) return [];
+
+        var loaded = new List<ImagePayload>();
+        long totalBytes = 0;
+
+        foreach (var spec in specs)
+        {
+            if (loaded.Count >= opts.MaxImagesPerRequest) break;
+
+            var (payload, error) = await _imageLoader.LoadAsync(spec, opts, agentCwd, ct: ct);
+            if (payload is null)
+            {
+                _logger.LogWarning("Skipped image attachment {Spec}: {Error}", spec, error);
+                continue;
+            }
+
+            // Keep the whole request inside the provider's body limit.
+            if (payload.Inline && totalBytes + payload.Bytes > opts.MaxTotalBytes)
+            {
+                _logger.LogWarning("Skipped image attachment {Spec}: inline size budget exhausted", spec);
+                continue;
+            }
+
+            totalBytes += payload.Bytes;
+            loaded.Add(payload);
+        }
+
+        if (loaded.Count > 0)
+            _logger.LogInformation("Attached {Count} image(s) to the user message", loaded.Count);
+
+        return loaded;
+    }
+
+    /// <summary>
+    /// User message = the text plus every attached image. Images are legal only in user messages
+    /// (the provider rejects them in system/assistant/tool roles), and the transcript itself is
+    /// built from system blocks — so this is the only place they can ride.
+    /// </summary>
+    private static ChatMessage BuildUserMessage(string input, IReadOnlyList<ImagePayload> attachments)
+    {
+        if (attachments.Count == 0)
+            return new ChatMessage(ChatRole.User, input);
+
+        var contents = new List<AIContent> { new TextContent(input) };
+        foreach (var image in attachments)
+            contents.Add(image.Content);
+
+        return new ChatMessage(ChatRole.User, contents);
+    }
+
+    /// <summary>Marker written into the stored user block: cheap text instead of base64, and it
+    /// tells later turns an image was there so the agent can re-open it with `view_image`.</summary>
+    private static string WithAttachmentMarker(string input, IReadOnlyList<ImagePayload> attachments)
+        => attachments.Count == 0
+            ? input
+            : input + "\n" + string.Join("\n", attachments.Select(a => $"[image attached: {a.Describe()}]"));
 
     /// <summary>Phase 2 — auto-compaction (session + reasoning) before streaming.</summary>
     private async IAsyncEnumerable<TurnEvent> CompactIfNeededAsync(
@@ -199,7 +276,7 @@ public partial class TurnProcessor
     {
         var agentClient = new AgentChatClient(_chatClient, prep.AgentId, prep.ModelStr);
         var failSafeClient = new FailSafeChatClient(
-            agentClient, prep.AgentOpts.MaxToolIterations, _logger);
+            agentClient, prep.AgentOpts.MaxToolIterations, _logger, _imageSink);
 
         // Subscribe: write per-iteration usage immediately — survives crash/Escape
         failSafeClient.OnIterationRecorded = (hit, miss, output) =>
@@ -211,7 +288,11 @@ public partial class TurnProcessor
 
         _blockMemory.CurrentExecutedIds.Value = failSafeClient.ExecutedCallIds;
 
-        var userBlock = prep.IsSubagent ? MemoryBlock.AgentTask(prep.Input) : MemoryBlock.UserMessage(prep.Input);
+        var storedInput = WithAttachmentMarker(prep.Input, prep.Attachments);
+
+        var userBlock = prep.IsSubagent
+            ? MemoryBlock.AgentTask(storedInput)
+            : MemoryBlock.UserMessage(storedInput);
         userBlock.Number = prep.NextNum++;
         await _blockStore.AppendBlocksAsync(prep.AgentId, [userBlock], prep.NextNum);
 

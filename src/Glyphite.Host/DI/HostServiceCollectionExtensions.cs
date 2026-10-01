@@ -5,6 +5,7 @@ using Glyphite.Abstractions.Interfaces;
 using Glyphite.Host.Data;
 using Glyphite.Host.Memory;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Images;
 using Glyphite.Host.Services;
 using Glyphite.Host.Tools;
 using Microsoft.Extensions.AI;
@@ -34,6 +35,7 @@ public static class HostServiceCollectionExtensions
         RegisterOptions<ContentDedupOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<DataOptions>(services, glConfig, o => o.Validate());
         RegisterOptions<CompressionOptions>(services, glConfig, o => o.Validate());
+        RegisterOptions<ImageOptions>(services, glConfig, o => o.Validate());
 
         // ── Data directory ──
         var dataOpts = glConfig.GetSection(DataOptions.Section).Get<DataOptions>()
@@ -70,6 +72,12 @@ public static class HostServiceCollectionExtensions
                 return client.GetChatClient(llm.Model).AsIChatClient();
             });
         });
+
+        // ── Images ──
+        // Loader is stateless apart from the shared HTTP client → singleton.
+        // Sink is per-turn state shared by TurnProcessor and ToolRegistry → same agent scope as both.
+        services.AddSingleton(sp => new ImageLoader(null, sp.GetService<ILogger<ImageLoader>>()));
+        services.AddScoped<ImageAttachmentSink>();
 
         // ── Services ──
         services.AddSingleton<IBashSessionManager>(sp =>

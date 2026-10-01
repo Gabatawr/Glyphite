@@ -22,7 +22,7 @@ public sealed class ToolExecutor
     // ── Parallel-safe tool names (can be grouped for concurrent execution) ──
     private static readonly HashSet<string> _parallelSafeTools = new(StringComparer.OrdinalIgnoreCase)
     {
-        "read_file", "fetch_web", "search_glob", "search_grep", "subagent_use", "subagent_run"
+        "read_file", "view_image", "fetch_web", "search_glob", "search_grep", "subagent_use", "subagent_run"
     };
 
     /// <summary>

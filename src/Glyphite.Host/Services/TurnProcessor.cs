@@ -1,5 +1,6 @@
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
+using Glyphite.Host.Images;
 using Glyphite.Host.Tools;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
@@ -19,6 +20,8 @@ public partial class TurnProcessor : ITurnProcessor
     private readonly ILogger _logger;
     private readonly ISessionConfigLoader _configLoader;
     private readonly IInstructionProvider _instructionProvider;
+    private readonly ImageLoader _imageLoader;
+    private readonly ImageAttachmentSink _imageSink;
 
     /// <summary>Last iteration's usage snapshot — prompt fallback for ChatRepl after Escape/crash.</summary>
     public UsageSnapshot? LastIterationUsage { get; private set; }
@@ -33,6 +36,8 @@ public partial class TurnProcessor : ITurnProcessor
         CompactionService compactionService,
         ISessionConfigLoader configLoader,
         IInstructionProvider instructionProvider,
+        ImageLoader imageLoader,
+        ImageAttachmentSink imageSink,
         ILogger<TurnProcessor> logger)
     {
         _agentStore = agentStore;
@@ -44,6 +49,8 @@ public partial class TurnProcessor : ITurnProcessor
         _compactionService = compactionService;
         _configLoader = configLoader;
         _instructionProvider = instructionProvider;
+        _imageLoader = imageLoader;
+        _imageSink = imageSink;
         _logger = logger;
     }
 
@@ -55,12 +62,16 @@ public partial class TurnProcessor : ITurnProcessor
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct,
         string? agentCwd = null)
     {
-        var (prep, error) = await PrepareAsync(agentId, input, chatOptions, agentCwd);
+        var (prep, error) = await PrepareAsync(agentId, input, chatOptions, agentCwd, ct);
         if (prep is null)
         {
             yield return new TurnErrorEvent(error!);
             yield break;
         }
+
+        // Tell the UI what was attached before anything is sent to the model.
+        foreach (var image in prep.Attachments)
+            yield return new ImageAttachedTurnEvent(image.Describe());
 
         await foreach (var e in CompactIfNeededAsync(prep, ct))
             yield return e;

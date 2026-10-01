@@ -347,3 +347,85 @@ public class ToolExecutionOptionsEntry
     public bool Peek { get; set; } = false;
 }
 
+/// <summary>
+/// Image support (<c>view_image</c> tool + attachment of image paths/URLs found in user messages).
+/// Defaults follow the provider's documented limits, so the agent stays inside them unless the
+/// user deliberately widens them.
+/// </summary>
+public class ImageOptions
+{
+    public const string Section = "Image";
+
+    /// <summary>Master switch — when false, <c>view_image</c> refuses and nothing is auto-attached.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Scan user messages for local image paths / image URLs and attach them automatically.</summary>
+    public bool AutoAttach { get; set; } = true;
+
+    /// <summary>
+    /// How <c>http(s)</c> images travel: <c>auto</c> (inline for hosts the provider cannot reach —
+    /// localhost, private ranges, intranet names — and pass the URL through otherwise),
+    /// <c>inline</c> (always download through the agent), <c>passthrough</c> (always let the provider fetch).
+    /// URLs past <see cref="MaxUrlLength"/> are inlined regardless.
+    /// </summary>
+    public string UrlMode { get; set; } = "auto";
+
+    /// <summary>What a URL must look like to be auto-attached: <c>extension</c> (default), <c>always</c>, <c>never</c>.</summary>
+    public string UrlMatching { get; set; } = "extension";
+
+    /// <summary>Detail level sent to the provider: <c>auto</c> (field omitted), <c>low</c>, <c>high</c>, <c>original</c>.</summary>
+    public string Detail { get; set; } = "auto";
+
+    /// <summary>Max size of a single inlined image. Provider limit: 32 MiB.</summary>
+    public long MaxImageBytes { get; set; } = 32L * 1024 * 1024;
+
+    /// <summary>Max total inlined bytes per request. Provider request-body limit: 48 MiB.</summary>
+    public long MaxTotalBytes { get; set; } = 40L * 1024 * 1024;
+
+    /// <summary>Max images attached to one request. Provider limit: 600.</summary>
+    public int MaxImagesPerRequest { get; set; } = 10;
+
+    /// <summary>Longest URL accepted for pass-through. Provider limit: 8192 characters.</summary>
+    public int MaxUrlLength { get; set; } = 8192;
+
+    /// <summary>Max pixels per image side. Provider limit: 8192 (drops to 4096 with 15+ images).</summary>
+    public int MaxDimension { get; set; } = 8192;
+
+    /// <summary>Deadline for downloading a remote image that must be inlined.</summary>
+    public int DownloadTimeoutSeconds { get; set; } = 60;
+
+    /// <summary>Extensions treated as images when scanning message text for attachments.</summary>
+    public string[] Extensions { get; set; } = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
+
+    public static readonly string[] KnownUrlModes = ["auto", "inline", "passthrough"];
+    public static readonly string[] KnownUrlMatching = ["extension", "always", "never"];
+    public static readonly string[] KnownDetails = ["auto", "low", "high", "original"];
+
+    public void Validate()
+    {
+        if (!KnownUrlModes.Contains(UrlMode, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Image:UrlMode must be one of: {string.Join(", ", KnownUrlModes)}.");
+        if (!KnownUrlMatching.Contains(UrlMatching, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Image:UrlMatching must be one of: {string.Join(", ", KnownUrlMatching)}.");
+        if (!KnownDetails.Contains(Detail, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Image:Detail must be one of: {string.Join(", ", KnownDetails)}.");
+        if (MaxImageBytes <= 0)
+            throw new InvalidOperationException("Image:MaxImageBytes must be > 0.");
+        if (MaxTotalBytes <= 0)
+            throw new InvalidOperationException("Image:MaxTotalBytes must be > 0.");
+        if (MaxImagesPerRequest <= 0)
+            throw new InvalidOperationException("Image:MaxImagesPerRequest must be > 0.");
+        if (MaxUrlLength <= 0)
+            throw new InvalidOperationException("Image:MaxUrlLength must be > 0.");
+        if (MaxDimension <= 0)
+            throw new InvalidOperationException("Image:MaxDimension must be > 0.");
+        if (DownloadTimeoutSeconds <= 0)
+            throw new InvalidOperationException("Image:DownloadTimeoutSeconds must be > 0.");
+        if (Extensions.Length == 0)
+            throw new InvalidOperationException("Image:Extensions must not be empty.");
+        foreach (var ext in Extensions)
+            if (!ext.StartsWith('.'))
+                throw new InvalidOperationException($"Image:Extensions entries must start with a dot (got '{ext}').");
+    }
+}
+

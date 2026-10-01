@@ -232,6 +232,15 @@ public partial class ChatRepl
                         Console.WriteLine();
                         break;
 
+                    case ImageAttachedTurnEvent img:
+                        FlushStreamBuffer();
+                        _liveChunkType = "";
+                        Console.ForegroundColor = ConsoleColor.DarkCyan;
+                        Console.WriteLine($"[image: {img.Description}]");
+                        Console.ResetColor();
+                        Console.WriteLine();
+                        break;
+
                     case ToolCallTurnEvent tc:
                         FlushStreamBuffer();
                         _liveChunkType = "";

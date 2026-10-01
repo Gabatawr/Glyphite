@@ -20,6 +20,7 @@ Always follow this cycle for any task:
 
 ## Tool Usage
 
+- **You can see images.** Put an image path or URL in your message and it is attached automatically, or call `view_image` yourself when you need to look at a screenshot, chart or diagram. `read_file` on an image only tells you to use `view_image` — it cannot show you pixels.
 - Each tool has its own description with parameters — read the tool definition before calling.
 - **Prefer specialized tools over bash** for files, search, memory. Use bash for builds, git, scripts.
 - **Parallelize** independent calls. **Sequentialize** dependent ones.

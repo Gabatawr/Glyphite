@@ -110,6 +110,33 @@ You are a specialized QA agent. Always run tests before and after changes.
 | [`example-perf-agent.md`](./agents/example-perf-agent.md) | Performance | Profiling, optimization, benchmarking |
 | [`example-onboard-agent.md`](./agents/example-onboard-agent.md) | Mentor | Onboarding, codebase tour, learning
 
+## Latest changes — images (`view_image` + attachment by path/URL)
+
+**Why delivery is indirect:** the provider accepts images only in `user` messages, and a tool result is a `tool` message. So `view_image` cannot hand back the picture — it queues it on a scoped `ImageAttachmentSink`, and `FailSafeChatClient` drains the sink after each tool batch into a single user message. The same sink is cleared at the start of every turn so a cancelled turn cannot leak an image into a later one.
+
+**New files:**
+
+| File | Responsibility |
+|:-----|:---------------|
+| `src/Glyphite.Host/Images/ImageFormats.cs` | Media type from magic bytes; dimensions from PNG / JPEG / GIF / WebP headers |
+| `src/Glyphite.Host/Images/ImageLoader.cs` | path / `http(s)` / `file://` / `data:` → MEAI content part; limit enforcement; `ExtractSpecs` scans message text |
+| `src/Glyphite.Host/Images/ImageAttachmentSink.cs` | Per-scope queue between tools and the chat pipeline |
+| `src/Glyphite.Host/Tools/ImageTool.cs` | The `view_image` tool |
+
+**Wire format — pinned by `ImageWireFormatTests` (fake transport, no API key needed):**
+
+| MEAI side | JSON on the wire |
+|:----------|:-----------------|
+| `DataContent(bytes, "image/png")` | `{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}` |
+| `UriContent(uri, "image/jpeg")` | `{"type":"image_url","image_url":{"url":"https://…"}}` |
+| `content.AdditionalProperties["detail"] = "low"` | `image_url.detail = "low"` |
+
+**Touched:** `TurnProcessor` (attachments resolved in `PrepareAsync`, `Attachments` carried on `PreparedTurn`, marker written into the user block), `FailSafeChatClient` (sink → injected user message, streaming *and* non-streaming paths), `ToolExecutor` (`view_image` is parallel-safe), `ToolRegistry`, `HostServiceCollectionExtensions`, `TurnEvent.ImageAttachedTurnEvent`, `ChatRepl.Streaming`.
+
+**Text tools refuse images:** `read_file` (`FileReadTool.ReadFile`) and `fetch_web` (`WebFetchTool.FetchUrl`) answer with a pointer to `view_image` instead of returning junk. `fetch_web` sniffs the body first and only then trusts a declared `image/*` type — restricted to the four containers `view_image` can display, so SVG stays a document. `ImageFormats.DescribeImageFile` reads a bounded header when naming an image.
+
+**Tests:** `tests/Glyphite.Tests.Unit/Images/*` — formats, loader, spec extraction, tool, pipeline, wire format; `Tools/FileReadToolTests.cs` and `Tools/WebFetchToolTests.cs` — the refusals. Fixtures live in `Support/TestImages.cs`.
+
 ## Latest changes — compaction strategies (fibo, struct), ephemeral flag, usage restore on subagent_run
 
 **1. Compaction strategies — two switchable modes (6 files):**

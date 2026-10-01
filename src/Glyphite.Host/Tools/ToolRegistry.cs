@@ -1,6 +1,7 @@
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.DI;
+using Glyphite.Host.Images;
 using Glyphite.Host.Services;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -21,6 +22,8 @@ public class ToolRegistry : IToolRegistry
     private readonly IAgentManager _agentManager;
     private readonly IAgentScopeFactory _scopeFactory;
     private readonly McpService _mcpService;
+    private readonly ImageLoader _imageLoader;
+    private readonly ImageAttachmentSink _imageSink;
     private readonly ILogger _logger;
     private readonly ISafetyChecker _safetyChecker;
     private readonly string _defaultDir;
@@ -38,6 +41,8 @@ public class ToolRegistry : IToolRegistry
         IAgentManager agentManager,
         IAgentScopeFactory scopeFactory,
         McpService mcpService,
+        ImageLoader imageLoader,
+        ImageAttachmentSink imageSink,
         IConfiguration configuration,
         ILogger<ToolRegistry> logger,
         ISafetyChecker safetyChecker)
@@ -52,6 +57,8 @@ public class ToolRegistry : IToolRegistry
         _agentManager = agentManager;
         _scopeFactory = scopeFactory;
         _mcpService = mcpService;
+        _imageLoader = imageLoader;
+        _imageSink = imageSink;
         _logger = logger;
         _safetyChecker = safetyChecker;
         _defaultDir = Directory.GetCurrentDirectory();
@@ -73,6 +80,7 @@ public class ToolRegistry : IToolRegistry
             WrapWithConfig(BashTool.AsAIFunction(_bashManager, agentId, _cfgService, _kvStore, isSubAgent, _safetyChecker), toolExec, "bash", _tmpDir, agentId),
             WrapWithConfig(BashBackTool.AsAIFunction(_bashManager, _cfgService, agentId), toolExec, "bash_back", _tmpDir, agentId),
             WrapWithConfig(FileReadTool.AsAIFunction(_cfgService, _defaultDir, agentId, readFileMaxSize), toolExec, "read_file", _tmpDir, agentId),
+            WrapWithConfig(ImageTool.AsViewImageFunction(_imageLoader, _imageSink, _cfgService, _defaultDir, agentId), toolExec, ImageTool.ToolName, _tmpDir, agentId),
             WrapWithConfig(FileWriteTool.AsAIFunction(_defaultDir), toolExec, "write_file", _tmpDir, agentId),
             WrapWithConfig(FilePatchTool.AsAIFunction(_defaultDir), toolExec, "patch_file", _tmpDir, agentId),
             WrapWithConfig(TodoTool.AsTodoFunction(_agentStore, _blockStore, agentId, _cfgService), toolExec, "todo", _tmpDir, agentId),
