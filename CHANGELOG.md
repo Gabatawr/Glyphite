@@ -14,6 +14,9 @@ All notable changes to Glyphite will be documented in this file.
 - `read_file` and `fetch_web` refuse an image with a pointer to `view_image` — a picture decoded as text is only junk. `fetch_web` sniffs the body before trusting the declared `Content-Type`; SVG stays a document
 - `ImageFormats.DescribeImageFile` — bounded-header description (media type, pixel size, byte size) used by those refusals
 
+### Fixed
+- `UrlMode: auto` no longer hands an http(s) image URL to the provider. A URL the provider could not download failed the whole request with an opaque `400 invalid_request_error` and the turn was lost with nothing for the model to act on; `auto` now downloads the image itself, so an unreachable URL, a 404 or a non-image answer becomes a tool-level error. `passthrough` keeps the old behaviour for anyone who prefers to spare the bandwidth (private hosts are still inlined — the provider can never reach them)
+
 ### Changed
 - Images loaded by tools are injected as a **user** message after the tool batch (`FailSafeChatClient` + `ImageAttachmentSink`) — the API rejects images in tool/assistant/system roles
 - User message blocks store a text marker instead of base64, keeping history small and letting the agent re-open the image later with `view_image`

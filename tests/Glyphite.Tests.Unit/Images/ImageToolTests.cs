@@ -127,7 +127,7 @@ public class ImageToolTests
     [Fact]
     public async Task PassedThroughUrl_IsAnnouncedAsAUrl()
     {
-        var (tool, sink) = Build();
+        var (tool, sink) = Build(new ImageOptions { UrlMode = "passthrough" });
 
         var result = await Invoke(tool, ("source", "https://example.com/pic.png"));
 

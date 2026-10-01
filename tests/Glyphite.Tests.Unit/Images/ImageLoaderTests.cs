@@ -174,10 +174,11 @@ public class ImageLoaderTests
     // ── URLs ─────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task PublicUrl_IsPassedThrough_WithoutDownloading()
+    public async Task UrlModePassthrough_LeavesAPublicUrlToTheProvider()
     {
         var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
-        var (payload, error) = await Loader(handler).LoadAsync("https://example.com/pic.png", Opts());
+        var (payload, error) = await Loader(handler).LoadAsync(
+            "https://example.com/pic.png", Opts(o => o.UrlMode = "passthrough"));
 
         Assert.Null(error);
         Assert.False(payload!.Inline);
@@ -192,7 +193,8 @@ public class ImageLoaderTests
     public async Task PublicUrl_WithQueryString_StillGetsItsType()
     {
         var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
-        var (payload, _) = await Loader(handler).LoadAsync("https://cdn.example.com/a.jpg?w=800&h=600", Opts());
+        var (payload, _) = await Loader(handler).LoadAsync(
+            "https://cdn.example.com/a.jpg?w=800&h=600", Opts(o => o.UrlMode = "passthrough"));
 
         Assert.Equal(ImageFormats.Jpeg, payload!.MediaType);
     }
@@ -226,14 +228,27 @@ public class ImageLoaderTests
     }
 
     [Fact]
-    public async Task UrlModePassthrough_NeverDownloads()
+    public async Task UrlModePassthrough_StillInlinesHostsTheProviderCannotReach()
     {
         var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
         var (payload, _) = await Loader(handler).LoadAsync(
             "http://localhost/shot.png", Opts(o => o.UrlMode = "passthrough"));
 
-        Assert.False(payload!.Inline);
-        Assert.Empty(handler.Urls);
+        Assert.True(payload!.Inline);
+        Assert.Equal("http://localhost/shot.png", Assert.Single(handler.Urls));
+    }
+
+    [Fact]
+    public async Task UrlModeAuto_InlinesPublicUrls_SoABadUrlCannotKillTheTurn()
+    {
+        // Handing the URL over lets the provider fetch it; if that download fails the whole
+        // request dies with an opaque 400 and the turn is lost. Auto therefore never delegates.
+        var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
+        var (payload, error) = await Loader(handler).LoadAsync("https://example.com/pic.png", Opts());
+
+        Assert.Null(error);
+        Assert.True(payload!.Inline);
+        Assert.Equal("https://example.com/pic.png", Assert.Single(handler.Urls));
     }
 
     [Fact]
@@ -328,7 +343,7 @@ public class ImageLoaderTests
     public async Task Describe_MarksPassedThroughUrls()
     {
         var (payload, _) = await Loader(new StubHandler(_ => Bytes(TestImages.Png1x1)))
-            .LoadAsync("https://example.com/pic.png", Opts());
+            .LoadAsync("https://example.com/pic.png", Opts(o => o.UrlMode = "passthrough"));
 
         Assert.Contains("URL", payload!.Describe());
     }

@@ -560,13 +560,13 @@ Reading a picture as text produces junk, so both text tools refuse one and name 
 |-----|---------|
 | `Enabled` | Master switch — off makes `view_image` refuse and disables auto-attach |
 | `AutoAttach` | Scan user messages for image references |
-| `UrlMode` | `auto` passes the URL through for public hosts (the provider downloads it — no bytes through the agent) and inlines it for hosts the provider cannot reach: `localhost`, `10.x`, `192.168.x`, `172.16-31.x`, `169.254.x`, `.local`, `.lan`, `.internal`, bare intranet names. `inline` / `passthrough` force one behaviour |
+| `UrlMode` | How an http(s) image reaches the model. `auto` (default) downloads it here and sends the bytes: a URL the provider cannot fetch fails the **whole request** with an opaque 400 — nothing left for the model to react to. `passthrough` hands the URL over instead (spares your bandwidth, accepts that risk) and still inlines hosts the provider can never reach: `localhost`, `10.x`, `192.168.x`, `172.16-31.x`, `169.254.x`, `.local`, `.lan`, `.internal`, bare intranet names. `inline` always downloads |
 | `UrlMatching` | What a URL must look like to be auto-attached: `extension` (default), `always`, `never` |
 | `Detail` | `auto` omits the field entirely; `low` / `high` / `original` are sent as `image_url.detail` |
 
 Size, count, URL-length and dimension defaults mirror the provider's documented limits, so requests stay valid without tuning.
 
-> **Worth knowing:** the container is detected from the bytes, never from the file name — a PNG named `.txt` is still a PNG. URLs past `MaxUrlLength` are inlined even in `passthrough` mode, because the provider would reject them. Each image costs tokens (up to ~1024 per image after provider-side resizing, largely independent of file size).
+> **Worth knowing:** the container is detected from the bytes, never from the file name — a PNG named `.txt` is still a PNG. URLs past `MaxUrlLength` are inlined even in `passthrough` mode, because the provider would reject them. Each image costs tokens (up to ~1024 per image after provider-side resizing, largely independent of file size). Failures never kill the turn in `auto`: an unreachable URL, a 404 or a non-image answer all come back as a tool-level error the model can read.
 
 ## Reasoning auto-compaction
 

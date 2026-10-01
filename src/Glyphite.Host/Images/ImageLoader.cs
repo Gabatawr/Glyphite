@@ -265,15 +265,21 @@ public sealed class ImageLoader
     }
 
     /// <summary>
-    /// Pass-through is preferred for public hosts (no bytes through the agent, no upload cost).
-    /// It is impossible for hosts the provider cannot reach — localhost, private ranges, intranet
-    /// names — and for URLs past the provider's length limit, so those get inlined instead.
+    /// Whether the agent must fetch the image itself instead of handing the URL to the provider.
+    ///
+    /// In <c>auto</c> it always does. A pass-through URL is downloaded by the provider, and a
+    /// download the provider cannot complete fails the entire request with an opaque 400 — there
+    /// is no tool-level error left for the model to react to, so the turn is lost. Fetching it
+    /// ourselves turns every failure into a message the model can read and act on.
+    ///
+    /// <c>passthrough</c> opts back into that risk, except for hosts the provider can never reach
+    /// (localhost, private ranges, intranet names) and URLs past its length limit — those are
+    /// inlined rather than wasted.
     /// </summary>
     private static bool ShouldInline(Uri uri, ImageOptions opts) => opts.UrlMode switch
     {
-        "inline" => true,
-        "passthrough" => false,
-        _ => IsNonPublicHost(uri.Host)
+        "passthrough" => IsNonPublicHost(uri.Host),
+        _ => true
     };
 
     /// <summary>Suffixes that mark a name as living inside a private network.</summary>
