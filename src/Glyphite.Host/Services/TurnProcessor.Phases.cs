@@ -80,6 +80,11 @@ public partial class TurnProcessor
 
         var attachments = await ResolveAttachmentsAsync(agentId, input, agentCwd, ct);
 
+        // Bodies and image counts are budgeted end to end: what already rides in the opening message
+        // counts against whatever tools attach later in the same turn, and a tool asking for one of
+        // those same pictures is answered "already attached" instead of sending a second copy.
+        _imageSink.Seed(attachments);
+
         var initialMessages = new List<ChatMessage>();
         initialMessages.AddRange(contextMessages);
         initialMessages.Add(BuildUserMessage(input, attachments));
@@ -109,10 +114,9 @@ public partial class TurnProcessor
         var loaded = new List<ImagePayload>();
         long totalBytes = 0;
 
+        // ExtractSpecs already caps the list at MaxImagesPerRequest, so no second cut is needed here.
         foreach (var spec in specs)
         {
-            if (loaded.Count >= opts.MaxImagesPerRequest) break;
-
             var (payload, error) = await _imageLoader.LoadAsync(spec, opts, agentCwd, ct: ct);
             if (payload is null)
             {

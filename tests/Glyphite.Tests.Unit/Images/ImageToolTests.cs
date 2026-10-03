@@ -82,9 +82,9 @@ public class ImageToolTests
         var path = dir.Write("shot.png", TestImages.Png1x1);
         var (tool, sink) = Build();
 
-        await Invoke(tool, ("source", path), ("question", "Сколько кнопок на панели?"));
+        await Invoke(tool, ("source", path), ("question", "How many buttons are on the panel?"));
 
-        Assert.Equal("Сколько кнопок на панели?", Assert.Single(sink.Drain()).Note);
+        Assert.Equal("How many buttons are on the panel?", Assert.Single(sink.Drain()).Note);
     }
 
     [Fact]
@@ -127,7 +127,7 @@ public class ImageToolTests
     [Fact]
     public async Task PassedThroughUrl_IsAnnouncedAsAUrl()
     {
-        var (tool, sink) = Build(new ImageOptions { UrlMode = "passthrough" });
+        var (tool, sink) = Build();                  // auto: a public URL is handed to the provider
 
         var result = await Invoke(tool, ("source", "https://example.com/pic.png"));
 
@@ -135,5 +135,40 @@ public class ImageToolTests
         var pending = Assert.Single(sink.Drain());
         Assert.False(pending.Payload.Inline);
         Assert.IsType<UriContent>(pending.Payload.Content);
+    }
+
+    [Fact]
+    public async Task BudgetExhausted_ReturnsError_AndQueuesNothingMore()
+    {
+        using var dir = new TempDir();
+        var first = dir.Write("a.png", TestImages.Png1x1);
+        var second = dir.Write("b.png", TestImages.Png1x1);
+        var (tool, sink) = Build(new ImageOptions { MaxImagesPerRequest = 1 });
+
+        Assert.Contains("attached", await Invoke(tool, ("source", first)));
+
+        var refused = await Invoke(tool, ("source", second));
+
+        Assert.StartsWith("Error: ", refused);
+        Assert.Contains("MaxImagesPerRequest", refused);
+        Assert.Equal(1, sink.Count);
+    }
+
+    [Fact]
+    public async Task PictureAlreadyInTheConversation_IsNotAttachedASecondTime()
+    {
+        using var dir = new TempDir();
+        var path = dir.Write("shot.png", TestImages.Png1x1);
+        var (tool, sink) = Build();
+
+        // The turn already put this picture into the opening user message.
+        var (attached, error) = await new ImageLoader().LoadAsync(path, new ImageOptions());
+        Assert.Null(error);
+        sink.Seed([attached!]);
+
+        var result = await Invoke(tool, ("source", path));
+
+        Assert.Contains("Already attached", result);
+        Assert.Equal(0, sink.Count);
     }
 }

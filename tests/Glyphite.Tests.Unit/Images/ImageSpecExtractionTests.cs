@@ -24,7 +24,7 @@ public class ImageSpecExtractionTests
         using var dir = new TempDir();
         var path = dir.Write("chart.png", TestImages.Png(10, 10));
 
-        var specs = ImageLoader.ExtractSpecs($"посмотри {path} и скажи", Opts(), dir.Path);
+        var specs = ImageLoader.ExtractSpecs($"look at {path} and tell me", Opts(), dir.Path);
 
         Assert.Equal(path, Assert.Single(specs));
     }
@@ -35,7 +35,7 @@ public class ImageSpecExtractionTests
         using var dir = new TempDir();
         dir.Write("diagram.webp", TestImages.WebpLossless(4, 4));
 
-        Assert.Equal(["diagram.webp"], ImageLoader.ExtractSpecs("что тут diagram.webp", Opts(), dir.Path));
+        Assert.Equal(["diagram.webp"], ImageLoader.ExtractSpecs("what is this diagram.webp", Opts(), dir.Path));
     }
 
     [Fact]
@@ -43,7 +43,7 @@ public class ImageSpecExtractionTests
     {
         using var dir = new TempDir();
 
-        Assert.Empty(ImageLoader.ExtractSpecs("посмотри ghost.png", Opts(), dir.Path));
+        Assert.Empty(ImageLoader.ExtractSpecs("look at ghost.png", Opts(), dir.Path));
     }
 
     [Fact]
@@ -52,7 +52,7 @@ public class ImageSpecExtractionTests
         using var dir = new TempDir();
         dir.Write("notes.png", "just text");
 
-        Assert.Empty(ImageLoader.ExtractSpecs("открой notes.png", Opts(), dir.Path));
+        Assert.Empty(ImageLoader.ExtractSpecs("open notes.png", Opts(), dir.Path));
     }
 
     [Fact]
@@ -62,7 +62,7 @@ public class ImageSpecExtractionTests
         using var dir = new TempDir();
         dir.Write("payload.bin", TestImages.Png1x1);
 
-        Assert.Empty(ImageLoader.ExtractSpecs("глянь payload.bin", Opts(), dir.Path));
+        Assert.Empty(ImageLoader.ExtractSpecs("check payload.bin", Opts(), dir.Path));
     }
 
     [Fact]
@@ -71,15 +71,15 @@ public class ImageSpecExtractionTests
         using var dir = new TempDir();
         var path = dir.Write("my shot.png", TestImages.Png1x1);
 
-        Assert.Equal([path], ImageLoader.ExtractSpecs($"смотри \"{path}\" внимательно", Opts(), dir.Path));
-        Assert.Equal([path], ImageLoader.ExtractSpecs($"смотри `{path}` внимательно", Opts(), dir.Path));
+        Assert.Equal([path], ImageLoader.ExtractSpecs($"look at \"{path}\" carefully", Opts(), dir.Path));
+        Assert.Equal([path], ImageLoader.ExtractSpecs($"look at `{path}` carefully", Opts(), dir.Path));
     }
 
     [Theory]
-    [InlineData("вот {0}.")]
-    [InlineData("вот ({0})")]
-    [InlineData("вот <{0}>,")]
-    [InlineData("вот \"{0}\"")]
+    [InlineData("here is {0}.")]
+    [InlineData("here is ({0})")]
+    [InlineData("here is <{0}>,")]
+    [InlineData("here is \"{0}\"")]
     public void WrappingPunctuation_IsTrimmed(string template)
     {
         using var dir = new TempDir();
@@ -91,7 +91,7 @@ public class ImageSpecExtractionTests
     [Fact]
     public void UrlWithImageExtension_IsExtracted()
     {
-        var specs = ImageLoader.ExtractSpecs("сравни с https://cdn.example.com/a.png тут", Opts());
+        var specs = ImageLoader.ExtractSpecs("compare with https://cdn.example.com/a.png here", Opts());
 
         Assert.Equal(["https://cdn.example.com/a.png"], specs);
     }
@@ -107,14 +107,14 @@ public class ImageSpecExtractionTests
     [Fact]
     public void UrlWithoutImageExtension_IsSkippedByDefault()
     {
-        Assert.Empty(ImageLoader.ExtractSpecs("почитай https://example.com/article", Opts()));
+        Assert.Empty(ImageLoader.ExtractSpecs("read https://example.com/article", Opts()));
     }
 
     [Fact]
     public void UrlMatchingAlways_TakesAnyUrl()
     {
         var specs = ImageLoader.ExtractSpecs(
-            "глянь https://photos.example.com/photo-123", Opts(o => o.UrlMatching = "always"));
+            "check https://photos.example.com/photo-123", Opts(o => o.UrlMatching = "always"));
 
         Assert.Equal(["https://photos.example.com/photo-123"], specs);
     }
@@ -130,7 +130,7 @@ public class ImageSpecExtractionTests
     public void LocalhostUrl_IsExtracted()
     {
         // Reachable only from this machine, but still an image the user clearly means.
-        var specs = ImageLoader.ExtractSpecs("что на http://localhost:3000/shot.png ?", Opts());
+        var specs = ImageLoader.ExtractSpecs("what is on http://localhost:3000/shot.png ?", Opts());
 
         Assert.Equal(["http://localhost:3000/shot.png"], specs);
     }
@@ -149,7 +149,7 @@ public class ImageSpecExtractionTests
     {
         var spec = "data:image/png;base64," + Convert.ToBase64String(TestImages.Png1x1);
 
-        Assert.Equal([spec], ImageLoader.ExtractSpecs($"вот {spec}", Opts()));
+        Assert.Equal([spec], ImageLoader.ExtractSpecs($"here is {spec}", Opts()));
     }
 
     [Fact]
@@ -160,7 +160,7 @@ public class ImageSpecExtractionTests
         var second = dir.Write("b.jpg", TestImages.Jpeg(4, 4));
 
         Assert.Equal([first, second],
-            ImageLoader.ExtractSpecs($"сначала {first} потом {second}", Opts(), dir.Path));
+            ImageLoader.ExtractSpecs($"first {first} then {second}", Opts(), dir.Path));
     }
 
     [Fact]
@@ -169,7 +169,7 @@ public class ImageSpecExtractionTests
         using var dir = new TempDir();
         var path = dir.Write("a.png", TestImages.Png1x1);
 
-        Assert.Single(ImageLoader.ExtractSpecs($"{path} и ещё раз {path}", Opts(), dir.Path));
+        Assert.Single(ImageLoader.ExtractSpecs($"{path} and again {path}", Opts(), dir.Path));
     }
 
     [Fact]
@@ -188,7 +188,7 @@ public class ImageSpecExtractionTests
     [Fact]
     public void PlainText_YieldsNothing()
     {
-        Assert.Empty(ImageLoader.ExtractSpecs("почему падает обработка png?", Opts()));
+        Assert.Empty(ImageLoader.ExtractSpecs("why does the png processing fail?", Opts()));
         Assert.Empty(ImageLoader.ExtractSpecs("", Opts()));
         Assert.Empty(ImageLoader.ExtractSpecs(null, Opts()));
     }
@@ -199,7 +199,7 @@ public class ImageSpecExtractionTests
         using var dir = new TempDir();
         var path = dir.Write("a.png", TestImages.Png1x1);
 
-        Assert.Empty(ImageLoader.ExtractSpecs($"смотри {path}", Opts(o => o.AutoAttach = false), dir.Path));
+        Assert.Empty(ImageLoader.ExtractSpecs($"look at {path}", Opts(o => o.AutoAttach = false), dir.Path));
     }
 
     [Fact]
@@ -208,7 +208,7 @@ public class ImageSpecExtractionTests
         using var dir = new TempDir();
         var path = dir.Write("a.png", TestImages.Png1x1);
 
-        Assert.Empty(ImageLoader.ExtractSpecs($"смотри {path}", Opts(o => o.Enabled = false), dir.Path));
+        Assert.Empty(ImageLoader.ExtractSpecs($"look at {path}", Opts(o => o.Enabled = false), dir.Path));
     }
 
     [Fact]

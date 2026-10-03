@@ -363,10 +363,13 @@ public class ImageOptions
     public bool AutoAttach { get; set; } = true;
 
     /// <summary>
-    /// How <c>http(s)</c> images travel: <c>auto</c> (inline for hosts the provider cannot reach —
-    /// localhost, private ranges, intranet names — and pass the URL through otherwise),
-    /// <c>inline</c> (always download through the agent), <c>passthrough</c> (always let the provider fetch).
-    /// URLs past <see cref="MaxUrlLength"/> are inlined regardless.
+    /// How an <c>http(s)</c> image reaches the model.
+    /// <c>auto</c> (default) is adaptive — a public URL is handed to the provider to download
+    /// (no bytes through the agent), while a host the provider can never reach (localhost, private
+    /// ranges, intranet names) is downloaded here and inlined.
+    /// <c>inline</c> always downloads and sends the bytes itself.
+    /// URLs past <see cref="MaxUrlLength"/> are inlined regardless, because the provider would reject them.
+    /// Matched case-insensitively.
     /// </summary>
     public string UrlMode { get; set; } = "auto";
 
@@ -397,7 +400,7 @@ public class ImageOptions
     /// <summary>Extensions treated as images when scanning message text for attachments.</summary>
     public string[] Extensions { get; set; } = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
-    public static readonly string[] KnownUrlModes = ["auto", "inline", "passthrough"];
+    public static readonly string[] KnownUrlModes = ["auto", "inline"];
     public static readonly string[] KnownUrlMatching = ["extension", "always", "never"];
     public static readonly string[] KnownDetails = ["auto", "low", "high", "original"];
 

@@ -89,11 +89,11 @@ public class WebFetchToolTests
     [Fact]
     public async Task HtmlPage_IsStillStrippedToText()
     {
-        var html = Encoding.UTF8.GetBytes("<html><body><h1>Привет</h1><p>мир</p></body></html>");
+        var html = Encoding.UTF8.GetBytes("<html><body><h1>Hello</h1><p>world</p></body></html>");
 
         var result = await Fetch(html, "text/html");
 
-        Assert.Equal("Привет мир", result);
+        Assert.Equal("Hello world", result);
     }
 
     [Fact]
@@ -113,20 +113,20 @@ public class WebFetchToolTests
     {
         // SVG is text, and view_image cannot display it — so it must not be refused.
         var svg = Encoding.UTF8.GetBytes(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>диаграмма</text></svg>");
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>diagram</text></svg>");
 
         var result = await Fetch(svg, "image/svg+xml");
 
-        Assert.Contains("диаграмма", result);
+        Assert.Contains("diagram", result);
         Assert.DoesNotContain("view_image", result);
     }
 
     [Fact]
     public async Task PlainText_IsReturnedUnchanged()
     {
-        var result = await Fetch(Encoding.UTF8.GetBytes("просто текст"), "text/plain");
+        var result = await Fetch(Encoding.UTF8.GetBytes("plain text"), "text/plain");
 
-        Assert.Equal("просто текст", result);
+        Assert.Equal("plain text", result);
     }
 
     // ── Errors ──

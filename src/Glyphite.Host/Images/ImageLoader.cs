@@ -1,9 +1,21 @@
+using System.Net;
+using System.Security.Cryptography;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace Glyphite.Host.Images;
+
+/// <summary>How an image travels to the provider.</summary>
+public enum ImagePayloadKind
+{
+    /// <summary>The bytes travel inside the request body (<c>DataContent</c>).</summary>
+    Inline,
+
+    /// <summary>Only the URL travels; the provider fetches the picture (<c>UriContent</c>).</summary>
+    Passthrough
+}
 
 /// <summary>One image resolved and ready to travel to the provider.</summary>
 /// <param name="Content">MEAI part — <see cref="DataContent"/> when inlined, <see cref="UriContent"/> when passed through.</param>
@@ -12,7 +24,12 @@ namespace Glyphite.Host.Images;
 /// <param name="Bytes">Inline size; 0 for pass-through URLs (the provider downloads them).</param>
 /// <param name="Width">Pixel width when the header was walkable.</param>
 /// <param name="Height">Pixel height when the header was walkable.</param>
-/// <param name="Inline">True when the bytes travel inside the request body.</param>
+/// <param name="Kind">Inline (bytes in the body) or passed through (URL handed over).</param>
+/// <param name="Key">
+/// Canonical identity, independent of how the reference was spelled: the resolved absolute path for a
+/// local file, the URL for a remote one, a content hash for a <c>data:</c> URL. Two references that
+/// name the same picture share a key, which is how the sink refuses to send it twice in one turn.
+/// </param>
 public sealed record ImagePayload(
     AIContent Content,
     string Spec,
@@ -20,18 +37,20 @@ public sealed record ImagePayload(
     long Bytes,
     int? Width,
     int? Height,
-    bool Inline)
+    ImagePayloadKind Kind,
+    string Key)
 {
+    /// <summary>True when the bytes travel inside the request body.</summary>
+    public bool Inline => Kind == ImagePayloadKind.Inline;
+
     /// <summary>Compact human/LLM readable line: <c>path (image/png, 1920×1080, 412 KB)</c>.</summary>
     public string Describe()
     {
-        var size = Bytes > 0
-            ? Width is int w && Height is int h
+        var size = !Inline
+            ? "URL — fetched by the provider"
+            : Width is int w && Height is int h
                 ? $"{w}×{h}, {ImageFormats.DescribeBytes(Bytes)}"
-                : ImageFormats.DescribeBytes(Bytes)
-            : Width is int pw && Height is int ph
-                ? $"{pw}×{ph}, URL — fetched by the provider"
-                : "URL — fetched by the provider";
+                : ImageFormats.DescribeBytes(Bytes);
 
         return $"{Spec} ({MediaType}, {size})";
     }
@@ -40,7 +59,8 @@ public sealed record ImagePayload(
 /// <summary>
 /// Turns an image reference — local path, <c>http(s)</c> URL, <c>file://</c> URL or <c>data:</c> URL —
 /// into an MEAI part the provider accepts. Validates format by content, enforces the provider's
-/// documented limits, and decides whether to inline the bytes or let the provider fetch them.
+/// documented limits, and (per <see cref="ImageOptions.UrlMode"/>) decides whether to inline the
+/// bytes or hand the URL over.
 /// </summary>
 public sealed class ImageLoader
 {
@@ -49,7 +69,12 @@ public sealed class ImageLoader
     /// deadline from <see cref="ImageOptions.DownloadTimeoutSeconds"/> via a linked token.
     /// </summary>
     private static readonly Lazy<HttpClient> SharedHttp = new(() => new HttpClient(
-        new SocketsHttpHandler { AllowAutoRedirect = true, MaxAutomaticRedirections = 5 })
+        new SocketsHttpHandler
+        {
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 5,
+            AutomaticDecompression = DecompressionMethods.All   // a gzip image must still sniff as one
+        })
     {
         Timeout = Timeout.InfiniteTimeSpan
     });
@@ -111,7 +136,7 @@ public sealed class ImageLoader
             return (null, $"Image is {ImageFormats.DescribeBytes(length)}, over the {ImageFormats.DescribeBytes(opts.MaxImageBytes)} limit: {path}");
 
         var bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
-        return Build(bytes, spec, opts, detail);
+        return Build(bytes, spec, Path.GetFullPath(path), opts, detail);
     }
 
     private async Task<(ImagePayload?, string?)> LoadUrlAsync(
@@ -130,7 +155,7 @@ public sealed class ImageLoader
             var media = ImageFormats.MediaTypeFromExtension(uri.AbsolutePath) ?? "image/*";
             var content = new UriContent(uri, media);
             ApplyDetail(content, detail);
-            return (new ImagePayload(content, spec, media, 0, null, null, false), null);
+            return (new ImagePayload(content, spec, media, 0, null, null, ImagePayloadKind.Passthrough, spec), null);
         }
 
         return await DownloadAsync(uri, spec, opts, detail, ct).ConfigureAwait(false);
@@ -158,7 +183,7 @@ public sealed class ImageLoader
             if (bytes is null)
                 return (null, $"Image at {uri} exceeds the {ImageFormats.DescribeBytes(opts.MaxImageBytes)} limit.");
 
-            var (payload, error) = Build(bytes, uri.ToString(), opts, detail);
+            var (payload, error) = Build(bytes, uri.ToString(), uri.ToString(), opts, detail);
             return (payload, error);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -207,20 +232,48 @@ public sealed class ImageLoader
         byte[] bytes;
         try
         {
-            bytes = isBase64
-                ? Convert.FromBase64String(payload)
-                : System.Text.Encoding.Latin1.GetBytes(Uri.UnescapeDataString(payload));
+            bytes = isBase64 ? Convert.FromBase64String(payload) : PercentDecode(payload);
         }
         catch (FormatException)
         {
             return (null, "Malformed base64 payload in data: URL.");
         }
 
-        return Build(bytes, $"data URL ({bytes.Length} bytes)", opts, detail);
+        // No name and no location to key on — identity is the bytes themselves.
+        var key = "data:" + Convert.ToHexString(SHA256.HashData(bytes));
+        return Build(bytes, $"data URL ({bytes.Length} bytes)", key, opts, detail);
     }
 
+    /// <summary>
+    /// Decode a non-base64 <c>data:</c> payload. Percent-escapes are raw octets, not UTF-8 text,
+    /// so <c>%E2%82%AC</c> must stay three bytes instead of collapsing into one '€'.
+    /// </summary>
+    private static byte[] PercentDecode(string payload)
+    {
+        var bytes = new byte[payload.Length];
+        var length = 0;
+        for (var i = 0; i < payload.Length; i++)
+        {
+            if (payload[i] == '%' && i + 2 < payload.Length
+                && Uri.IsHexDigit(payload[i + 1]) && Uri.IsHexDigit(payload[i + 2]))
+            {
+                bytes[length++] = (byte)((HexValue(payload[i + 1]) << 4) | HexValue(payload[i + 2]));
+                i += 2;
+            }
+            else
+            {
+                bytes[length++] = (byte)payload[i];
+            }
+        }
+
+        return bytes[..length];
+    }
+
+    private static int HexValue(char c)
+        => c <= '9' ? c - '0' : char.ToLowerInvariant(c) - 'a' + 10;
+
     /// <summary>Validate bytes, read dimensions, and wrap them as an inline part.</summary>
-    private (ImagePayload?, string?) Build(byte[] bytes, string spec, ImageOptions opts, string? detail)
+    private (ImagePayload?, string?) Build(byte[] bytes, string spec, string key, ImageOptions opts, string? detail)
     {
         var media = ImageFormats.SniffMediaType(bytes);
         if (media is null)
@@ -239,7 +292,7 @@ public sealed class ImageLoader
         var content = new DataContent(bytes, media);
         ApplyDetail(content, detail);
 
-        return (new ImagePayload(content, spec, media, bytes.LongLength, dims?.Width, dims?.Height, true), null);
+        return (new ImagePayload(content, spec, media, bytes.LongLength, dims?.Width, dims?.Height, ImagePayloadKind.Inline, key), null);
     }
 
     /// <summary>
@@ -267,20 +320,27 @@ public sealed class ImageLoader
     /// <summary>
     /// Whether the agent must fetch the image itself instead of handing the URL to the provider.
     ///
-    /// In <c>auto</c> it always does. A pass-through URL is downloaded by the provider, and a
-    /// download the provider cannot complete fails the entire request with an opaque 400 — there
-    /// is no tool-level error left for the model to react to, so the turn is lost. Fetching it
-    /// ourselves turns every failure into a message the model can read and act on.
+    /// <c>auto</c> (default) is adaptive: a public URL is handed over — the provider downloads it,
+    /// so no bytes travel through the agent — while a host the provider can never reach
+    /// (localhost, private ranges, intranet names) is fetched here and inlined. The trade-off is
+    /// real: a handed-over URL the provider fails to download (404, auth, hotlink protection) kills
+    /// the whole request with an opaque 400, leaving the model nothing to react to. <c>inline</c>
+    /// spends bandwidth to avoid exactly that.
     ///
-    /// <c>passthrough</c> opts back into that risk, except for hosts the provider can never reach
-    /// (localhost, private ranges, intranet names) and URLs past its length limit — those are
-    /// inlined rather than wasted.
+    /// A URL past <see cref="ImageOptions.MaxUrlLength"/> is inlined regardless of mode (handled
+    /// before this check), because the provider would reject it.
+    ///
+    /// Matching is case-insensitive, mirroring <see cref="ImageOptions.Validate"/>.
     /// </summary>
-    private static bool ShouldInline(Uri uri, ImageOptions opts) => opts.UrlMode switch
+    private static bool ShouldInline(Uri uri, ImageOptions opts)
     {
-        "passthrough" => IsNonPublicHost(uri.Host),
-        _ => true
-    };
+        var mode = opts.UrlMode?.Trim().ToLowerInvariant();
+        return mode switch
+        {
+            "inline" => true,
+            _ => IsNonPublicHost(uri.Host)   // auto — adaptive
+        };
+    }
 
     /// <summary>Suffixes that mark a name as living inside a private network.</summary>
     private static readonly string[] IntranetSuffixes =

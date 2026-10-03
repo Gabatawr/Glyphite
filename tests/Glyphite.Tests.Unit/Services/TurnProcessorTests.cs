@@ -2,6 +2,7 @@ using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Images;
 using Glyphite.Host.Services;
+using Glyphite.Host.Tools;
 using Glyphite.Tests.Unit.Support;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -40,10 +41,10 @@ public class TurnProcessorTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
-    private TurnProcessor CreateProcessor() => new(
+    private TurnProcessor CreateProcessor(ImageAttachmentSink? images = null) => new(
         _db.Sessions, _db.Blocks, _memory, _chat, _tools, _cfg,
         _compaction, _configLoader, _instructions,
-        new ImageLoader(), new ImageAttachmentSink(),
+        new ImageLoader(), images ?? new ImageAttachmentSink(),
         NullLogger<TurnProcessor>.Instance);
 
     private void SetupOptions(
@@ -142,12 +143,12 @@ public class TurnProcessorTests : IDisposable
     {
         await _db.Sessions.EnsureSessionAsync(AgentId);
         SetupOptions();
-        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("вижу")])]);
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("I see")])]);
 
         using var dir = new TempDir();
         var imagePath = dir.Write("shot.png", TestImages.Png(320, 200));
 
-        var events = await RunTurnAsync($"что на {imagePath}?");
+        var events = await RunTurnAsync($"what is on {imagePath}?");
 
         // The UI is told, the model gets a real image part, and the stored block gets a cheap marker.
         var notice = Assert.Single(events.OfType<ImageAttachedTurnEvent>());
@@ -171,7 +172,7 @@ public class TurnProcessorTests : IDisposable
         SetupOptions();
         _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("ok")])]);
 
-        var events = await RunTurnAsync("посмотри /nowhere/gone.png");
+        var events = await RunTurnAsync("look at /nowhere/gone.png");
 
         Assert.DoesNotContain(events, e => e is ImageAttachedTurnEvent);
         Assert.Contains(events, e => e is TurnCompleteEvent);
@@ -194,11 +195,47 @@ public class TurnProcessorTests : IDisposable
         using var dir = new TempDir();
         var imagePath = dir.Write("shot.png", TestImages.Png1x1);
 
-        var events = await RunTurnAsync($"что на {imagePath}?");
+        var events = await RunTurnAsync($"what is on {imagePath}?");
 
         Assert.DoesNotContain(events, e => e is ImageAttachedTurnEvent);
         var sent = _chat.ReceivedMessages[0];
         Assert.DoesNotContain(sent.SelectMany(m => m.Contents).OfType<DataContent>(), _ => true);
+    }
+
+    [Fact]
+    public async Task ImageAlreadyInTheMessage_IsNotSentTwice_WhenTheModelAsksForIt()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+
+        using var dir = new TempDir();
+        var imagePath = dir.Write("shot.png", TestImages.Png(320, 200));
+
+        // The real tool, sharing the sink the turn seeds with its own attachments.
+        var images = new ImageAttachmentSink();
+        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>())
+            .Returns(Task.FromResult<IReadOnlyList<AITool>>(
+                [ImageTool.AsViewImageFunction(new ImageLoader(), images, _cfg)]));
+
+        // Iteration 1: the model asks view_image for the very picture the turn already attached.
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant,
+            [new FunctionCallContent("c1", "view_image",
+                new Dictionary<string, object?> { ["source"] = imagePath })])]);
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("done")])]);
+
+        await foreach (var _ in CreateProcessor(images).ProcessAsync(
+            AgentId, $"what is on {imagePath}?", new ChatOptions(), default))
+        {
+        }
+
+        // One picture reached the provider — not two copies of the same one.
+        var lastCall = _chat.ReceivedMessages.Last();
+        Assert.Single(lastCall.SelectMany(m => m.Contents).OfType<DataContent>());
+
+        // And the tool said so instead of queueing it again.
+        var toolText = lastCall.Where(m => m.Role == ChatRole.Tool)
+            .SelectMany(m => m.Contents).OfType<TextContent>().Select(t => t.Text);
+        Assert.Contains(toolText, t => t!.Contains("Already attached"));
     }
 
 // ── Compaction ──

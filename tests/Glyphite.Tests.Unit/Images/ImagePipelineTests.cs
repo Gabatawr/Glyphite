@@ -1,3 +1,4 @@
+using Glyphite.Abstractions.Models;
 using Glyphite.Host.Images;
 using Glyphite.Host.Services;
 using Glyphite.Tests.Unit.Support;
@@ -15,7 +16,7 @@ public class ImagePipelineTests
 {
     private static ImagePayload Payload(string spec = "/tmp/a.png")
         => new(new DataContent(TestImages.Png1x1, "image/png"), spec, "image/png",
-            TestImages.Png1x1.Length, 1, 1, true);
+            TestImages.Png1x1.Length, 1, 1, ImagePayloadKind.Inline, spec);
 
     private static AIFunction ViewImageTool(ImageAttachmentSink sink, ImagePayload payload, string? note = "what is in it?")
         => AIFunctionFactory.Create(
@@ -161,5 +162,98 @@ public class ImagePipelineTests
         sink.Clear();
 
         Assert.Equal(0, sink.Count);
+    }
+
+    [Fact]
+    public void Sink_TryAdd_EnforcesImageCountBudget()
+    {
+        var sink = new ImageAttachmentSink();
+        var opts = new ImageOptions { MaxImagesPerRequest = 1 };
+
+        Assert.Equal(ImageAddResult.Added, sink.TryAdd(Payload("/tmp/a.png"), null, opts, out _));
+
+        Assert.Equal(ImageAddResult.OverBudget, sink.TryAdd(Payload("/tmp/b.png"), null, opts, out var reason));
+        Assert.Contains("MaxImagesPerRequest", reason);
+        Assert.Equal(1, sink.Count);
+    }
+
+    [Fact]
+    public void Sink_TryAdd_EnforcesInlineByteBudget()
+    {
+        var sink = new ImageAttachmentSink();
+        var opts = new ImageOptions { MaxTotalBytes = TestImages.Png1x1.Length };
+
+        Assert.Equal(ImageAddResult.Added, sink.TryAdd(Payload("/tmp/a.png"), null, opts, out _));
+
+        Assert.Equal(ImageAddResult.OverBudget, sink.TryAdd(Payload("/tmp/b.png"), null, opts, out var reason));
+        Assert.Contains("MaxTotalBytes", reason);
+    }
+
+    [Fact]
+    public void Sink_Seed_CountsTowardBothBudgets()
+    {
+        var sink = new ImageAttachmentSink();
+        var opts = new ImageOptions { MaxTotalBytes = TestImages.Png1x1.Length, MaxImagesPerRequest = 1 };
+
+        // What the opening message already carries is part of the same request.
+        sink.Seed([Payload("/tmp/from-message.png")]);
+
+        Assert.Equal(ImageAddResult.OverBudget, sink.TryAdd(Payload("/tmp/a.png"), null, opts, out var reason));
+        Assert.Contains("MaxImagesPerRequest", reason);
+
+        // A new turn starts with a fresh budget.
+        sink.Clear();
+        Assert.Equal(ImageAddResult.Added, sink.TryAdd(Payload("/tmp/a.png"), null, opts, out _));
+    }
+
+    [Fact]
+    public void Sink_SamePictureTwice_IsRefusedAsAlreadyAttached()
+    {
+        var sink = new ImageAttachmentSink();
+        var opts = new ImageOptions();
+
+        Assert.Equal(ImageAddResult.Added, sink.TryAdd(Payload("/tmp/a.png"), null, opts, out _));
+        Assert.Equal(ImageAddResult.AlreadyAttached, sink.TryAdd(Payload("/tmp/a.png"), null, opts, out var reason));
+        Assert.Contains("already", reason);
+        Assert.Equal(1, sink.Count);
+    }
+
+    [Fact]
+    public void Sink_PictureFromTheOpeningMessage_IsRefusedWhenAToolAsksForIt()
+    {
+        var sink = new ImageAttachmentSink();
+        var opts = new ImageOptions();
+
+        // Auto-attach put this one in the user's own message; a tool asking for it buys nothing.
+        sink.Seed([Payload("/tmp/from-message.png")]);
+
+        Assert.Equal(ImageAddResult.AlreadyAttached,
+            sink.TryAdd(Payload("/tmp/from-message.png"), null, opts, out _));
+        Assert.Equal(0, sink.Count);
+    }
+
+    [Fact]
+    public void Sink_RemembersAfterDrain_SoALaterBatchDoesNotResendTheSamePicture()
+    {
+        var sink = new ImageAttachmentSink();
+        var opts = new ImageOptions();
+
+        sink.TryAdd(Payload("/tmp/a.png"), null, opts, out _);
+        Assert.Single(sink.Drain());
+
+        // The picture now lives in the conversation — still not worth sending twice.
+        Assert.Equal(ImageAddResult.AlreadyAttached, sink.TryAdd(Payload("/tmp/a.png"), null, opts, out _));
+    }
+
+    [Fact]
+    public void Sink_Clear_ForgetsTheTurn_SoTheSamePictureCanComeBackNextTurn()
+    {
+        var sink = new ImageAttachmentSink();
+        var opts = new ImageOptions();
+        sink.Seed([Payload("/tmp/a.png")]);
+
+        sink.Clear();
+
+        Assert.Equal(ImageAddResult.Added, sink.TryAdd(Payload("/tmp/a.png"), null, opts, out _));
     }
 }

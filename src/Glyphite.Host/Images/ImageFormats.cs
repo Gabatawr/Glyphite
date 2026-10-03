@@ -146,19 +146,25 @@ public static class ImageFormats
 
     /// <summary>
     /// Describe a file as an image — media type, pixel size, byte size — or null when it is not one
-    /// of the supported containers. Reads only the header, never the whole picture.
+    /// of the supported containers. Opens the file once and reads only the header, never the whole
+    /// picture: a non-image costs a single 12-byte probe, an image one bounded header read.
     /// </summary>
     public static string? DescribeImageFile(string path)
     {
-        var mediaType = TrySniffFile(path);
-        if (mediaType is null) return null;
-
+        string? mediaType = null;
         try
         {
             var length = new FileInfo(path).Length;
-            var head = new byte[Math.Min(length, HeaderScanLimit)];
 
             using var stream = File.OpenRead(path);
+
+            Span<byte> probe = stackalloc byte[SniffLength];
+            var probed = stream.ReadAtLeast(probe, SniffLength, throwOnEndOfStream: false);
+            mediaType = SniffMediaType(probe[..probed]);
+            if (mediaType is null) return null;
+
+            var head = new byte[(int)Math.Min(length, HeaderScanLimit)];
+            stream.Position = 0;
             var read = stream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
 
             var dimensions = ReadDimensions(head.AsSpan(0, read), mediaType);

@@ -171,30 +171,28 @@ public class ImageLoaderTests
         Assert.Contains("base64", error2);
     }
 
-    // ── URLs ─────────────────────────────────────────────────────────
-
     [Fact]
-    public async Task UrlModePassthrough_LeavesAPublicUrlToTheProvider()
+    public async Task DataUrl_NonBase64_PreservesRawOctets()
     {
-        var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
-        var (payload, error) = await Loader(handler).LoadAsync(
-            "https://example.com/pic.png", Opts(o => o.UrlMode = "passthrough"));
+        // Percent-escapes are octets: the PNG signature (0x89 …) and every byte ≥ 0x80 must survive
+        // verbatim. Decoding through a UTF-8 string used to mangle them and break the sniff.
+        var encoded = string.Concat(TestImages.Png1x1.Select(b => $"%{b:X2}"));
+
+        var (payload, error) = await new ImageLoader().LoadAsync("data:image/png," + encoded, Opts());
 
         Assert.Null(error);
-        Assert.False(payload!.Inline);
-        Assert.Equal(0, payload.Bytes);
-        Assert.Empty(handler.Urls);                   // the provider fetches it, not us
-        var content = Assert.IsType<UriContent>(payload.Content);
-        Assert.Equal("https://example.com/pic.png", content.Uri.ToString());
-        Assert.Equal(ImageFormats.Png, content.MediaType);
+        Assert.True(payload!.Inline);
+        Assert.Equal(TestImages.Png1x1, Assert.IsType<DataContent>(payload.Content).Data.ToArray());
     }
+
+    // ── URLs ─────────────────────────────────────────────────────────
 
     [Fact]
     public async Task PublicUrl_WithQueryString_StillGetsItsType()
     {
         var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
         var (payload, _) = await Loader(handler).LoadAsync(
-            "https://cdn.example.com/a.jpg?w=800&h=600", Opts(o => o.UrlMode = "passthrough"));
+            "https://cdn.example.com/a.jpg?w=800&h=600", Opts());
 
         Assert.Equal(ImageFormats.Jpeg, payload!.MediaType);
     }
@@ -227,37 +225,50 @@ public class ImageLoaderTests
         Assert.Single(handler.Urls);
     }
 
-    [Fact]
-    public async Task UrlModePassthrough_StillInlinesHostsTheProviderCannotReach()
+    [Theory]
+    [InlineData("Inline")]
+    [InlineData("INLINE")]
+    [InlineData("AUTO")]
+    [InlineData("Auto")]
+    public async Task UrlMode_IsCaseInsensitive(string mode)
     {
         var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
         var (payload, _) = await Loader(handler).LoadAsync(
-            "http://localhost/shot.png", Opts(o => o.UrlMode = "passthrough"));
+            "https://example.com/pic.png", Opts(o => o.UrlMode = mode));
 
-        Assert.True(payload!.Inline);
+        // "inline" always inlines; "auto" (adaptive) passes a public URL through.
+        Assert.Equal(mode.Equals("inline", StringComparison.OrdinalIgnoreCase), payload!.Inline);
+    }
+
+    [Fact]
+    public async Task UrlModeAuto_IsAdaptive_PublicPassesThrough_UnreachableHostIsInlined()
+    {
+        var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
+
+        // A public URL is handed to the provider as UriContent — the provider downloads it, so no
+        // bytes travel through the agent.
+        var (pub, error) = await Loader(handler).LoadAsync("https://example.com/pic.png", Opts());
+        Assert.Null(error);
+        Assert.False(pub!.Inline);
+        Assert.Equal(0, pub.Bytes);
+        Assert.Empty(handler.Urls);
+        var content = Assert.IsType<UriContent>(pub.Content);
+        Assert.Equal("https://example.com/pic.png", content.Uri.ToString());
+        Assert.Equal(ImageFormats.Png, content.MediaType);
+
+        // A host the provider can never reach is fetched here instead.
+        var (local, _) = await Loader(handler).LoadAsync("http://localhost/shot.png", Opts());
+        Assert.True(local!.Inline);
         Assert.Equal("http://localhost/shot.png", Assert.Single(handler.Urls));
     }
 
     [Fact]
-    public async Task UrlModeAuto_InlinesPublicUrls_SoABadUrlCannotKillTheTurn()
-    {
-        // Handing the URL over lets the provider fetch it; if that download fails the whole
-        // request dies with an opaque 400 and the turn is lost. Auto therefore never delegates.
-        var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
-        var (payload, error) = await Loader(handler).LoadAsync("https://example.com/pic.png", Opts());
-
-        Assert.Null(error);
-        Assert.True(payload!.Inline);
-        Assert.Equal("https://example.com/pic.png", Assert.Single(handler.Urls));
-    }
-
-    [Fact]
-    public async Task OverlongUrl_IsInlined_EvenInPassthroughMode()
+    public async Task OverlongUrl_IsInlined_EvenInAutoMode()
     {
         var handler = new StubHandler(_ => Bytes(TestImages.Png1x1));
         var (payload, _) = await Loader(handler).LoadAsync(
             "https://example.com/pic.png?token=" + new string('x', 200),
-            Opts(o => { o.UrlMode = "passthrough"; o.MaxUrlLength = 64; }));
+            Opts(o => o.MaxUrlLength = 64));
 
         Assert.True(payload!.Inline);
         Assert.Single(handler.Urls);
@@ -343,7 +354,7 @@ public class ImageLoaderTests
     public async Task Describe_MarksPassedThroughUrls()
     {
         var (payload, _) = await Loader(new StubHandler(_ => Bytes(TestImages.Png1x1)))
-            .LoadAsync("https://example.com/pic.png", Opts(o => o.UrlMode = "passthrough"));
+            .LoadAsync("https://example.com/pic.png", Opts());
 
         Assert.Contains("URL", payload!.Describe());
     }
@@ -362,4 +373,53 @@ public class ImageLoaderTests
     [InlineData("172.32.0.1", false)]
     public void IsNonPublicHost_ClassifiesHosts(string host, bool expected)
         => Assert.Equal(expected, ImageLoader.IsNonPublicHost(host));
+
+    // ── Identity (dedup key) ─────────────────────────────────────────
+
+    [Fact]
+    public async Task Key_IsTheResolvedPath_SoOneFileSpelledTwiceDedupes()
+    {
+        using var dir = new TempDir();
+        var path = dir.Write("shot.png", TestImages.Png1x1);
+
+        var (absolute, _) = await new ImageLoader().LoadAsync(path, Opts());
+        var (relative, _) = await new ImageLoader().LoadAsync("shot.png", Opts(), dir.Path);
+
+        Assert.Equal(absolute!.Key, relative!.Key);
+    }
+
+    [Fact]
+    public async Task Key_TellsTwoDifferentFilesApart()
+    {
+        using var dir = new TempDir();
+        var first = dir.Write("a.png", TestImages.Png1x1);
+        var second = dir.Write("b.png", TestImages.Png1x1);
+
+        var (a, _) = await new ImageLoader().LoadAsync(first, Opts());
+        var (b, _) = await new ImageLoader().LoadAsync(second, Opts());
+
+        Assert.NotEqual(a!.Key, b!.Key);
+    }
+
+    [Fact]
+    public async Task Key_IsTheUrl_ForAHandedOverImage()
+    {
+        var (payload, _) = await Loader(new StubHandler(_ => Bytes(TestImages.Png1x1)))
+            .LoadAsync("https://example.com/pic.png", Opts());
+
+        Assert.False(payload!.Inline);
+        Assert.Equal("https://example.com/pic.png", payload.Key);
+    }
+
+    [Fact]
+    public async Task Key_IsAContentHash_ForDataUrls()
+    {
+        var spec = "data:image/png;base64," + Convert.ToBase64String(TestImages.Png1x1);
+
+        var (payload, _) = await new ImageLoader().LoadAsync(spec, Opts());
+        var (again, _) = await new ImageLoader().LoadAsync(spec, Opts());
+
+        Assert.StartsWith("data:", payload!.Key);
+        Assert.Equal(payload.Key, again!.Key);
+    }
 }

@@ -42,6 +42,9 @@ public static class ImageTool
             Reading an image with read_file or fetch_web returns nothing useful — they are text-only
             and will refuse an image, pointing back here.
 
+            An image already attached from the user's message needs no call — look at it in the
+            conversation. Calling this again for the same picture is a no-op.
+
             The image is attached to your next message and you will see it directly, so after calling
             this tool just look, then answer. Supported formats: JPEG, PNG, GIF, WebP.
             """)]
@@ -64,11 +67,18 @@ public static class ImageTool
             if (payload is null)
                 return $"Error: {error}";
 
-            sink.Add(payload, question);
+            return sink.TryAdd(payload, question, opts, out var reason) switch
+            {
+                ImageAddResult.Added =>
+                    $"{(payload.Inline ? "The image is attached" : "The image URL is attached")} "
+                    + $"to your next message. [{payload.Describe()}]",
 
-            var imageWord = payload.Inline ? "The image is attached" : "The image URL is attached";
-            var asked = string.IsNullOrWhiteSpace(question) ? "" : $" Question: {question}";
-            return $"{imageWord} to your next message — look at it directly and answer.{asked} [{payload.Describe()}]";
+                // Already in this turn's conversation — sending it again buys nothing.
+                ImageAddResult.AlreadyAttached =>
+                    $"Already attached to this conversation — look at it directly, it is not sent again. [{payload.Describe()}]",
+
+                _ => $"Error: not attaching {payload.Spec} — {reason}."
+            };
         }
     }
 }
