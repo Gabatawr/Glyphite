@@ -18,9 +18,8 @@ public partial class BlockMemoryProvider
             var content = BuildAgentContent("agent", _agentOpts.AgentName);
 
             var agentData = MemoryBlock.Create(BlockType.agent_data, content, data: data);
-            agentData.Number = 1;
             blocks.Add(agentData);
-            await _blockStore.AppendBlocksAsync(agentId, blocks, 2);
+            await _blockStore.AppendBlocksAsync(agentId, blocks);
         }
 
         // Peek blocks are cleaned by TurnProcessor before calling BuildContextAsync

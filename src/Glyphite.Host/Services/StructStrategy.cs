@@ -67,14 +67,9 @@ internal static class StructStrategy
         // The LLM sees the complete picture for the most comprehensive summary.
         // Safe zones are preserved intact after compaction, but included in LLM input
         // so the summary covers the entire session.
+        // Group 0 is agent_data alone (GroupByTurns invariant) — the header carries no history.
+        // Everything else lives in a real turn group, so it is listed below exactly once.
         var summarizeBlocks = new List<MemoryBlock>();
-
-        // Group 0: blocks before first turn marker (excluding agent_data itself)
-        foreach (var b in turnGroups[0])
-        {
-            if (b.Type != BlockType.agent_data)
-                summarizeBlocks.Add(b);
-        }
 
         // All turn groups: compressed + to_compress + safe
         foreach (var group in compressedGroups)

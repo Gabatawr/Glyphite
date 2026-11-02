@@ -1,3 +1,4 @@
+using Glyphite.Abstractions.Models;
 using Glyphite.Host.Data;
 using Glyphite.Tests.Unit.Support;
 using Xunit;
@@ -56,10 +57,6 @@ public class SessionRepositoryTests : IDisposable
         await repo.SetAgentModelAsync(agentId, "deepseek-reasoner");
         model = await repo.GetAgentModelAsync(agentId);
         Assert.Equal("deepseek-reasoner", model);
-
-        await repo.SetNextNumberAsync(agentId, 42);
-        var nextNumber = await repo.GetNextNumberAsync(agentId);
-        Assert.Equal(42, nextNumber);
     }
 
     [Fact]
@@ -251,5 +248,41 @@ public class SessionRepositoryTests : IDisposable
         using var repo = CreateRepo();
         var model = await repo.GetAgentModelAsync("nonexistent-agent");
         Assert.Null(model);
+    }
+
+    // ── Fork ──
+
+    [Fact]
+    public async Task ForkSession_KeepsCounterInSync_AndCopiesCompressedFlag()
+    {
+        const string source = "fork-source";
+        const string clone = "fork-clone";
+
+        using var sessions = CreateRepo();
+        using var blocks = new BlockRepository(_db.ConnStr);
+
+        await sessions.EnsureSessionAsync(source, homePath: "/src");
+        var summary = MemoryBlock.AgentMessage("summary", model: "m");
+        summary.Compressed = true;
+        await blocks.AppendBlocksAsync(source, [
+            MemoryBlock.AgentData("agent", "fork-source"),
+            MemoryBlock.UserMessage("question"),
+            summary,
+            MemoryBlock.TurnMarker(),
+        ]);
+
+        await sessions.ForkSessionAsync(source, clone, "/clone");
+
+        var copied = await blocks.LoadBlocksAsync(clone);
+        Assert.Equal([1.0, 2.0, 3.0, 4.0], copied.Select(b => b.Number));
+        Assert.Contains(copied, b => b.Compressed);   // is_compressed must survive the fork
+
+        // The counter must follow the renumbered blocks, otherwise the clone's first turn
+        // reuses numbers that are already taken.
+        Assert.Equal(5, await sessions.GetNextNumberAsync(clone));
+
+        var next = MemoryBlock.UserMessage("after fork");
+        await blocks.AppendBlocksAsync(clone, [next]);
+        Assert.Equal(5, next.Number);
     }
 }

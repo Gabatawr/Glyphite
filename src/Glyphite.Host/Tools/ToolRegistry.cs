@@ -83,7 +83,7 @@ public class ToolRegistry : IToolRegistry
             WrapWithConfig(ImageTool.AsViewImageFunction(_imageLoader, _imageSink, _cfgService, _defaultDir, agentId), toolExec, ImageTool.ToolName, _tmpDir, agentId),
             WrapWithConfig(FileWriteTool.AsAIFunction(_defaultDir), toolExec, "write_file", _tmpDir, agentId),
             WrapWithConfig(FilePatchTool.AsAIFunction(_defaultDir), toolExec, "patch_file", _tmpDir, agentId),
-            WrapWithConfig(TodoTool.AsTodoFunction(_agentStore, _blockStore, agentId, _cfgService), toolExec, "todo", _tmpDir, agentId),
+            WrapWithConfig(TodoTool.AsTodoFunction(_blockStore, agentId, _cfgService), toolExec, "todo", _tmpDir, agentId),
             WrapWithConfig(WebFetchTool.AsFetchFunction(_cfgService, agentId), toolExec, "fetch_web", _tmpDir, agentId),
             WrapWithConfig(SearchTools.AsGlobFunction(_cfgService, _defaultDir, agentId, _logger), toolExec, "search_glob", _tmpDir, agentId),
             WrapWithConfig(SearchTools.AsGrepFunction(_cfgService, _defaultDir, agentId, _logger), toolExec, "search_grep", _tmpDir, agentId),

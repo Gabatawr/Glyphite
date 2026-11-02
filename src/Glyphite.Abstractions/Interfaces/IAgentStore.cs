@@ -11,8 +11,9 @@ public interface IAgentStore
     Task<string?> GetAgentModelAsync(string id);
     Task<bool> SetAgentModelAsync(string id, string model);
     Task<bool> AgentExistsAsync(string id);
+    /// <summary>Current value of the session's block counter (read-only observation — block numbers
+    /// are only ever allocated by <c>IBlockStore.AppendBlocksAsync</c>).</summary>
     Task<double> GetNextNumberAsync(string id);
-    Task SetNextNumberAsync(string id, double next);
     Task DeleteSessionAsync(string agentId);
     Task RecordLaunchAsync(string agentId, string path);
     Task<List<(string path, string lastActive)>> GetLaunchesAsync(string agentId);

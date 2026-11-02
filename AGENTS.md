@@ -173,6 +173,18 @@ user message. The sink is `Clear`ed at the start of every turn.
 
 See `BlockRepository.cs` `InitializeAsync()` for full DDL.
 
+### Block numbering
+
+`blocks.number` is the transcript's ordering key. It is assigned in **exactly one place** —
+`BlockRepository.AppendBlocksAsync` — inside the write lock and transaction, as
+`max(sessions.next_number, MAX(number)+1)`. A stale counter (after a fork, after history was
+replaced) therefore heals instead of handing the same number out twice, and soft-deleted rows still
+count as taken.
+
+Nothing else may assign `Number` to a block it appends: tools append and read `block.Number` back.
+Compaction is the only writer that deliberately renumbers history, through
+`ReplaceBlocksSinceAsync`.
+
 ## Versioning
 
 The version lives in `version.txt` (read at build/publish time). `dotnet build` in Debug

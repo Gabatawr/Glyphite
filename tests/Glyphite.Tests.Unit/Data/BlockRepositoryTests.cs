@@ -29,7 +29,7 @@ public class BlockRepositoryTests : IDisposable
             new() { Type = BlockType.agent_message, Content = "Hi there!", Number = 2, Model = "deepseek-chat" }
         };
 
-        await repo.AppendBlocksAsync(agentId, blocks, nextNumber: 3);
+        await repo.AppendBlocksAsync(agentId, blocks);
 
         var loaded = await repo.LoadBlocksAsync(agentId);
         Assert.Equal(2, loaded.Count);
@@ -50,9 +50,9 @@ public class BlockRepositoryTests : IDisposable
 
         using var repo = CreateBlockRepo();
         await repo.AppendBlocksAsync("agent-a",
-            [MemoryBlock.Create(BlockType.user_message, "Agent A msg")], nextNumber: 2);
+            [MemoryBlock.Create(BlockType.user_message, "Agent A msg")]);
         await repo.AppendBlocksAsync("agent-b",
-            [MemoryBlock.Create(BlockType.user_message, "Agent B msg")], nextNumber: 2);
+            [MemoryBlock.Create(BlockType.user_message, "Agent B msg")]);
 
         var agentABlocks = await repo.LoadBlocksAsync("agent-a");
         Assert.Single(agentABlocks);
@@ -82,7 +82,7 @@ public class BlockRepositoryTests : IDisposable
             MemoryBlock.Create(BlockType.turn, "---"),
         };
 
-        await repo.AppendBlocksAsync(agentId, blocks, nextNumber: 8);
+        await repo.AppendBlocksAsync(agentId, blocks);
 
         var loaded = await repo.LoadBlocksAsync(agentId);
         Assert.Equal(7, loaded.Count);
@@ -121,7 +121,7 @@ public class BlockRepositoryTests : IDisposable
 
         using var repo = CreateBlockRepo();
         await repo.AppendBlocksAsync(agentId,
-            [new MemoryBlock { Type = BlockType.user_message, Content = "Original content", Number = 1 }], nextNumber: 2);
+            [new MemoryBlock { Type = BlockType.user_message, Content = "Original content", Number = 1 }]);
 
         await repo.UpdateBlockContentAsync(agentId, 1, "Updated content");
 
@@ -141,11 +141,11 @@ public class BlockRepositoryTests : IDisposable
         Assert.Equal(0, await repo.GetBlockCountAsync(agentId));
 
         await repo.AppendBlocksAsync(agentId,
-            [MemoryBlock.Create(BlockType.user_message, "1")], nextNumber: 2);
+            [MemoryBlock.Create(BlockType.user_message, "1")]);
         Assert.Equal(1, await repo.GetBlockCountAsync(agentId));
 
         await repo.AppendBlocksAsync(agentId,
-            [MemoryBlock.Create(BlockType.agent_message, "2")], nextNumber: 3);
+            [MemoryBlock.Create(BlockType.agent_message, "2")]);
         Assert.Equal(2, await repo.GetBlockCountAsync(agentId));
     }
 
@@ -158,14 +158,89 @@ public class BlockRepositoryTests : IDisposable
 
         using var repo = CreateBlockRepo();
         await repo.AppendBlocksAsync(agentId,
-            [MemoryBlock.Create(BlockType.user_message, "1")], nextNumber: 2);
+            [MemoryBlock.Create(BlockType.user_message, "1")]);
         await repo.AppendBlocksAsync(agentId,
-            [MemoryBlock.Create(BlockType.agent_message, "2")], nextNumber: 3);
+            [MemoryBlock.Create(BlockType.agent_message, "2")]);
 
         Assert.Equal(2, await repo.GetBlockCountAsync(agentId));
 
         await repo.ClearAgentBlocksAsync(agentId);
         Assert.Equal(0, await repo.GetBlockCountAsync(agentId));
+    }
+
+    // ── Numbering: the block store is the only allocator ──
+
+    [Fact]
+    public async Task AppendBlocks_AssignsSequentialNumbers_AndAdvancesCounter()
+    {
+        const string agentId = "test-agent-alloc";
+        using var sessionRepo = CreateSessionRepo();
+        await sessionRepo.EnsureSessionAsync(agentId);
+
+        using var repo = CreateBlockRepo();
+        var first = new List<MemoryBlock>
+        {
+            MemoryBlock.Create(BlockType.user_message, "one"),
+            MemoryBlock.Create(BlockType.agent_message, "two"),
+        };
+        await repo.AppendBlocksAsync(agentId, first);
+
+        Assert.Equal([1.0, 2.0], first.Select(b => b.Number));
+        Assert.Equal(3, await sessionRepo.GetNextNumberAsync(agentId));
+
+        var second = new List<MemoryBlock> { MemoryBlock.Create(BlockType.user_message, "three") };
+        await repo.AppendBlocksAsync(agentId, second);
+
+        Assert.Equal(3, second[0].Number);
+        Assert.Equal(4, await sessionRepo.GetNextNumberAsync(agentId));
+    }
+
+    [Fact]
+    public async Task AppendBlocks_StaleCounter_NeverReusesAnExistingNumber()
+    {
+        const string agentId = "test-agent-stale";
+        using var sessionRepo = CreateSessionRepo();
+        await sessionRepo.EnsureSessionAsync(agentId);
+
+        using var repo = CreateBlockRepo();
+
+        // History numbered 10..11 while the session counter says 1 — the state a fork used to leave
+        // behind. Allocation must follow the blocks, not the counter.
+        var seeded = new List<MemoryBlock>
+        {
+            MemoryBlock.Create(BlockType.user_message, "old one"),
+            MemoryBlock.Create(BlockType.user_message, "old two"),
+        };
+        seeded[0].Number = 10;
+        seeded[1].Number = 11;
+        await repo.ReplaceBlocksSinceAsync(agentId, fromNumber: 0, seeded, nextNumber: 1);
+
+        var appended = MemoryBlock.Create(BlockType.agent_message, "new");
+        await repo.AppendBlocksAsync(agentId, [appended]);
+
+        Assert.Equal(12, appended.Number);
+        Assert.Equal(13, await sessionRepo.GetNextNumberAsync(agentId));
+    }
+
+    [Fact]
+    public async Task AppendBlocks_SoftDeletedNumber_IsNotReused()
+    {
+        const string agentId = "test-agent-reuse";
+        using var sessionRepo = CreateSessionRepo();
+        await sessionRepo.EnsureSessionAsync(agentId);
+
+        using var repo = CreateBlockRepo();
+        await repo.AppendBlocksAsync(agentId, [
+            MemoryBlock.Create(BlockType.user_message, "keep"),
+            MemoryBlock.Create(BlockType.user_message, "delete me"),
+        ]);
+        await repo.RemoveBlocksAsync(agentId, b => b.Content == "delete me");
+
+        var appended = MemoryBlock.Create(BlockType.agent_message, "after delete");
+        await repo.AppendBlocksAsync(agentId, [appended]);
+
+        // A removed block still owns its number: 3 is the next free one, not 2.
+        Assert.Equal(3, appended.Number);
     }
 
     [Fact]
@@ -181,7 +256,7 @@ public class BlockRepositoryTests : IDisposable
             MemoryBlock.Create(BlockType.agent_message, "world", model: "m1"),
             MemoryBlock.Create(BlockType.user_message, "again"),
             MemoryBlock.Create(BlockType.agent_reasoning, "hmm", model: "m1"),
-        ], nextNumber: 5);
+        ]);
 
         var userBlocks = await repo.LoadBlocksByTypeAsync(agentId, BlockType.user_message, null, false);
         Assert.Equal(2, userBlocks.Count);

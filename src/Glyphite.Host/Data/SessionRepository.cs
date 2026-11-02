@@ -148,16 +148,6 @@ public class SessionRepository : RepositoryBase, IAgentStore
             "SELECT next_number FROM sessions WHERE id = @id", new { id });
     }
 
-    public async Task SetNextNumberAsync(string id, double next)
-    {
-        await WithLockAsync(async () =>
-        {
-            await _conn.ExecuteAsync(
-                "UPDATE sessions SET next_number = @Next WHERE id = @Id",
-                new { Id = id, Next = next });
-        });
-    }
-
     public async Task DeleteSessionAsync(string agentId)
     {
         await WithLockAsync(async () =>
@@ -250,8 +240,8 @@ public class SessionRepository : RepositoryBase, IAgentStore
             foreach (var b in blocks)
             {
                 await _conn.ExecuteAsync("""
-                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, is_deleted)
-                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, 0)
+                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, is_deleted, is_compressed)
+                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, 0, @IsCompressed)
                     """, new
                 {
                     sid = targetId,
@@ -262,9 +252,16 @@ public class SessionRepository : RepositoryBase, IAgentStore
                     b.Content,
                     b.ToolName,
                     b.Data,
-                    b.Model
+                    b.Model,
+                    b.IsCompressed
                 });
             }
+
+            // Blocks were renumbered 1..num-1, so the counter must follow them: leaving it at 1
+            // would hand the clone's first turn numbers that are already taken.
+            await _conn.ExecuteAsync(
+                "UPDATE sessions SET next_number = @Next WHERE id = @Id",
+                new { Id = targetId, Next = num });
 
             // Copy session-scoped config
             var configs = await _conn.QueryAsync<ConfigRow>(

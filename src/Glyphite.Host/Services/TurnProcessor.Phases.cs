@@ -25,7 +25,6 @@ public partial class TurnProcessor
         List<ChatMessage> InitialMessages,
         IReadOnlyList<ImagePayload> Attachments)
     {
-        public double NextNum { get; set; }
         public FailSafeChatClient? FailSafeClient { get; set; }
         public TurnContext? Ctx { get; set; }
     }
@@ -65,9 +64,6 @@ public partial class TurnProcessor
         chatOptions.Instructions = await _instructionProvider.BuildInstructionsAsync(
             agentId, homePath, parentCwd, agentCwd);
 
-        var nextNum = await _agentStore.GetNextNumberAsync(agentId);
-        if (nextNum <= 0) nextNum = 1;
-
         var isEphemeral = chatOptions.AdditionalProperties?.TryGetValue("ephemeral", out var epVal) == true
             && string.Equals(epVal as string, "true", StringComparison.OrdinalIgnoreCase);
         var isSubagent = chatOptions.AdditionalProperties?.ContainsKey("isSubagent") == true;
@@ -91,10 +87,7 @@ public partial class TurnProcessor
 
         return (new PreparedTurn(
             agentId, input, modelStr, isEphemeral, isSubagent, chatOptions,
-            agentOpts, llmOpts, compOpts, contextMessages, initialMessages, attachments)
-        {
-            NextNum = nextNum
-        }, null);
+            agentOpts, llmOpts, compOpts, contextMessages, initialMessages, attachments), null);
     }
 
     /// <summary>
@@ -192,9 +185,8 @@ public partial class TurnProcessor
 
                 if (compacted)
                 {
-                    var compactBlock = MemoryBlock.AutoTool("compression", compactArgs, "", prep.ModelStr);
-                    compactBlock.Number = prep.NextNum++;
-                    await _blockStore.AppendBlocksAsync(prep.AgentId, [compactBlock], prep.NextNum);
+                    await _blockStore.AppendBlocksAsync(prep.AgentId,
+                        [MemoryBlock.AutoTool("compression", compactArgs, "", prep.ModelStr)]);
                 }
             }
         }
@@ -297,8 +289,7 @@ public partial class TurnProcessor
         var userBlock = prep.IsSubagent
             ? MemoryBlock.AgentTask(storedInput)
             : MemoryBlock.UserMessage(storedInput);
-        userBlock.Number = prep.NextNum++;
-        await _blockStore.AppendBlocksAsync(prep.AgentId, [userBlock], prep.NextNum);
+        await _blockStore.AppendBlocksAsync(prep.AgentId, [userBlock]);
 
         // write_file results are re-read from disk in the streaming pipeline — carry the same
         // MaxSize limit that ToolConfigDecorator applies, so the re-read content can't blow up context.
@@ -309,7 +300,7 @@ public partial class TurnProcessor
 
         var ctx = new TurnContext(
             _blockStore, _agentStore, _logger,
-            prep.AgentId, prep.ModelStr, prep.NextNum,
+            prep.AgentId, prep.ModelStr,
             failSafeClient, writeFileMaxSize);
         prep.FailSafeClient = failSafeClient;
         prep.Ctx = ctx;
@@ -350,8 +341,7 @@ public partial class TurnProcessor
         var usage = SnapshotFrom(client);
         var turnBlock = MemoryBlock.TurnMarker(
             JsonSerializer.Serialize(new { hit = usage.TotalHit, miss = usage.TotalMiss, out_ = usage.TotalOutput }));
-        turnBlock.Number = ctx.NextNum++;
-        await _blockStore.AppendBlocksAsync(prep.AgentId, [turnBlock], ctx.NextNum);
+        await _blockStore.AppendBlocksAsync(prep.AgentId, [turnBlock]);
 
         yield return new TurnCompleteEvent();
     }

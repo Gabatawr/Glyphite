@@ -25,7 +25,7 @@ public class TodoToolTests : IDisposable
     private async Task<string> Execute(string action, string? title = null, params TodoItem[] items)
     {
         await _db.Sessions.EnsureSessionAsync(AgentId);
-        return await TodoTool.Execute(action, title, items, _db.Sessions, _db.Blocks, AgentId, Opts);
+        return await TodoTool.Execute(action, title, items, _db.Blocks, AgentId, Opts);
     }
 
     private async Task<List<Dictionary<string, object?>>> GetItemsAsync(string title)

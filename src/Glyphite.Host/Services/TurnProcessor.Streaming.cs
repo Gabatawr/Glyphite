@@ -25,7 +25,6 @@ internal sealed class TurnContext
 
     public string SessionId { get; }
     public string ModelStr { get; }
-    public double NextNum { get; set; }
     public StringBuilder ReasoningAccum { get; } = new();
     public StringBuilder TextAccum { get; } = new();
     public Dictionary<string, (string name, string args, bool isPeek, double blockNumber)> PendingToolCalls { get; } = new();
@@ -44,7 +43,6 @@ internal sealed class TurnContext
         ILogger logger,
         string sessionId,
         string modelStr,
-        double nextNum,
         FailSafeChatClient failSafeClient,
         int writeFileMaxSize = ToolExecutionDefaults.ContentMaxSize)
     {
@@ -53,7 +51,6 @@ internal sealed class TurnContext
         _logger = logger;
         SessionId = sessionId;
         ModelStr = modelStr;
-        NextNum = nextNum;
         FailSafeClient = failSafeClient;
         _writeFileMaxSize = writeFileMaxSize;
     }
@@ -92,8 +89,7 @@ internal sealed class TurnContext
             var callBlock = MemoryBlock.ToolCall(fcc.Name, args, model: ModelStr);
             if (isPeek)
                 callBlock.Data = new() { ["peek"] = true };
-            callBlock.Number = NextNum++;
-            await _blockStore.AppendBlocksAsync(SessionId, [callBlock], NextNum);
+            await _blockStore.AppendBlocksAsync(SessionId, [callBlock]);
 
             var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
             PendingToolCalls[callId] = (fcc.Name, args, isPeek, callBlock.Number);
@@ -170,9 +166,8 @@ internal sealed class TurnContext
             else
             {
                 var block = MemoryBlock.ToolCall("unknown", output, model: ModelStr);
-                block.Number = NextNum++;
                 block.ToolResult = output;
-                await _blockStore.AppendBlocksAsync(SessionId, [block], NextNum);
+                await _blockStore.AppendBlocksAsync(SessionId, [block]);
             }
         }
 
@@ -184,9 +179,8 @@ internal sealed class TurnContext
         if (ReasoningAccum.Length == 0) return;
         var fullReasoning = ReasoningAccum.ToString();
         ReasoningAccum.Clear();
-        var block = MemoryBlock.AgentReasoning(fullReasoning, model: ModelStr);
-        block.Number = NextNum++;
-        await _blockStore.AppendBlocksAsync(SessionId, [block], NextNum);
+        await _blockStore.AppendBlocksAsync(SessionId,
+            [MemoryBlock.AgentReasoning(fullReasoning, model: ModelStr)]);
     }
 
     public async Task FlushText()
@@ -194,9 +188,8 @@ internal sealed class TurnContext
         if (TextAccum.Length == 0) return;
         var fullText = TextAccum.ToString();
         TextAccum.Clear();
-        var block = MemoryBlock.AgentMessage(fullText, model: ModelStr);
-        block.Number = NextNum++;
-        await _blockStore.AppendBlocksAsync(SessionId, [block], NextNum);
+        await _blockStore.AppendBlocksAsync(SessionId,
+            [MemoryBlock.AgentMessage(fullText, model: ModelStr)]);
     }
 
     public async Task FlushAll()

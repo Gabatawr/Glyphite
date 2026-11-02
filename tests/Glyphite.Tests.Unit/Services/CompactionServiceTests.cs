@@ -95,22 +95,112 @@ public class CompactionServiceTests : IDisposable
     // ── GroupByTurns ──
 
     [Fact]
-    public void GroupByTurns_AgentDataGroup_ThenTurnGroups()
+    public void GroupByTurns_ProductionShape_AgentDataIsOwnLeadingGroup()
     {
+        // Exactly what TurnProcessor writes: agent_data, then the first turn WITHOUT a leading
+        // turn marker. The first turn must be its own group — not absorbed by the agent_data header.
         var blocks = new List<MemoryBlock>
         {
             WithNumber(MemoryBlock.AgentData("k", "v"), 1),
-            WithNumber(MemoryBlock.TurnMarker(), 2),
-            WithNumber(MemoryBlock.UserMessage("q1"), 3),
-            WithNumber(MemoryBlock.AgentMessage("a1"), 4),
-            WithNumber(MemoryBlock.TurnMarker(), 5),
+            WithNumber(MemoryBlock.UserMessage("q0"), 2),
+            WithNumber(MemoryBlock.AgentMessage("a0"), 3),
+            WithNumber(MemoryBlock.TurnMarker(), 4),
+            WithNumber(MemoryBlock.UserMessage("q1"), 5),
+            WithNumber(MemoryBlock.AgentMessage("a1"), 6),
+            WithNumber(MemoryBlock.TurnMarker(), 7),
+        };
+
+        var groups = CompactionService.GroupByTurns(blocks);
+
+        Assert.Equal(3, groups.Count);
+        Assert.All(groups[0], b => Assert.Equal(BlockType.agent_data, b.Type));
+        Assert.Equal([BlockType.user_message, BlockType.agent_message, BlockType.turn],
+            groups[1].Select(b => b.Type));
+        Assert.Equal("q0", groups[1][0].Content);
+        Assert.Equal("q1", groups[2][0].Content);
+    }
+
+    [Fact]
+    public void GroupByTurns_NoAgentData_FirstTurnIsItsOwnGroup()
+    {
+        var blocks = new List<MemoryBlock>
+        {
+            WithNumber(MemoryBlock.UserMessage("q0"), 1),
+            WithNumber(MemoryBlock.AgentMessage("a0"), 2),
+            WithNumber(MemoryBlock.TurnMarker(), 3),
+            WithNumber(MemoryBlock.UserMessage("q1"), 4),
+            WithNumber(MemoryBlock.AgentMessage("a1"), 5),
+            WithNumber(MemoryBlock.TurnMarker(), 6),
         };
 
         var groups = CompactionService.GroupByTurns(blocks);
 
         Assert.Equal(2, groups.Count);
-        Assert.Equal(BlockType.agent_data, groups[0][0].Type);
-        Assert.Equal(BlockType.user_message, groups[1][0].Type);
+        Assert.Equal("q0", groups[0][0].Content);
+        Assert.Equal("q1", groups[1][0].Content);
+    }
+
+    [Fact]
+    public void GroupByTurns_TrailingTurnWithoutMarker_KeptAsGroup()
+    {
+        // A turn that never completed (crash, Escape before FinalizeAsync) has no turn marker.
+        var blocks = new List<MemoryBlock>
+        {
+            WithNumber(MemoryBlock.AgentData("k", "v"), 1),
+            WithNumber(MemoryBlock.TurnMarker(), 2),
+            WithNumber(MemoryBlock.UserMessage("q-open"), 3),
+            WithNumber(MemoryBlock.AgentMessage("a-open"), 4),
+        };
+
+        var groups = CompactionService.GroupByTurns(blocks);
+
+        Assert.Equal(3, groups.Count);
+        Assert.Equal("q-open", groups[^1][0].Content);
+    }
+
+    // ── ClassifyZones ──
+
+    [Fact]
+    public void ClassifyZones_ProductionShape_KeepsTwoNewestAndCompressesTheRest()
+    {
+        var blocks = new List<MemoryBlock>
+        {
+            WithNumber(MemoryBlock.AgentData("k", "v"), 1),
+            WithNumber(MemoryBlock.UserMessage("q0"), 2),
+            WithNumber(MemoryBlock.TurnMarker(), 3),
+            WithNumber(MemoryBlock.UserMessage("q1"), 4),
+            WithNumber(MemoryBlock.TurnMarker(), 5),
+            WithNumber(MemoryBlock.UserMessage("q2"), 6),
+            WithNumber(MemoryBlock.TurnMarker(), 7),
+        };
+
+        var zones = CompactionService.ClassifyZones(CompactionService.GroupByTurns(blocks), threshold: 100_000);
+
+        Assert.Equal(2, zones.SafeGroups.Count);
+        Assert.Single(zones.ToCompressGroups);
+        Assert.Equal("q0", zones.ToCompressGroups[0][0].Content); // the FIRST turn is compressible
+    }
+
+    [Fact]
+    public void ClassifyZones_HistoryWithoutAgentData_ClassifiesTheOldestGroup()
+    {
+        // Regression: index 0 used to be skipped blind, so a history without agent_data
+        // never had its oldest turn classified — and compaction then dropped it.
+        var blocks = new List<MemoryBlock>
+        {
+            WithNumber(MemoryBlock.UserMessage("q0"), 1),
+            WithNumber(MemoryBlock.TurnMarker(), 2),
+            WithNumber(MemoryBlock.UserMessage("q1"), 3),
+            WithNumber(MemoryBlock.TurnMarker(), 4),
+            WithNumber(MemoryBlock.UserMessage("q2"), 5),
+            WithNumber(MemoryBlock.TurnMarker(), 6),
+        };
+
+        var zones = CompactionService.ClassifyZones(CompactionService.GroupByTurns(blocks), threshold: 100_000);
+
+        Assert.Equal(2, zones.SafeGroups.Count);
+        Assert.Single(zones.ToCompressGroups);
+        Assert.Equal("q0", zones.ToCompressGroups[0][0].Content);
     }
 
     // ── Fibo strategy ──
@@ -133,8 +223,13 @@ public class CompactionServiceTests : IDisposable
         Assert.Equal(9, after.Count);
         Assert.Contains(after, b => b.Type == BlockType.agent_message && b.Content == "SUMMARY" && b.Compressed);
         Assert.DoesNotContain(after, b => b.Content == "answer 0"); // summarized away
+        // ...and covered by the summary: the summarizer received the whole first turn.
+        var promptText = string.Concat(_chat.ReceivedMessages.SelectMany(m => m.Select(x => x.Text ?? "")));
+        Assert.Contains("question 0", promptText);
+        Assert.Contains("answer 0", promptText);
         Assert.Contains(after, b => b.Content == "answer 1");
         Assert.Contains(after, b => b.Content == "answer 2");
+        AssertUniqueNumbers(after);
     }
 
     [Fact]
@@ -152,9 +247,11 @@ public class CompactionServiceTests : IDisposable
         Assert.True(result);
         var after = await _db.Blocks.LoadBlocksAsync(agentId);
         Assert.Equal(10, after.Count); // nothing lost
+        Assert.Contains(after, b => b.Content == "question 0");
         Assert.Contains(after, b => b.Content == "answer 0");
         Assert.Contains(after, b => b.Content == "answer 1");
         Assert.Contains(after, b => b.Content == "answer 2");
+        AssertUniqueNumbers(after);
     }
 
     // ── Struct strategy ──
@@ -177,7 +274,11 @@ public class CompactionServiceTests : IDisposable
         Assert.Equal(9, after.Count);
         Assert.Contains(after, b => b.Content == "STRUCT SUMMARY" && b.Compressed);
         Assert.DoesNotContain(after, b => b.Content == "answer 0");
+        // Struct feeds the whole history to the summarizer, so the first turn is covered too.
+        var promptText = string.Concat(_chat.ReceivedMessages.SelectMany(m => m.Select(x => x.Text ?? "")));
+        Assert.Contains("question 0", promptText);
         Assert.Contains(after, b => b.Content == "answer 1");
+        AssertUniqueNumbers(after);
     }
 
     [Fact]
@@ -195,8 +296,14 @@ public class CompactionServiceTests : IDisposable
         Assert.True(result);
         var after = await _db.Blocks.LoadBlocksAsync(agentId);
         Assert.Equal(10, after.Count); // nothing lost: agent_data + all 3 turns intact
+        Assert.Contains(after, b => b.Content == "question 0");
         Assert.Contains(after, b => b.Content == "answer 0");
         Assert.Contains(after, b => b.Content == "answer 1");
         Assert.Contains(after, b => b.Content == "answer 2");
+        AssertUniqueNumbers(after);
     }
+
+    /// <summary>Numbers are the ordering key for the whole transcript — duplicates break it.</summary>
+    private static void AssertUniqueNumbers(List<MemoryBlock> blocks)
+        => Assert.Equal(blocks.Count, blocks.Select(b => b.Number).Distinct().Count());
 }

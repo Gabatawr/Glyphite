@@ -269,6 +269,10 @@ public class TurnProcessorTests : IDisposable
         Assert.Contains(blocks, b => b.Type == BlockType.auto_tool && b.ToolName == "compression");
         Assert.Contains(blocks, b => b.Type == BlockType.agent_message && b.Content == "SUMMARY" && b.Compressed);
         Assert.DoesNotContain(blocks, b => b.Content == "answer 0"); // old turn compacted
+
+        // Replacing history mid-turn must not punch a hole in the numbering: the auto_tool block
+        // and the turn's own blocks continue from where the compaction left off.
+        Assert.Equal(Enumerable.Range(1, blocks.Count).Select(i => (double)i), blocks.Select(b => b.Number));
     }
 // ── Reasoning compression ──
 
@@ -284,7 +288,7 @@ public class TurnProcessorTests : IDisposable
         });
         var reasoningBlock = MemoryBlock.AgentReasoning(new string('x', 500));
         reasoningBlock.Number = 1;
-        await _db.Blocks.AppendBlocksAsync(AgentId, [reasoningBlock], nextNumber: 2);
+        await _db.Blocks.AppendBlocksAsync(AgentId, [reasoningBlock]);
         _chat.QueueResponse(new ChatResponse([new ChatMessage(ChatRole.Assistant, "SHORT")]));
         _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("hi")])]);
 

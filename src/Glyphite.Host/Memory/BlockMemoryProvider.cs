@@ -77,11 +77,7 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
 
     public async Task StoreErrorAsync(string agentId, string error)
     {
-        var nextNum = await _agentStore.GetNextNumberAsync(agentId);
-        if (nextNum <= 0) nextNum = 1;
-        var block = MemoryBlock.SystemError(error);
-        block.Number = nextNum;
-        await _blockStore.AppendBlocksAsync(agentId, [block], nextNum + 1);
+        await _blockStore.AppendBlocksAsync(agentId, [MemoryBlock.SystemError(error)]);
     }
 
     public async Task<(long Hit, long Miss, long Output)> GetUsageAsync(string agentId)
@@ -127,9 +123,8 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
         if (state.Blocks.Count == 0)
         {
             var agentData = MemoryBlock.AgentData("agent", _agentOpts.AgentName);
-            agentData.Number = state.NextNumber++;
+            await _blockStore.AppendBlocksAsync(state.Id, [agentData]);
             state.Blocks.Add(agentData);
-            await _blockStore.AppendBlocksAsync(state.Id, state.Blocks, state.NextNumber);
         }
 
         var messages = state.Blocks.Select(b =>

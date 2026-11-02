@@ -227,8 +227,11 @@ public class CompactionService
     }
 
     /// <summary>
-    /// Group blocks into turns. The first group contains agent_data alone.
-    /// Each subsequent group starts at a user_message/agent_task or turn marker and ends at the next turn marker or end.
+    /// Group blocks into turns. The agent_data block is always its own leading group — it is the
+    /// session header, not a turn, and must never absorb the first turn's blocks (that turn then
+    /// falls outside every zone and gets dropped on compaction).
+    /// Each subsequent group starts at a user_message/agent_task or turn marker, ends at the next
+    /// turn marker (a trailing group without one is a turn that never completed — kept as-is).
     /// </summary>
     public static List<List<MemoryBlock>> GroupByTurns(List<MemoryBlock> blocks)
     {
@@ -242,7 +245,8 @@ public class CompactionService
             {
                 if (current.Count > 0)
                     groups.Add(current);
-                current = new List<MemoryBlock> { block };
+                groups.Add(new List<MemoryBlock> { block });
+                current = new List<MemoryBlock>();
             }
             else if (block.Type == BlockType.turn)
             {
@@ -261,6 +265,10 @@ public class CompactionService
 
         return groups;
     }
+
+    /// <summary>True when a group holds nothing but agent_data — the session header, never a turn.</summary>
+    public static bool IsAgentDataOnly(List<MemoryBlock> group)
+        => group.Count > 0 && group.All(b => b.Type == BlockType.agent_data);
 
     /// <summary>Find the agent_data block. Returns null and logs warning if not found.</summary>
     public static MemoryBlock? FindAgentDataBlock(List<MemoryBlock> blocks, string agentId, ILogger logger)
@@ -296,16 +304,24 @@ public class CompactionService
         var compressedGroups = new List<List<MemoryBlock>>();
         var toCompressGroups = new List<List<MemoryBlock>>();
 
-        for (var i = turnGroups.Count - 1; i >= 1; i--)
+        var rankFromNewest = 0;
+        for (var i = turnGroups.Count - 1; i >= 0; i--)
         {
             var group = turnGroups[i];
-            var rankFromNewest = turnGroups.Count - 1 - i;
+
+            // The agent_data header is not a turn — but decide by content, not by index, so a
+            // history without agent_data (or with a turn before it) can't hide a turn from zones.
+            if (IsAgentDataOnly(group))
+                continue;
+
             if (rankFromNewest < 2)
                 safeGroups.Add(group);
             else if (group.Any(b => b.Compressed))
                 compressedGroups.Add(group);
             else
                 toCompressGroups.Add(group);
+
+            rankFromNewest++;
         }
 
         safeGroups.Reverse();

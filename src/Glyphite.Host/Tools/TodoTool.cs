@@ -23,7 +23,6 @@ public static class TodoTool
         string action,
         string? title,
         TodoItem[]? items,
-        IAgentStore agentStore,
         IBlockStore blockStore,
         string agentId,
         TodoOptions opts)
@@ -31,9 +30,9 @@ public static class TodoTool
         switch (action)
         {
             case "create":
-                return await Create(title, items, agentStore, blockStore, agentId, opts);
+                return await Create(title, items, blockStore, agentId, opts);
             case "update":
-                return await Update(title, items, agentStore, blockStore, agentId, opts);
+                return await Update(title, items, blockStore, agentId, opts);
             case "list":
                 return await List(title, blockStore, agentId);
             default:
@@ -44,14 +43,11 @@ public static class TodoTool
     private static async Task<string> Create(
         string? title,
         TodoItem[]? items,
-        IAgentStore agentStore,
         IBlockStore blockStore,
         string agentId,
         TodoOptions opts)
     {
         title ??= "Todo";
-        var nextNumber = await agentStore.GetNextNumberAsync(agentId);
-        await agentStore.SetNextNumberAsync(agentId, nextNumber + 1);
 
         items ??= [];
 
@@ -64,9 +60,8 @@ public static class TodoTool
 
         var data = new Dictionary<string, object> { ["items"] = dictItems };
         var block = MemoryBlock.Create(BlockType.todo, title, toolName: "todo", data: data);
-        block.Number = nextNumber;
 
-        await blockStore.AppendBlocksAsync(agentId, [block], nextNumber + 1);
+        await blockStore.AppendBlocksAsync(agentId, [block]);
 
         return title + "\n" + FormatItems(dictItems);
     }
@@ -74,7 +69,6 @@ public static class TodoTool
     private static async Task<string> Update(
         string? title,
         TodoItem[]? items,
-        IAgentStore agentStore,
         IBlockStore blockStore,
         string agentId,
         TodoOptions opts)
@@ -275,7 +269,7 @@ public static class TodoTool
         return sb.ToString().TrimEnd('\n', '\r');
     }
 
-    private sealed class TodoInvoker(IAgentStore agentStore, IBlockStore blockStore, string agentId, IConfigService cfg)
+    private sealed class TodoInvoker(IBlockStore blockStore, string agentId, IConfigService cfg)
     {
         [Description("Create, update, or list a todo list to plan and track task progress. Each todo list is identified by its title (ID). 'create' makes a new list; 'update' modifies a specific list by title; 'list' shows a list by title (or all lists if title omitted). Statuses: pending, in_progress, done, cancelled, blocked. Priority: low, medium, high.")]
         public async Task<string> Invoke(
@@ -284,12 +278,12 @@ public static class TodoTool
             [Description("Items for the todo. For create: {text: string, status?: string, priority?: string}. For update: {index?: number, text?: string, status?: string, priority?: string, remove?: boolean}. Items without index are added; items with index are updated; items with remove=true are deleted. Not needed for 'list'.")] TodoItem[]? items = null)
         {
             var opts = await cfg.GetOptionsAsync<TodoOptions>(TodoOptions.Section, agentId);
-            return await Execute(action, title, items, agentStore, blockStore, agentId, opts);
+            return await Execute(action, title, items, blockStore, agentId, opts);
         }
     }
 
-    public static AIFunction AsTodoFunction(IAgentStore agentStore, IBlockStore blockStore, string agentId, IConfigService cfg)
+    public static AIFunction AsTodoFunction(IBlockStore blockStore, string agentId, IConfigService cfg)
         => AIFunctionFactory.Create(
-            new TodoInvoker(agentStore, blockStore, agentId, cfg).Invoke,
+            new TodoInvoker(blockStore, agentId, cfg).Invoke,
             "todo");
 }

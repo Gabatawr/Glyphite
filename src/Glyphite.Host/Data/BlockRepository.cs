@@ -146,21 +146,43 @@ public class BlockRepository : RepositoryBase, IBlockStore
 
     // ── Write ──
 
-    public async Task AppendBlocksAsync(string agentId, List<MemoryBlock> newBlocks, double nextNumber)
+    public async Task AppendBlocksAsync(string agentId, List<MemoryBlock> newBlocks)
     {
+        if (newBlocks.Count == 0) return;
+
         await WithLockAsync(async () =>
         {
             await using var tx = await _conn.BeginTransactionAsync();
+            var next = await NextFreeNumberAsync(agentId);
+
             foreach (var block in newBlocks)
             {
+                block.Number = next++;
                 block.UpdatedAt = DateTime.UtcNow;
                 await _conn.ExecuteAsync(SqlInsertBlock, MapFromBlock(agentId, block));
             }
+
             await _conn.ExecuteAsync(
                 "UPDATE sessions SET next_number = @Next WHERE id = @Id",
-                new { Id = agentId, Next = nextNumber });
+                new { Id = agentId, Next = next });
             await tx.CommitAsync();
         });
+    }
+
+    /// <summary>
+    /// First block number that is free for the agent: the larger of the session counter and
+    /// MAX(number)+1. Soft-deleted rows count as taken, so a number is never handed out twice — not
+    /// even after a fork that left the counter behind, or after history was replaced.
+    /// </summary>
+    private async Task<double> NextFreeNumberAsync(string agentId)
+    {
+        var next = await _conn.QueryFirstOrDefaultAsync<double?>("""
+            SELECT MAX(
+                     COALESCE((SELECT next_number FROM sessions WHERE id = @sid), 1),
+                     COALESCE((SELECT MAX(number) + 1 FROM blocks WHERE agent_id = @sid), 1))
+            """, new { sid = agentId });
+
+        return next is > 0 ? next.Value : 1;
     }
 
     public async Task UpdateBlockAsync(string agentId, double number, string? content = null, Dictionary<string, object>? data = null, string? model = null)

@@ -32,8 +32,7 @@ public class BlockMemoryProviderTests
         await _agents.Received(1).EnsureSessionAsync(AgentId);
         await _blocks.Received(1).AppendBlocksAsync(
             AgentId,
-            Arg.Is<List<MemoryBlock>>(l => l.Count == 1 && l[0].Type == BlockType.agent_data && l[0].Number == 1),
-            2);
+            Arg.Is<List<MemoryBlock>>(l => l.Count == 1 && l[0].Type == BlockType.agent_data));
     }
 
     [Fact]
@@ -53,7 +52,7 @@ public class BlockMemoryProviderTests
         Assert.Contains("question", text);
         Assert.Contains("answer", text);
         Assert.DoesNotContain("auto content", text);
-        await _blocks.DidNotReceive().AppendBlocksAsync(Arg.Any<string>(), Arg.Any<List<MemoryBlock>>(), Arg.Any<double>());
+        await _blocks.DidNotReceive().AppendBlocksAsync(Arg.Any<string>(), Arg.Any<List<MemoryBlock>>());
     }
 
     [Fact]
@@ -99,14 +98,11 @@ public class BlockMemoryProviderTests
     [Fact]
     public async Task StoreError_AppendsSystemErrorBlock()
     {
-        _agents.GetNextNumberAsync(AgentId).Returns(7);
-
         await CreateProvider().StoreErrorAsync(AgentId, "boom");
 
         await _blocks.Received(1).AppendBlocksAsync(
             AgentId,
-            Arg.Is<List<MemoryBlock>>(l => l.Count == 1 && l[0].Type == BlockType.system_error && l[0].Number == 7 && l[0].Content == "boom"),
-            8);
+            Arg.Is<List<MemoryBlock>>(l => l.Count == 1 && l[0].Type == BlockType.system_error && l[0].Content == "boom"));
     }
 
     private static MemoryBlock Block(BlockType type, double number, string content)
