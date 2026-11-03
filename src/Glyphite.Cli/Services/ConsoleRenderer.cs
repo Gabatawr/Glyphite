@@ -328,7 +328,7 @@ public class ConsoleRenderer
         : count.ToString();
 
     public void RenderStats(int totalBlocks, Dictionary<string, int> typeStats, string? model,
-        long cumHit, long cumMiss, long cumOutput, double totalCost)
+        long cumHit, long cumMiss, long cumOutput, long cumReasoning, double totalCost, double reasoningCost)
     {
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("── Stats ──────────────────────────────");
@@ -356,10 +356,24 @@ public class ConsoleRenderer
         if (cumHit + cumMiss + cumOutput > 0)
         {
             Console.WriteLine($"  Input:     {FormatTokenCount(cumHit + cumMiss)}");
-            Console.WriteLine($"  Output:    {FormatTokenCount(cumOutput)}");
-            var cumRate = (int)(cumHit * 100.0 / (cumHit + cumMiss + cumOutput));
+            // Output is the billed completion count and already includes reasoning: show the split
+            // instead of adding it up, so the number cannot be mistaken for "how much text exists".
+            if (cumReasoning > 0)
+            {
+                var share = (int)(cumReasoning * 100.0 / Math.Max(1, cumOutput));
+                Console.WriteLine($"  Output:    {FormatTokenCount(cumOutput)} (reasoning {FormatTokenCount(cumReasoning)}, {share}%)");
+            }
+            else
+            {
+                Console.WriteLine($"  Output:    {FormatTokenCount(cumOutput)}");
+            }
+
+            var promptTokens = cumHit + cumMiss;
+            var cumRate = promptTokens > 0 ? (int)(cumHit * 100.0 / promptTokens) : 0;
             Console.WriteLine($"  Cache:     {FormatTokenCount(cumHit)} hit / {FormatTokenCount(cumMiss)} miss ({cumRate}%)");
             var costStr = totalCost > 0 ? $"${totalCost / 1_000_000.0:F2}" : "$?";
+            if (reasoningCost > 0 && totalCost > 0)
+                costStr += $" (reasoning ${reasoningCost / 1_000_000.0:F2})";
             Console.WriteLine($"  Cost:      {costStr}");
         }
 

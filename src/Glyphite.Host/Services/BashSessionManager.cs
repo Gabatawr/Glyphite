@@ -243,24 +243,72 @@ public class BashSessionManager : IBashSessionManager, IDisposable
     private readonly ILogger _logger;
     private readonly BashOptions _opts;
     private readonly string? _defaultDirectory;
+    private readonly IAgentStore? _agentStore;
     private static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
     private long _taskSeq;
 
-    public BashSessionManager(IConfigService cfgService, BashOptions opts, ILogger<BashSessionManager> logger, string? defaultDirectory = null)
+    public BashSessionManager(
+        IConfigService cfgService, BashOptions opts, ILogger<BashSessionManager> logger,
+        string? defaultDirectory = null, IAgentStore? agentStore = null)
     {
         _cfgService = cfgService;
         _logger = logger;
         _opts = opts;
         _defaultDirectory = defaultDirectory;
+        _agentStore = agentStore;
+    }
+
+    /// <summary>
+    /// Directory a fresh shell starts in: the agent's own <c>Bash:DefaultDirectory</c>, else the
+    /// agent's home (for a subagent that is the <c>cwd</c> it was created with), else the process
+    /// default. Per-agent options matter here: the config of the directory a subagent was created in
+    /// is its own config, and it must not be ignored just because the process started elsewhere.
+    /// </summary>
+    private async Task<string?> ResolveStartDirectoryAsync(string agentId, BashOptions opts)
+    {
+        if (!string.IsNullOrEmpty(opts.DefaultDirectory))
+            return opts.DefaultDirectory;
+
+        if (_agentStore is not null)
+        {
+            try
+            {
+                var home = await _agentStore.GetAgentHomePathAsync(agentId);
+                if (!string.IsNullOrEmpty(home) && Directory.Exists(home))
+                    return home;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not resolve home directory for agent '{AgentId}'", agentId);
+            }
+        }
+
+        return _defaultDirectory;
+    }
+
+    public async Task<string> GetStartDirectoryAsync(string agentId, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var opts = await _cfgService.GetOptionsAsync<BashOptions>(BashOptions.Section, agentId);
+        return await ResolveStartDirectoryAsync(agentId, opts) ?? Directory.GetCurrentDirectory();
     }
 
     public async Task<string> ExecuteAsync(string agentId, string command, string? workdir = null, int? timeoutMs = null, CancellationToken ct = default)
     {
         CleanupIdleSessions();
 
-        // Load fresh BashOptions for new sessions — IOptions<T> singleton may be stale
-        var freshOpts = await _cfgService.GetOptionsAsync<BashOptions>(BashOptions.Section);
-        var lazy = _sessions.GetOrAdd(agentId, _ => new Lazy<BashSession>(() => BashSession.Start(freshOpts, _logger, _defaultDirectory)));
+        // Resolve options and the start directory only when a session is actually created: the
+        // session is long-lived and carries its shell's cwd for its whole lifetime. Options are
+        // loaded per agent — IOptions<T> is a startup snapshot, and a per-agent override
+        // (Bash:DefaultDirectory, Bash:ExecutablePath) was previously invisible here.
+        if (!_sessions.TryGetValue(agentId, out var lazy))
+        {
+            var freshOpts = await _cfgService.GetOptionsAsync<BashOptions>(BashOptions.Section, agentId);
+            var startDir = await ResolveStartDirectoryAsync(agentId, freshOpts);
+            lazy = _sessions.GetOrAdd(agentId,
+                _ => new Lazy<BashSession>(() => BashSession.Start(freshOpts, _logger, startDir)));
+        }
         BashSession session;
         try
         {
@@ -315,11 +363,19 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
     // ── Background processes ──
 
-    public string StartBackgroundAsync(string agentId, string command, string? workdir = null, int? timeoutMs = null, CancellationToken ct = default)
+    public async Task<string> StartBackgroundAsync(string agentId, string command, string? workdir = null, int? timeoutMs = null, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+
+        // Same per-agent view as the foreground session: a subagent's background command starts in
+        // the subagent's directory, and Bash:ExecutablePath comes from the agent's config rather than
+        // from the startup snapshot.
+        var freshOpts = await _cfgService.GetOptionsAsync<BashOptions>(BashOptions.Section, agentId);
+        var startDir = await ResolveStartDirectoryAsync(agentId, freshOpts);
+        var executable = !string.IsNullOrEmpty(freshOpts.ExecutablePath) ? freshOpts.ExecutablePath : _opts.ExecutablePath;
+
         var taskId = $"bg_{Interlocked.Increment(ref _taskSeq)}_{Guid.NewGuid().ToString("N")[..8]}";
-        var entry = new BackgroundProcessEntry(agentId, command, workdir, timeoutMs ?? 120_000, _opts.ExecutablePath, _logger);
+        var entry = new BackgroundProcessEntry(agentId, command, workdir, startDir, timeoutMs ?? 120_000, executable, _logger);
         _background[taskId] = entry;
         entry.Start();
         _logger.LogDebug("Background process '{TaskId}' started for agent '{AgentId}': {Command}", taskId, agentId, command);
@@ -409,6 +465,7 @@ public class BashSessionManager : IBashSessionManager, IDisposable
         public string Command => _command;
         private readonly string _command;
         private readonly string? _workdir;
+        private readonly string? _startDirectory;
         private readonly int _timeoutMs;
         private readonly string _executablePath;
         private readonly ILogger _logger;
@@ -432,11 +489,12 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
         public record struct ProcessStatus(bool Exited, int? ExitCode);
 
-        public BackgroundProcessEntry(string agentId, string command, string? workdir, int timeoutMs, string executablePath, ILogger logger)
+        public BackgroundProcessEntry(string agentId, string command, string? workdir, string? startDirectory, int timeoutMs, string executablePath, ILogger logger)
         {
             AgentId = agentId;
             _command = command;
             _workdir = workdir;
+            _startDirectory = startDirectory;
             _timeoutMs = timeoutMs;
             _executablePath = executablePath;
             _logger = logger;
@@ -461,6 +519,8 @@ public class BashSessionManager : IBashSessionManager, IDisposable
 
             if (!string.IsNullOrEmpty(_workdir))
                 psi.WorkingDirectory = _workdir;
+            else if (!string.IsNullOrEmpty(_startDirectory))
+                psi.WorkingDirectory = _startDirectory;
 
 #if NET
             psi.ArgumentList.Add("-c");

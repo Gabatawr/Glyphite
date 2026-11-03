@@ -88,7 +88,7 @@ public static class HostServiceCollectionExtensions
             var defaultDir = !string.IsNullOrEmpty(bashOpts.DefaultDirectory)
                 ? Path.GetFullPath(bashOpts.DefaultDirectory)
                 : Directory.GetCurrentDirectory();
-            return new BashSessionManager(cfgService, bashOpts, logger, defaultDir);
+            return new BashSessionManager(cfgService, bashOpts, logger, defaultDir, sp.GetRequiredService<IAgentStore>());
         });
 
         services.AddSingleton<IConfigService>(sp =>

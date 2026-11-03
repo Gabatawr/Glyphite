@@ -41,6 +41,17 @@ public class WebFetchOptions
     public const string Section = "WebFetch";
     public string UserAgent { get; set; } = string.Empty;
     public string DefaultFormat { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Ceiling for the text handed back to the model, in characters. 0 or less = no limit.
+    /// A single page can be megabytes of markup, and every later request re-sends the result —
+    /// so one unbounded page can push a whole session past the model's context window.
+    /// </summary>
+    public int MaxContentChars { get; set; } = 100_000;
+
+    /// <summary>Ceiling for the bytes downloaded from one URL. 0 or less = no limit.</summary>
+    public long MaxDownloadBytes { get; set; } = 8L * 1024 * 1024;
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(UserAgent))

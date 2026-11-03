@@ -67,36 +67,52 @@ public class SafetyCheckerTests
     }
 
     [Fact]
-    public async Task MalformedJson_FallsBackToAllow()
+    public async Task MalformedJson_IsInconclusive_NotAnApproval()
     {
         QueueResponse("this is not json at all");
 
         var verdict = await RunCheckAsync();
 
-        Assert.True(verdict.Allow);
+        // A verdict nobody could read must never read as "safe": the caller asks the human instead.
+        Assert.False(verdict.Allow);
+        Assert.True(verdict.Inconclusive);
         Assert.Contains("Could not parse", verdict.Why);
     }
 
     [Fact]
-    public async Task EmptyResponse_FallsBackToAllow()
+    public async Task MissingAllowField_IsInconclusive()
+    {
+        QueueResponse("""{"safe":true}""");
+
+        var verdict = await RunCheckAsync();
+
+        Assert.False(verdict.Allow);
+        Assert.True(verdict.Inconclusive);
+    }
+
+    [Fact]
+    public async Task EmptyResponse_IsInconclusive_NotAnApproval()
     {
         QueueResponse("   ");
 
         var verdict = await RunCheckAsync();
 
-        Assert.True(verdict.Allow);
+        Assert.False(verdict.Allow);
+        Assert.True(verdict.Inconclusive);
         Assert.Contains("empty response", verdict.Why);
     }
 
     [Fact]
-    public async Task LlmFailure_FallsBackToAllow()
+    public async Task LlmFailure_IsInconclusive_NotAnApproval()
     {
         _chat.GetResponseAsync(Arg.Any<IEnumerable<ChatMessage>>(), Arg.Any<ChatOptions>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromException<ChatResponse>(new InvalidOperationException("llm down")));
 
         var verdict = await RunCheckAsync();
 
-        Assert.True(verdict.Allow);
+        // The old fallback said `Allow = true` here — a broken checker silently approving everything.
+        Assert.False(verdict.Allow);
+        Assert.True(verdict.Inconclusive);
         Assert.Contains("Safety check unavailable", verdict.Why);
     }
 
@@ -183,7 +199,7 @@ public class SafetyCheckerTests
         var verdict = await RunCheckAsync();
 
         Assert.True(verdict.Allow);
-        await _agents.Received(1).RecordUsageAsync(AgentId, 40, 60, 50, 0, 0, "model-x");
+        await _agents.Received(1).RecordUsageAsync(AgentId, 40, 60, 50, 0, 0, 0, "model-x");
     }
 
     [Fact]
@@ -193,7 +209,7 @@ public class SafetyCheckerTests
         {
             ["usage"] = new Dictionary<string, object> { ["prompt_tokens"] = 10L, ["completion_tokens"] = 5L },
         });
-        _agents.RecordUsageAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<long>(), Arg.Any<long>(), Arg.Any<long>(), Arg.Any<long>(), Arg.Any<string?>())
+        _agents.RecordUsageAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<long>(), Arg.Any<long>(), Arg.Any<long>(), Arg.Any<long>(), Arg.Any<long>(), Arg.Any<string?>())
             .Returns(Task.FromException(new InvalidOperationException("db down")));
 
         var verdict = await RunCheckAsync();

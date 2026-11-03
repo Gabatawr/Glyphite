@@ -56,15 +56,6 @@ internal static class FiboStrategy
         return zones;
     }
 
-    /// <summary>
-    /// Distribute turn groups (with agent_data at index 0) into Fibonacci-sized zones.
-    /// Skips the agent_data group.
-    /// </summary>
-    internal static List<List<MemoryBlock>> DistributeFibonacci(List<List<MemoryBlock>> turnGroups)
-    {
-        return DistributeTurnGroups(turnGroups.Skip(1).ToList());
-    }
-
     /// <summary>Execute the fibo compaction.</summary>
     internal static async Task<bool> CompactAsync(
         string agentId,
@@ -78,6 +69,14 @@ internal static class FiboStrategy
         int contextWindow)
     {
         if (blocks.Count <= 1)
+            return false;
+
+        // The header is the anchor the rewritten history is spliced onto — ReplaceBlocksSinceAsync
+        // cuts at its number + 1 — and the only block that survives untouched. Resolve it before any
+        // summarization: without it there is nowhere to splice, and those LLM calls are paid for
+        // nothing.
+        var agentBlock = CompactionService.FindAgentDataBlock(blocks, agentId, logger);
+        if (agentBlock is null)
             return false;
 
         // 1. Group ALL blocks into turns
@@ -104,7 +103,7 @@ internal static class FiboStrategy
             agentId, blocks.Count, zones.Count, compOpts.AutoThreshold);
 
         // Summarize all old zones via LLM in parallel
-        var zoneTasks = new List<(List<MemoryBlock> zone, Task<(string? Summary, long Hit, long Miss, long Output)> task)>();
+        var zoneTasks = new List<(List<MemoryBlock> zone, Task<(string? Summary, long Hit, long Miss, long Output, long Reasoning)> task)>();
         foreach (var zone in zones)
         {
             if (zone.Count == 0) continue;
@@ -112,22 +111,17 @@ internal static class FiboStrategy
         }
 
         var summarizedFallback = new List<MemoryBlock>();
-        var summaryResults = new List<(string Summary, long Hit, long Miss, long Output)>();
+        var summaryResults = new List<(string Summary, long Hit, long Miss, long Output, long Reasoning)>();
         foreach (var (zone, task) in zoneTasks)
         {
-            var (summary, hit, miss, output) = await task;
+            var (summary, hit, miss, output, reasoning) = await task;
             if (summary is not null)
-                summaryResults.Add((summary, hit, miss, output));
+                summaryResults.Add((summary, hit, miss, output, reasoning));
             else
                 summarizedFallback.AddRange(zone);
         }
 
         if (summaryResults.Count == 0 && safeGroups.Count == 0 && summarizedFallback.Count == 0)
-            return false;
-
-        // Find agent_data block
-        var agentBlock = CompactionService.FindAgentDataBlock(blocks, agentId, logger);
-        if (agentBlock is null)
             return false;
 
         // 5. Build compacted history:
@@ -149,16 +143,24 @@ internal static class FiboStrategy
         }
 
         // New summaries — each with its own turn marker
-        foreach (var (summary, _, _, output) in summaryResults)
+        foreach (var (summary, hit, miss, output, reasoning) in summaryResults)
         {
             var block = MemoryBlock.AgentMessage(summary, model: model);
             block.Number = nextNumber++;
             block.Compressed = true;
             newBlocks.Add(block);
 
-            // Each summary gets its own turn marker with that zone's usage (hit=0, miss=output, out=output)
+            // The marker records two different things: the summarization call's real billed usage
+            // (`hit`/`miss` are its prompt, `out_` its billed output — already including `reasoning`)
+            // and the size of what was actually stored. A summary is pure result text, so the whole
+            // stored size lands in `stored_text` and none of it in `stored_reasoning`.
+            var stored = CompactionService.EstimateZoneTokens([block]);
             var turnBlock = MemoryBlock.TurnMarker(
-                JsonSerializer.Serialize(new { hit = 0L, miss = output, out_ = output }));
+                JsonSerializer.Serialize(new
+                {
+                    hit, miss, out_ = output, reasoning,
+                    stored, stored_reasoning = 0L, stored_text = stored, stored_tool = 0L
+                }));
             turnBlock.Number = nextNumber++;
             newBlocks.Add(turnBlock);
         }

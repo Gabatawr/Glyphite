@@ -11,10 +11,12 @@ namespace Glyphite.Host.Tools;
 /// Timer auto-selects the highlighted choice on expiry.
 /// Falls back to <see cref="Choice.Check"/> if console is redirected (non-interactive).
 /// Last choice is persisted per-agent in KVStore under "confirmation_last_choice".
+/// <c>noAutoSelect: true</c> disables the timer entirely — used when the AI safety check could not
+/// decide, because there a timeout would silently turn into consent.
 /// Uses a single reusable Task.Run(Console.ReadKey) to avoid accumulating
 /// abandoned read tasks that steal keystrokes from the active reader.
 /// </summary>
-internal static class InteractiveConfirmation
+public static class InteractiveConfirmation
 {
     public enum Choice { Ok, Stop, Check }
 
@@ -34,7 +36,9 @@ internal static class InteractiveConfirmation
         IKVStore? kvStore,
         string? agentId,
         bool isSubAgent,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool noAutoSelect = false,
+        string? note = null)
     {
         // Non-interactive fallback
         if (isSubAgent || Console.IsInputRedirected || Console.IsOutputRedirected)
@@ -45,11 +49,14 @@ internal static class InteractiveConfirmation
 
         // Load last choice from KVStore
         var selected = await LoadLastChoiceAsync(kvStore, agentId, choices);
-        var timerActive = true;
+
+        // noAutoSelect: the caller is asking because nothing else could decide (the AI check failed),
+        // so a timer expiring must never count as consent. The prompt waits for a real keystroke.
+        var timerActive = !noAutoSelect;
         var startTime = Environment.TickCount64;
 
         // Write initial line
-        Console.Error.Write(BuildPrompt(displayCmd, choices, selected, timerActive, timeoutMs, startTime));
+        Console.Error.Write(BuildPrompt(displayCmd, choices, selected, timerActive, timeoutMs, note));
 
         // Single reusable read task — created once, nulled after a successful read,
         // so at most ONE Task.Run(Console.ReadKey) hangs in the thread pool.
@@ -95,13 +102,13 @@ internal static class InteractiveConfirmation
                         case ConsoleKey.LeftArrow:
                             if (timerActive) timerActive = false;
                             MovetoPreviousChoice(choices, ref selected);
-                            Console.Error.Write('\r' + BuildPrompt(displayCmd, choices, selected, false, timeoutMs, startTime));
+                            Console.Error.Write('\r' + BuildPrompt(displayCmd, choices, selected, false, timeoutMs, note));
                             break;
 
                         case ConsoleKey.RightArrow:
                             if (timerActive) timerActive = false;
                             MoveToNextChoice(choices, ref selected);
-                            Console.Error.Write('\r' + BuildPrompt(displayCmd, choices, selected, false, timeoutMs, startTime));
+                            Console.Error.Write('\r' + BuildPrompt(displayCmd, choices, selected, false, timeoutMs, note));
                             break;
 
                         case ConsoleKey.Enter:
@@ -121,7 +128,7 @@ internal static class InteractiveConfirmation
 
                         if (remaining > 0)
                         {
-                            Console.Error.Write('\r' + BuildPrompt(displayCmd, choices, selected, true, remaining, startTime));
+                            Console.Error.Write('\r' + BuildPrompt(displayCmd, choices, selected, true, remaining, note));
                         }
                         else
                         {
@@ -142,21 +149,23 @@ internal static class InteractiveConfirmation
         }
     }
 
-    /// <summary>Build the single-line prompt string (no trailing \r needed).</summary>
+    /// <summary>Build the single-line prompt string (no trailing \r needed).
+    /// <paramref name="timerMs"/> is what the timer counts down from (or the remaining time on a
+    /// redraw); <paramref name="note"/> explains why the human is being asked, when there is a reason.</summary>
     private static string BuildPrompt(
         string command,
         Choice[] choices,
         int selected,
         bool timerActive,
-        int timeoutMs,
-        long startTime)
+        int timerMs,
+        string? note)
     {
         var sb = new StringBuilder();
 
         // Timer or hint first (fixed width — stable left side)
         if (timerActive)
         {
-            var remaining = Math.Max(1, timeoutMs / 1000);
+            var remaining = Math.Max(1, timerMs / 1000);
             sb.Append("· \x1b[2m").Append(remaining).Append("s\x1b[22m ⚠ ");
         }
         else
@@ -176,6 +185,8 @@ internal static class InteractiveConfirmation
 
         // Command at the end (variable width — right side, no flicker on left)
         sb.Append(" · ");
+        if (!string.IsNullOrEmpty(note))
+            sb.Append(note).Append(": ");
         sb.Append(command);
 
         // Right-pad to full terminal width to overwrite any previous longer content

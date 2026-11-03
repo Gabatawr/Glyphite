@@ -33,6 +33,7 @@ public class SessionRepository : RepositoryBase, IAgentStore
                 cache_hit INTEGER NOT NULL DEFAULT 0,
                 cache_miss INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
                 model TEXT,
                 last_request_hit INTEGER NOT NULL DEFAULT 0,
                 last_request_miss INTEGER NOT NULL DEFAULT 0,
@@ -67,6 +68,16 @@ public class SessionRepository : RepositoryBase, IAgentStore
             if (!ColumnExists("session_usage", "model"))
                 _conn.Execute("ALTER TABLE session_usage ADD COLUMN model TEXT");
             _conn.Execute("INSERT INTO schema_version (version, applied_at) VALUES (1, datetime('now'))");
+        }
+
+        // 2: reasoning tokens are reported separately from (and inside) output tokens. Without the
+        // split there is no way to tell how much of the bill is hidden thinking, and every attempt
+        // to explain "usage says one thing, blocks say another" turns into guesswork.
+        if (currentVersion < 2)
+        {
+            if (!ColumnExists("session_usage", "reasoning_tokens"))
+                _conn.Execute("ALTER TABLE session_usage ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0");
+            _conn.Execute("INSERT INTO schema_version (version, applied_at) VALUES (2, datetime('now'))");
         }
     }
 
@@ -240,8 +251,8 @@ public class SessionRepository : RepositoryBase, IAgentStore
             foreach (var b in blocks)
             {
                 await _conn.ExecuteAsync("""
-                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, is_deleted, is_compressed)
-                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, 0, @IsCompressed)
+                    INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, tool_result, is_deleted, is_compressed)
+                    VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, @ToolResult, 0, @IsCompressed)
                     """, new
                 {
                     sid = targetId,
@@ -253,6 +264,7 @@ public class SessionRepository : RepositoryBase, IAgentStore
                     b.ToolName,
                     b.Data,
                     b.Model,
+                    b.ToolResult,
                     b.IsCompressed
                 });
             }
@@ -289,33 +301,33 @@ public class SessionRepository : RepositoryBase, IAgentStore
 
     // ── Usage tracking ──
 
-    public async Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long lastRequestHit = 0, long lastRequestMiss = 0, string? model = null)
+    public async Task RecordUsageAsync(string agentId, long cacheHit, long cacheMiss, long output, long reasoning = 0, long lastRequestHit = 0, long lastRequestMiss = 0, string? model = null)
     {
         await WithLockAsync(async () =>
         {
             await _conn.ExecuteAsync("""
-                INSERT INTO session_usage (agent_id, cache_hit, cache_miss, output_tokens, model, last_request_hit, last_request_miss, created_at)
-                VALUES (@Id, @Hit, @Miss, @Output, @Model, @LastHit, @LastMiss, datetime('now'))
-                """, new { Id = agentId, Hit = cacheHit, Miss = cacheMiss, Output = output, Model = model, LastHit = lastRequestHit, LastMiss = lastRequestMiss });
+                INSERT INTO session_usage (agent_id, cache_hit, cache_miss, output_tokens, reasoning_tokens, model, last_request_hit, last_request_miss, created_at)
+                VALUES (@Id, @Hit, @Miss, @Output, @Reasoning, @Model, @LastHit, @LastMiss, datetime('now'))
+                """, new { Id = agentId, Hit = cacheHit, Miss = cacheMiss, Output = output, Reasoning = reasoning, Model = model, LastHit = lastRequestHit, LastMiss = lastRequestMiss });
         });
     }
 
-    public async Task<(long Hit, long Miss, long Output)> GetUsageAsync(string agentId)
+    public async Task<(long Hit, long Miss, long Output, long Reasoning)> GetUsageAsync(string agentId)
     {
         using var conn = CreateReadConnection();
-        var result = await conn.QueryFirstOrDefaultAsync<(long Hit, long Miss, long Output)>(
-            "SELECT COALESCE(SUM(cache_hit), 0), COALESCE(SUM(cache_miss), 0), COALESCE(SUM(output_tokens), 0) FROM session_usage WHERE agent_id = @Id",
+        var result = await conn.QueryFirstOrDefaultAsync<(long Hit, long Miss, long Output, long Reasoning)>(
+            "SELECT COALESCE(SUM(cache_hit), 0), COALESCE(SUM(cache_miss), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(reasoning_tokens), 0) FROM session_usage WHERE agent_id = @Id",
             new { Id = agentId });
         return result;
     }
 
-    public async Task<List<(string Model, long Hit, long Miss, long Output)>> GetUsageByModelAsync(string agentId)
+    public async Task<List<(string Model, long Hit, long Miss, long Output, long Reasoning)>> GetUsageByModelAsync(string agentId)
     {
         using var conn = CreateReadConnection();
-        var rows = await conn.QueryAsync<(string? Model, long Hit, long Miss, long Output)>(
-            "SELECT COALESCE(model, ''), COALESCE(SUM(cache_hit), 0), COALESCE(SUM(cache_miss), 0), COALESCE(SUM(output_tokens), 0) FROM session_usage WHERE agent_id = @Id GROUP BY model",
+        var rows = await conn.QueryAsync<(string? Model, long Hit, long Miss, long Output, long Reasoning)>(
+            "SELECT COALESCE(model, ''), COALESCE(SUM(cache_hit), 0), COALESCE(SUM(cache_miss), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(reasoning_tokens), 0) FROM session_usage WHERE agent_id = @Id GROUP BY model",
             new { Id = agentId });
-        return rows.Select(r => (r.Model ?? "", r.Hit, r.Miss, r.Output)).ToList();
+        return rows.Select(r => (r.Model ?? "", r.Hit, r.Miss, r.Output, r.Reasoning)).ToList();
     }
 
     public async Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> GetLastUsageAsync(string agentId)

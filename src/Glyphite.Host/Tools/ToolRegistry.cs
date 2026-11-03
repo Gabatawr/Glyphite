@@ -66,7 +66,9 @@ public class ToolRegistry : IToolRegistry
         _glyphiteConfig = configuration.GetSection("Glyphite");
     }
 
-    public async Task<IReadOnlyList<AITool>> GetBuiltinToolsAsync(string agentId, bool includeMemory = false)
+    /// <param name="baseDir">Directory relative file/search paths resolve against — the agent's own
+    /// working directory (a subagent's <c>cwd</c>). Null keeps the process-wide default.</param>
+    public async Task<IReadOnlyList<AITool>> GetBuiltinToolsAsync(string agentId, bool includeMemory = false, string? baseDir = null)
     {
         // Don't give subagent tools to subagents themselves — prevents recursive creation chaos
         var isSubAgent = _subAgentManager.Exists(agentId);
@@ -75,18 +77,22 @@ public class ToolRegistry : IToolRegistry
 
         var readFileMaxSize = toolExec.TryGetValue("read_file", out var readOpts) ? (int?)readOpts.MaxSize : null;
 
+        // Every path-taking builtin is created from this one value, so an agent's directory is
+        // applied in a single place instead of being re-resolved per call.
+        var dir = baseDir ?? _defaultDir;
+
         var tools = new List<AITool>
         {
             WrapWithConfig(BashTool.AsAIFunction(_bashManager, agentId, _cfgService, _kvStore, isSubAgent, _safetyChecker), toolExec, "bash", _tmpDir, agentId),
             WrapWithConfig(BashBackTool.AsAIFunction(_bashManager, _cfgService, agentId), toolExec, "bash_back", _tmpDir, agentId),
-            WrapWithConfig(FileReadTool.AsAIFunction(_cfgService, _defaultDir, agentId, readFileMaxSize), toolExec, "read_file", _tmpDir, agentId),
-            WrapWithConfig(ImageTool.AsViewImageFunction(_imageLoader, _imageSink, _cfgService, _defaultDir, agentId), toolExec, ImageTool.ToolName, _tmpDir, agentId),
-            WrapWithConfig(FileWriteTool.AsAIFunction(_defaultDir), toolExec, "write_file", _tmpDir, agentId),
-            WrapWithConfig(FilePatchTool.AsAIFunction(_defaultDir), toolExec, "patch_file", _tmpDir, agentId),
+            WrapWithConfig(FileReadTool.AsAIFunction(_cfgService, dir, agentId, readFileMaxSize), toolExec, "read_file", _tmpDir, agentId),
+            WrapWithConfig(ImageTool.AsViewImageFunction(_imageLoader, _imageSink, _cfgService, dir, agentId), toolExec, ImageTool.ToolName, _tmpDir, agentId),
+            WrapWithConfig(FileWriteTool.AsAIFunction(dir), toolExec, "write_file", _tmpDir, agentId),
+            WrapWithConfig(FilePatchTool.AsAIFunction(dir), toolExec, "patch_file", _tmpDir, agentId),
             WrapWithConfig(TodoTool.AsTodoFunction(_blockStore, agentId, _cfgService), toolExec, "todo", _tmpDir, agentId),
             WrapWithConfig(WebFetchTool.AsFetchFunction(_cfgService, agentId), toolExec, "fetch_web", _tmpDir, agentId),
-            WrapWithConfig(SearchTools.AsGlobFunction(_cfgService, _defaultDir, agentId, _logger), toolExec, "search_glob", _tmpDir, agentId),
-            WrapWithConfig(SearchTools.AsGrepFunction(_cfgService, _defaultDir, agentId, _logger), toolExec, "search_grep", _tmpDir, agentId),
+            WrapWithConfig(SearchTools.AsGlobFunction(_cfgService, dir, agentId, _logger), toolExec, "search_glob", _tmpDir, agentId),
+            WrapWithConfig(SearchTools.AsGrepFunction(_cfgService, dir, agentId, _logger), toolExec, "search_grep", _tmpDir, agentId),
             WrapWithConfig(KVStoreTool.AsKvStoreFunction(_kvStore, _cfgService, _subAgentManager, agentId), toolExec, "kvstore", _tmpDir, agentId),
         };
 

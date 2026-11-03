@@ -30,15 +30,19 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     public long TotalCacheHitTokens => _usageTracker.TotalCacheHitTokens;
     public long TotalCacheMissTokens => _usageTracker.TotalCacheMissTokens;
     public long TotalOutputTokens => _usageTracker.TotalOutputTokens;
+    /// <summary>Part of <see cref="TotalOutputTokens"/> spent on hidden thinking — already billed as output.</summary>
+    public long TotalReasoningTokens => _usageTracker.TotalReasoningTokens;
     public long LastHitTokens => _usageTracker.LastHitTokens;
     public long LastMissTokens => _usageTracker.LastMissTokens;
+    public long LastReasoningTokens => _usageTracker.LastReasoningTokens;
 
     public IReadOnlyList<ChatMessage>? LastMessages { get; private set; }
-    public Action<long, long, long>? OnUsage { get; set; }
+    public Action<long, long, long, long>? OnUsage { get; set; }
 
-    /// <summary>Called after each iteration's usage is recorded, with per-iteration delta values.
-    /// Fires immediately so the caller can persist usage before the next iteration (or crash).</summary>
-    public Func<long, long, long, Task>? OnIterationRecorded { get; set; }
+    /// <summary>Called after each iteration's usage is recorded, with per-iteration values
+    /// (hit, miss, output, reasoning). Fires immediately so the caller can persist usage before the
+    /// next iteration (or crash). <c>output</c> is billed and already includes <c>reasoning</c>.</summary>
+    public Func<long, long, long, long, Task>? OnIterationRecorded { get; set; }
 
     /// <summary>Called after each batch of tool executions completes. Returns text to append to tool results (or null).</summary>
     public Func<Task<string?>>? OnBatchComplete { get; set; }
@@ -50,7 +54,7 @@ public sealed class FailSafeChatClient : DelegatingChatClient
         _imageSink = imageSink;
         _toolExecutor = new ToolExecutor(logger);
         _usageTracker = new UsageTracker();
-        _usageTracker.OnUsage += (hit, miss, output) => OnUsage?.Invoke(hit, miss, output);
+        _usageTracker.OnUsage += (hit, miss, output, reasoning) => OnUsage?.Invoke(hit, miss, output, reasoning);
     }
 
     /// <summary>Move the stream forward, mapping user cancellation to a null (end-of-stream) signal.
@@ -133,7 +137,9 @@ public sealed class FailSafeChatClient : DelegatingChatClient
             // Record usage regardless — per-iteration tracking
             _usageTracker.RecordUsage(allUpdates);
             if (OnIterationRecorded is not null)
-                await OnIterationRecorded(_usageTracker.LastHitTokens, _usageTracker.LastMissTokens, _usageTracker.LastOutputTokens);
+                await OnIterationRecorded(
+                    _usageTracker.LastHitTokens, _usageTracker.LastMissTokens,
+                    _usageTracker.LastOutputTokens, _usageTracker.LastReasoningTokens);
 
             if (!hasToolCall)
             {

@@ -42,6 +42,41 @@ public sealed class ToolConfigDecorator : AIFunction
     /// <summary>Effective max result size in chars (int.MaxValue = unlimited).</summary>
     public int ContentMaxSize => _contentMaxSizeDefault;
 
+    /// <summary>Default execution timeout in seconds for this tool (0 = unlimited).</summary>
+    public int DefaultTimeoutSeconds => _timeoutSecondsDefault == int.MaxValue ? 0 : _timeoutSecondsDefault;
+
+    /// <summary>Default max result size in chars for this tool (-1 = unlimited, 0 = hidden).</summary>
+    public int DefaultContentMaxSize => _contentMaxSizeDefault == int.MaxValue ? -1 : _contentMaxSizeDefault;
+
+    /// <summary>Fields of an <c>extra_cfg</c> argument that actually override this tool's defaults.
+    /// An explicit value equal to the default is not an override: stored history should show how a call
+    /// was made, not restate configuration. Empty when nothing was overridden; unknown keys are ignored
+    /// (the schema forbids them, but a malformed call must not corrupt the stored args).</summary>
+    public IReadOnlyDictionary<string, object?> OverridesFrom(JsonElement extraCfg)
+    {
+        var overrides = new Dictionary<string, object?>();
+        if (extraCfg.ValueKind != JsonValueKind.Object)
+            return overrides;
+
+        if (extraCfg.TryGetProperty("peek", out var peek)
+            && peek.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && peek.GetBoolean() != _peekDefault)
+            overrides["peek"] = peek.GetBoolean();
+
+        // <= 0 means "no timeout" in both the config and the argument, so normalize before comparing.
+        if (extraCfg.TryGetProperty("timeout", out var timeout)
+            && timeout.TryGetInt32(out var timeoutSeconds)
+            && (timeoutSeconds <= 0 ? 0 : timeoutSeconds) != DefaultTimeoutSeconds)
+            overrides["timeout"] = timeoutSeconds;
+
+        if (extraCfg.TryGetProperty("maxSize", out var maxSize)
+            && maxSize.TryGetInt32(out var maxChars)
+            && maxChars != DefaultContentMaxSize)
+            overrides["maxSize"] = maxChars;
+
+        return overrides;
+    }
+
     private static readonly HashSet<string> InjectedParamNames = new(StringComparer.OrdinalIgnoreCase)
     {
         ExtraCfgParamName,
@@ -120,8 +155,16 @@ public sealed class ToolConfigDecorator : AIFunction
             var result = await _inner.InvokeAsync(cleanedArgs ?? args, effectiveCt);
 
             // ── Enforce contentMaxSize: 1/3 top + truncation notice + 2/3 bottom ──
-            if (contentMaxSize < int.MaxValue && result is string str)
-                result = Truncate(str, contentMaxSize, _tmpDir, Name, _agentId);
+            // AIFunctionFactory hands back a JsonElement (string kind), not a string, so a plain
+            // `result is string` test matched no tool at all: `maxSize` was dead configuration and
+            // one 2.6 MB fetch_web page went into the history untouched, after which every request
+            // was rejected on the provider's context limit.
+            if (contentMaxSize < int.MaxValue
+                && ResultText(result) is { } text
+                && text.Length > contentMaxSize)
+            {
+                result = Truncate(text, contentMaxSize, _tmpDir, Name, _agentId);
+            }
 
             return result;
         }
@@ -130,6 +173,18 @@ public sealed class ToolConfigDecorator : AIFunction
             timeoutCts?.Dispose();
         }
     }
+
+    /// <summary>
+    /// Text carried by a tool result, whether the tool returned a <see cref="string"/> directly or
+    /// the <see cref="JsonElement"/> that <c>AIFunctionFactory</c> produces for one. Null for
+    /// anything that is not text — structured results are left alone.
+    /// </summary>
+    internal static string? ResultText(object? result) => result switch
+    {
+        string s => s,
+        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+        _ => null,
+    };
 
     /// <summary>
     /// Truncates a tool result string to <paramref name="contentMaxSize"/> chars.

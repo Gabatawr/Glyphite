@@ -51,21 +51,30 @@ public partial class ChatRepl
                 }
 
                 var statsModel = await BlockMemory.GetAgentModelAsync(AgentId!);
-                var (cumHit, cumMiss, cumOutput) = await _agentStore.GetUsageAsync(AgentId!);
+                var (cumHit, cumMiss, cumOutput, cumReasoning) = await _agentStore.GetUsageAsync(AgentId!);
 
                 var totalCost = 0.0;
+                var reasoningCost = 0.0;
                 if (cumHit + cumMiss + cumOutput > 0)
                 {
                     var usageByModel = await _agentStore.GetUsageByModelAsync(AgentId!);
-                    foreach (var (modelName, hit, miss, output) in usageByModel)
+                    foreach (var (modelName, hit, miss, output, reasoning) in usageByModel)
                     {
                         var (mPrice, hPrice, oPrice) = GetPricing(modelName);
                         if (mPrice.HasValue)
-                            totalCost += miss * mPrice.Value + (hPrice ?? 0) * hit + (oPrice ?? mPrice.Value) * output;
+                        {
+                            // A model entry without explicit prices would otherwise bill cached input
+                            // (and output) at zero — fall back to the miss price instead of hiding cost.
+                            var outPrice = oPrice ?? mPrice.Value;
+                            totalCost += miss * mPrice.Value + (hPrice ?? mPrice.Value) * hit + outPrice * output;
+                            // Reasoning is billed as output: this is the share of the bill it owns.
+                            reasoningCost += outPrice * reasoning;
+                        }
                     }
                 }
 
-                _renderer.RenderStats(totalBlocks, typeStats, statsModel, cumHit, cumMiss, cumOutput, totalCost);
+                _renderer.RenderStats(totalBlocks, typeStats, statsModel, cumHit, cumMiss, cumOutput,
+                    cumReasoning, totalCost, reasoningCost);
                 return true;
 
             case "/version":

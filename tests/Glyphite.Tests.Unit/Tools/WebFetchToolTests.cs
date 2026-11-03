@@ -157,6 +157,72 @@ public class WebFetchToolTests
         Assert.Empty(handler.Requests);
     }
 
+    // ── Markup noise and size ──
+
+    [Fact]
+    public async Task ScriptAndStyleBodies_AreDroppedWithTheirTags()
+    {
+        // Stripping tags alone leaves the JavaScript in the text. On a modern docs site that was
+        // 2.6 MB out of a 2.6 MB result — none of it worth a token.
+        var html = Encoding.UTF8.GetBytes(
+            "<html><head><style>.a{color:red}</style>"
+            + "<script>var x = document.querySelector('p');self.__next_f.push([1,\"blob\"])</script>"
+            + "</head><body><p>Real words</p></body></html>");
+
+        var result = await Fetch(html, "text/html");
+
+        Assert.Equal("Real words", result);
+    }
+
+    [Fact]
+    public async Task UnterminatedScript_TakesTheTailWithIt()
+    {
+        var html = Encoding.UTF8.GetBytes("<html><body><p>kept</p><script>var a = 1; var b = 2;</body></html>");
+
+        var result = await Fetch(html, "text/html");
+
+        Assert.Equal("kept", result);
+    }
+
+    [Fact]
+    public async Task PageOverTheCharacterLimit_IsCappedAndSaysSo()
+    {
+        var body = Encoding.UTF8.GetBytes(
+            "<html><body>" + string.Join(" ", Enumerable.Repeat("word", 20_000)) + "</body></html>");
+        var handler = new StubHandler(_ => Response(body, "text/html"));
+        using var http = new HttpClient(handler);
+
+        var result = await WebFetchTool.FetchUrl("https://example.com/huge", "text", http, maxChars: 1000);
+
+        Assert.Contains("[Page truncated at 1000 chars. Full text length:", result);
+        Assert.True(result.Length < 1300, $"got {result.Length} chars");
+    }
+
+    [Fact]
+    public async Task DefaultLimit_KeepsOnePageFromEatingTheContext()
+    {
+        var body = Encoding.UTF8.GetBytes("<html><body>" + new string('a', 400_000) + "</body></html>");
+        var handler = new StubHandler(_ => Response(body, "text/html"));
+        using var http = new HttpClient(handler);
+
+        var result = await WebFetchTool.FetchUrl("https://example.com/enormous", "text", http);
+
+        Assert.Contains("[Page truncated at 100000 chars", result);
+        Assert.True(result.Length < 101_000, $"got {result.Length} chars");
+    }
+
+    [Fact]
+    public async Task Download_StopsAtTheByteCeiling()
+    {
+        var body = Encoding.UTF8.GetBytes("<html><body>" + new string('a', 100_000) + "</body></html>");
+        var handler = new StubHandler(_ => Response(body, "text/html"));
+        using var http = new HttpClient(handler);
+
+        var result = await WebFetchTool.FetchUrl("https://example.com/big", "text", http, maxChars: 0, maxBytes: 5_000);
+
+        Assert.True(result.Length <= 5_000, $"got {result.Length} chars");
+    }
+
     // ── Detection itself ──
 
     [Fact]

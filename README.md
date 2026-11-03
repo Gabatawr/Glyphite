@@ -195,9 +195,13 @@ visible to **all** agents.
 ### Safety
 
 Command templates are safety-checked **once at add time**: forbidden-command/directory hard blocks,
-plus an interactive confirmation prompt when the template matches `CheckRequireCommands`. Approved
-entries skip the interactive prompt on execution (hard blocks still apply at run time). Changing `cmd`
-via `pocket_set` re-runs the preflight; a rejected template leaves the entry unchanged.
+plus an interactive confirmation prompt when the template matches `CheckRequireCommands`. Both are
+evaluated by `CommandAnalyzer`, so the template is judged by what it actually runs. Approved entries
+skip the interactive prompt on execution (hard blocks still apply at run time) — **unless values were
+substituted**: `pocket_run` with arguments builds a different command than the one that was approved
+(`raw` arguments are inserted unquoted), so it goes through the runtime gates like a hand-written
+`bash` call. Changing `cmd` via `pocket_set` re-runs the preflight; a rejected template leaves the
+entry unchanged.
 
 ## Subagent architecture
 
@@ -590,6 +594,9 @@ Per-tool execution settings — peek, timeout, and output size. Configured in `G
   - If no `tmpDir` is configured (subagents), simple inlined truncation with a length note
 
 The LLM can override any setting per-call via `extra_cfg` (e.g. `"extra_cfg": { "peek": true, "timeout": 600 }`).
+Fields that only restate the tool's defaults are dropped from the stored history; real overrides are kept
+(`ToolConfigDecorator.OverridesFrom`), so a later turn sees *that* a call ran with a non-default timeout
+instead of a wall of plumbing.
 
 Works for all tools including MCP — use the prefixed tool name (e.g. `codegraph_explore`) or a wildcard
 suffix (e.g. `codegraph_*`).
@@ -602,6 +609,16 @@ appears in the console:
 ```
 · 5s ⚠ [OK]  Stop  Check · rm -rf /tmp/test
 ```
+
+**Matching is by occurrence, not by the first word.** `Utils/CommandAnalyzer` splits the command the
+way a shell would — on `;`, `&&`, `||`, `|`, `&`, newlines, parentheses — expands `$(…)` and
+backticks, drops leading `FOO=bar` assignments, peels wrappers (`sudo`, `env`, `nohup`, `timeout`,
+`xargs`, `nice`, …) and looks inside `bash -c "…"`. So `cd /tmp && sudo rm -rf /` is judged on
+`rm -rf /`, not on `cd`. Patterns are anchored at the start of a segment, so `echo "rm -rf"` and
+`git log --grep "rm -rf"` are *not* matches — they mention the pattern without running it.
+
+**One question per command.** However many patterns matched and wherever they sit, the panel is shown
+once, for the whole command string. The same gates apply to `back=true` (detached) commands.
 
 | Key | Action |
 |-----|--------|
@@ -616,6 +633,11 @@ Three choices:
 | **OK** | Command executes normally |
 | **Stop** | Command blocked, model receives `"Command blocked by user"` |
 | **Check** | LLM-powered safety evaluation via `SafetyChecker` |
+
+When the safety check cannot reach a verdict (model failure, empty answer, unparseable JSON), the
+panel is shown **again with the timer off** (`noAutoSelect`): the decision returns to the human, and a
+timeout can never be read as consent. Non-interactive runs (subagents, redirected console) answer
+`Check`, so an unavailable checker blocks them instead of approving.
 
 ### Persistence
 
@@ -662,8 +684,11 @@ Command → InteractiveConfirmation.ShowAsync
 - **Context-aware:** SafetyChecker reads blocks from the last `turn` marker (or `user_message` /
   `agent_task` fallback) to the end — the full current turn context
 - **Usage recorded:** hit/miss/output tokens are saved to session stats via `UsageParser.Normalize`
-- **Fallback to safe:** on LLM failure or malformed JSON, defaults to `allow: true` with a note
-- **No blocking on errors:** if the LLM call fails, the command proceeds
+- **Inconclusive is not an approval:** on LLM failure, an empty answer, missing `allow` field or
+  malformed JSON it returns `Allow = false, Inconclusive = true`. The caller then asks the human with
+  the timer disabled (`BashTool.GateAsync`); non-interactive callers block the command
+- **No silent allow:** the previous fallback (`allow: true` on error) meant a broken checker approved
+  everything, including `rm -rf`
 
 ## Peek tool calls
 

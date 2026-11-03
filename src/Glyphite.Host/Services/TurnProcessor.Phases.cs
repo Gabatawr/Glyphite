@@ -23,7 +23,8 @@ public partial class TurnProcessor
         CompressionOptions CompOpts,
         List<ChatMessage> ContextMessages,
         List<ChatMessage> InitialMessages,
-        IReadOnlyList<ImagePayload> Attachments)
+        IReadOnlyList<ImagePayload> Attachments,
+        string AgentCwd)
     {
         public FailSafeChatClient? FailSafeClient { get; set; }
         public TurnContext? Ctx { get; set; }
@@ -67,7 +68,10 @@ public partial class TurnProcessor
         var isEphemeral = chatOptions.AdditionalProperties?.TryGetValue("ephemeral", out var epVal) == true
             && string.Equals(epVal as string, "true", StringComparison.OrdinalIgnoreCase);
         var isSubagent = chatOptions.AdditionalProperties?.ContainsKey("isSubagent") == true;
-        chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(agentId, !isEphemeral)).ToList();
+        // Tools resolve relative paths against the agent's own directory: a subagent gets the cwd it
+        // was created with, a CLI agent its home. Without this they fell back to the process cwd, so
+        // a subagent told cwd=/other/project wrote files into the directory glyphite was launched from.
+        chatOptions.Tools = (await _toolRegistry.GetBuiltinToolsAsync(agentId, !isEphemeral, agentCwd)).ToList();
 
         var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
 
@@ -87,7 +91,7 @@ public partial class TurnProcessor
 
         return (new PreparedTurn(
             agentId, input, modelStr, isEphemeral, isSubagent, chatOptions,
-            agentOpts, llmOpts, compOpts, contextMessages, initialMessages, attachments), null);
+            agentOpts, llmOpts, compOpts, contextMessages, initialMessages, attachments, agentCwd), null);
     }
 
     /// <summary>
@@ -191,13 +195,25 @@ public partial class TurnProcessor
             }
         }
 
-        // ── Auto-compact large reasoning blocks from previous turn ──
+        // ── Auto-compact large reasoning blocks from previous turns ──
         if (prep.CompOpts.AutoCompressReasoning)
         {
             var allReasoning = await _blockStore.LoadBlocksByTypeAsync(prep.AgentId, BlockType.agent_reasoning, null, false);
-            var toCompress = allReasoning
+            var oversized = allReasoning
                 .Where(b => !b.Compressed && b.Content.Length > prep.CompOpts.AutoCompressReasoningMaxSize)
                 .ToList();
+
+            // Reasoning is kept as history on purpose (it holds decisions that never made it into
+            // the answer), so the only brake on its size is this compression — and it must not
+            // touch the newest turn. That reasoning is the model's working memory for the next
+            // step, and rewriting it would edit the very context this turn was planned on. Older
+            // turns are fair game, the same split compaction uses for its zones.
+            var toCompress = oversized;
+            if (oversized.Count > 0)
+            {
+                var lastTurnStart = await GetLastTurnStartNumberAsync(prep.AgentId);
+                toCompress = oversized.Where(b => b.Number <= lastTurnStart).ToList();
+            }
 
             if (toCompress.Count > 0)
             {
@@ -242,9 +258,9 @@ public partial class TurnProcessor
                                 using var doc = UsageParser.Normalize(response.RawRepresentation);
                                 if (doc is not null)
                                 {
-                                    var (hit, miss, output) = UsageParser.Parse(doc);
+                                    var (hit, miss, output, reasoning) = UsageParser.Parse(doc);
                                     if (hit > 0 || miss > 0 || output > 0)
-                                        await _agentStore.RecordUsageAsync(prep.AgentId, hit, miss, output, model: prep.ModelStr);
+                                        await _agentStore.RecordUsageAsync(prep.AgentId, hit, miss, output, reasoning, model: prep.ModelStr);
                                 }
                             }
                             catch { _logger.LogWarning("Failed to parse usage from reasoning compaction response"); }
@@ -266,6 +282,23 @@ public partial class TurnProcessor
         }
     }
 
+    /// <summary>
+    /// Number of the block that opens the newest turn — the last <c>user_message</c> or
+    /// <c>agent_task</c> (subagents start their turns with the latter). Blocks at or below it belong
+    /// to older turns. A session with neither has no identifiable turn boundary, so everything stays
+    /// eligible — the behaviour before the newest-turn rule existed.
+    /// </summary>
+    private async Task<double> GetLastTurnStartNumberAsync(string agentId)
+    {
+        var lastUser = await _blockStore.LoadBlocksByTypeAsync(agentId, BlockType.user_message, 1, desc: true);
+        var lastTask = await _blockStore.LoadBlocksByTypeAsync(agentId, BlockType.agent_task, 1, desc: true);
+
+        return lastUser.Concat(lastTask)
+            .Select(b => b.Number)
+            .DefaultIfEmpty(double.MaxValue)
+            .Max();
+    }
+
     /// <summary>Phase 3 — stream the LLM response, persisting blocks and yielding UI events.</summary>
     private async IAsyncEnumerable<TurnEvent> StreamAsync(
         PreparedTurn prep, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
@@ -275,11 +308,11 @@ public partial class TurnProcessor
             agentClient, prep.AgentOpts.MaxToolIterations, _logger, _imageSink);
 
         // Subscribe: write per-iteration usage immediately — survives crash/Escape
-        failSafeClient.OnIterationRecorded = (hit, miss, output) =>
+        failSafeClient.OnIterationRecorded = (hit, miss, output, reasoning) =>
         {
             // Save for ChatRepl fallback (used when UsageTurnEvent doesn't arrive due to Escape)
             LastIterationUsage = SnapshotFrom(failSafeClient);
-            return _agentStore.RecordUsageAsync(prep.AgentId, hit, miss, output, hit, miss, prep.ModelStr);
+            return _agentStore.RecordUsageAsync(prep.AgentId, hit, miss, output, reasoning, hit, miss, prep.ModelStr);
         };
 
         _blockMemory.CurrentExecutedIds.Value = failSafeClient.ExecutedCallIds;
@@ -301,7 +334,7 @@ public partial class TurnProcessor
         var ctx = new TurnContext(
             _blockStore, _agentStore, _logger,
             prep.AgentId, prep.ModelStr,
-            failSafeClient, writeFileMaxSize);
+            failSafeClient, writeFileMaxSize, prep.AgentCwd, prep.ChatOptions.Tools as IReadOnlyList<AITool>);
         prep.FailSafeClient = failSafeClient;
         prep.Ctx = ctx;
 
@@ -337,10 +370,46 @@ public partial class TurnProcessor
         // End-of-turn: clean peek markers on non-reasoning blocks (tool, auto_tool)
         await _blockStore.ClearPeekMarkersAsync(prep.AgentId, false);
 
-        // Insert turn marker block with usage summary
+        // ...and mirror that on the in-memory copies: peek results are wiped from the store right
+        // above, so a size that still counted them would overstate what the history keeps.
+        var storedBlocks = ctx.StoredBlocks;
+        foreach (var peek in storedBlocks.Where(b => b.Data?.ContainsKey("peek") == true))
+            peek.ToolResult = null;
+
+        // Insert turn marker block. Three rulers, deliberately kept apart:
+        //   out_ / reasoning — what the provider billed. Reasoning is generated and paid for as
+        //                      output, but the provider returns only part of it (and old reasoning
+        //                      gets rewritten by auto-compression), so billing is always larger.
+        //   context          — the prompt of the LAST iteration: the size the conversation actually
+        //                      had. `hit`/`miss` above are summed over every iteration of the turn
+        //                      (a 4-iteration turn bills ~4x its context), so neither of them answers
+        //                      "how big is the context" — this does, and it matches what the
+        //                      compaction threshold reads from `session_usage.last_request_*`.
+        //   stored*          — how much this turn actually occupies in the history, measured from the
+        //                      blocks themselves with the ruler compaction uses. The three parts add
+        //                      up to `stored`, so a reasoning block's size is never mixed up with the
+        //                      size of an answer, and neither with the bill.
         var usage = SnapshotFrom(client);
+        var stored = CompactionService.EstimateZoneTokens(storedBlocks);
+        var storedReasoning = CompactionService.EstimateZoneTokens(
+            storedBlocks.Where(b => b.Type == BlockType.agent_reasoning).ToList());
+        var storedText = CompactionService.EstimateZoneTokens(
+            storedBlocks.Where(b => b.Type == BlockType.agent_message).ToList());
+        var storedTool = CompactionService.EstimateZoneTokens(
+            storedBlocks.Where(b => b.Type == BlockType.tool).ToList());
         var turnBlock = MemoryBlock.TurnMarker(
-            JsonSerializer.Serialize(new { hit = usage.TotalHit, miss = usage.TotalMiss, out_ = usage.TotalOutput }));
+            JsonSerializer.Serialize(new
+            {
+                hit = usage.TotalHit,
+                miss = usage.TotalMiss,
+                out_ = usage.TotalOutput,
+                reasoning = usage.TotalReasoning,
+                context = usage.LastHit + usage.LastMiss,
+                stored,
+                stored_reasoning = storedReasoning,
+                stored_text = storedText,
+                stored_tool = storedTool
+            }));
         await _blockStore.AppendBlocksAsync(prep.AgentId, [turnBlock]);
 
         yield return new TurnCompleteEvent();
@@ -350,5 +419,5 @@ public partial class TurnProcessor
     private static UsageSnapshot SnapshotFrom(FailSafeChatClient client)
         => new(
             client.TotalCacheHitTokens, client.TotalCacheMissTokens, client.TotalOutputTokens,
-            client.LastHitTokens, client.LastMissTokens);
+            client.LastHitTokens, client.LastMissTokens, client.TotalReasoningTokens);
 }

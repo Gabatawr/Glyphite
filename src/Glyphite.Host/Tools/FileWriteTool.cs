@@ -15,9 +15,7 @@ public static class FileWriteTool
         string? sessionId = null,
         string? defaultDirectory = null)
     {
-        path = OSHelper.NormalizePath(path);
-        if (!Path.IsPathRooted(path))
-            path = Path.GetFullPath(Path.Combine(defaultDirectory ?? Directory.GetCurrentDirectory(), path));
+        path = OSHelper.ResolvePath(path, defaultDirectory);
 
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))

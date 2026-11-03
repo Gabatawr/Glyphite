@@ -55,13 +55,17 @@ internal sealed partial class SafetyChecker(
         {
             response = await chatClient.GetResponseAsync(messages, new ChatOptions
             {
-                MaxOutputTokens = 512,
+                // The verdict is a two-field JSON object, but a reasoning model spends part of the
+                // budget thinking first: 512 was small enough to truncate the answer mid-object,
+                // which then failed parsing and read as "safe".
+                MaxOutputTokens = 1024,
             }, ct);
         }
         catch (Exception ex)
         {
-            // If LLM call fails, default to safe (allow) to not block the user
-            return new SafetyVerdict(true, $"Safety check unavailable: {ex.Message}");
+            // A broken checker is not an approval: report that no verdict was reached so the caller
+            // can hand the decision back to the human instead of silently letting the command run.
+            return SafetyVerdict.Unavailable($"Safety check unavailable: {ex.Message}");
         }
 
         // 4. Record usage on the agent's session
@@ -72,10 +76,10 @@ internal sealed partial class SafetyChecker(
                 using var doc = UsageParser.Normalize(response.RawRepresentation);
                 if (doc is not null)
                 {
-                    var (hit, miss, output) = UsageParser.Parse(doc);
+                    var (hit, miss, output, reasoning) = UsageParser.Parse(doc);
                     var model = await agentStore.GetAgentModelAsync(agentId);
                     if (hit > 0 || miss > 0 || output > 0)
-                        await agentStore.RecordUsageAsync(agentId, hit, miss, output, model: model);
+                        await agentStore.RecordUsageAsync(agentId, hit, miss, output, reasoning, model: model);
                 }
             }
         }
@@ -91,7 +95,7 @@ internal sealed partial class SafetyChecker(
             ?.Text?.Trim();
 
         if (string.IsNullOrEmpty(text))
-            return new SafetyVerdict(true, "Safety check returned empty response — proceeding.");
+            return SafetyVerdict.Unavailable("Safety check returned an empty response");
 
         return ParseVerdict(text);
     }
@@ -148,15 +152,19 @@ internal sealed partial class SafetyChecker(
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            var allow = root.TryGetProperty("allow", out var allowProp) && allowProp.ValueKind == JsonValueKind.True;
+            // A verdict that does not answer the question is not a verdict.
+            if (!root.TryGetProperty("allow", out var allowProp) || allowProp.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return SafetyVerdict.Unavailable("Safety check returned no 'allow' field");
+
+            var allow = allowProp.ValueKind == JsonValueKind.True;
             var why = root.TryGetProperty("why", out var whyProp) ? whyProp.GetString() ?? "" : "";
 
             return new SafetyVerdict(allow, why);
         }
         catch (JsonException)
         {
-            // Malformed JSON — safe fallback: allow but note the parsing issue
-            return new SafetyVerdict(true, "Could not parse safety verdict — proceeding with caution.");
+            // Malformed JSON means the check did not run — hand the decision to the human.
+            return SafetyVerdict.Unavailable("Could not parse safety verdict");
         }
     }
 

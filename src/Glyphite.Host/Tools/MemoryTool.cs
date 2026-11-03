@@ -41,8 +41,12 @@ public static class MemoryTool
                     if (usage.Hit + usage.Miss + usage.Output > 0)
                     {
                         lines.Add($"  Input:  {(usage.Hit + usage.Miss) / 1000.0:F1}K");
-                        lines.Add($"  Output: {usage.Output / 1000.0:F1}K");
-                        var rate = (int)(usage.Hit * 100.0 / (usage.Hit + usage.Miss + usage.Output));
+                        // Output is billed and already includes reasoning — show the split, don't add it.
+                        lines.Add(usage.Reasoning > 0
+                            ? $"  Output: {usage.Output / 1000.0:F1}K (reasoning {usage.Reasoning / 1000.0:F1}K)"
+                            : $"  Output: {usage.Output / 1000.0:F1}K");
+                        var promptTokens = usage.Hit + usage.Miss;
+                        var rate = promptTokens > 0 ? (int)(usage.Hit * 100.0 / promptTokens) : 0;
                         lines.Add($"  Cache:  {usage.Hit / 1000.0:F1}K hit / {usage.Miss / 1000.0:F1}K miss ({rate}%)");
                     }
 

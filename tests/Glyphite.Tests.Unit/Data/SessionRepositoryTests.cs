@@ -1,6 +1,7 @@
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Data;
 using Glyphite.Tests.Unit.Support;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace Glyphite.Tests.Unit.Data;
@@ -11,6 +12,68 @@ public class SessionRepositoryTests : IDisposable
 
     public void Dispose() => _db.Dispose();
     private SessionRepository CreateRepo() => new(_db.ConnStr);
+
+    // ── Schema migration ──
+
+    [Fact]
+    public async Task LegacySchemaV1_GainsReasoningColumn_AndKeepsExistingUsage()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"glyphite_legacy_{Guid.NewGuid():N}.db");
+        try
+        {
+            // Hand-build the v1 shape: no reasoning_tokens, schema_version = 1, one historical row.
+            using (var conn = new SqliteConnection($"Data Source={dbPath}"))
+            {
+                conn.Open();
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = """
+                    CREATE TABLE sessions (id TEXT PRIMARY KEY, current_model TEXT, next_number REAL NOT NULL DEFAULT 1, created_at TEXT, home_path TEXT);
+                    CREATE TABLE session_usage (
+                        agent_id TEXT NOT NULL REFERENCES sessions(id),
+                        cache_hit INTEGER NOT NULL DEFAULT 0,
+                        cache_miss INTEGER NOT NULL DEFAULT 0,
+                        output_tokens INTEGER NOT NULL DEFAULT 0,
+                        model TEXT,
+                        last_request_hit INTEGER NOT NULL DEFAULT 0,
+                        last_request_miss INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE schema_version (version INTEGER NOT NULL, applied_at TEXT NOT NULL);
+                    INSERT INTO sessions (id, next_number) VALUES ('legacy', 1);
+                    INSERT INTO session_usage (agent_id, cache_hit, cache_miss, output_tokens, model, created_at)
+                        VALUES ('legacy', 100, 50, 1000, 'm', datetime('now'));
+                    INSERT INTO schema_version (version, applied_at) VALUES (1, datetime('now'));
+                    """;
+                cmd.ExecuteNonQuery();
+            }
+
+            using var repo = new SessionRepository($"Data Source={dbPath}");
+
+            // Historical rows survive untouched and report reasoning = 0 — it was never recorded.
+            var usage = await repo.GetUsageAsync("legacy");
+            Assert.Equal((100L, 50L, 1000L, 0L), (usage.Hit, usage.Miss, usage.Output, usage.Reasoning));
+
+            // New rows do carry the split.
+            await repo.RecordUsageAsync("legacy", 1, 2, 3, reasoning: 2, model: "m");
+            usage = await repo.GetUsageAsync("legacy");
+            Assert.Equal(1003, usage.Output);
+            Assert.Equal(2, usage.Reasoning);
+
+            // Version is bumped, so the ALTER never runs twice.
+            using var check = new SqliteConnection($"Data Source={dbPath}");
+            check.Open();
+            using var versionCmd = check.CreateCommand();
+            versionCmd.CommandText = "SELECT MAX(version) FROM schema_version";
+            Assert.Equal(2L, Convert.ToInt64(versionCmd.ExecuteScalar()));
+        }
+        finally
+        {
+            foreach (var f in new[] { dbPath, dbPath + "-wal", dbPath + "-shm" })
+            {
+                try { if (File.Exists(f)) File.Delete(f); } catch { /* best-effort cleanup */ }
+            }
+        }
+    }
 // ── Session lifecycle ──
 
     [Fact]
@@ -108,19 +171,22 @@ public class SessionRepositoryTests : IDisposable
 
         await repo.EnsureSessionAsync(agentId);
 
-        await repo.RecordUsageAsync(agentId, 100, 50, 1000, 10, 5, "deepseek-chat");
+        await repo.RecordUsageAsync(agentId, 100, 50, 1000, reasoning: 800, lastRequestHit: 10, lastRequestMiss: 5, model: "deepseek-chat");
 
         var usage = await repo.GetUsageAsync(agentId);
         Assert.Equal(100, usage.Hit);
         Assert.Equal(50, usage.Miss);
         Assert.Equal(1000, usage.Output);
+        // Reasoning is a slice of Output, not a separate charge — stored only to explain the bill.
+        Assert.Equal(800, usage.Reasoning);
 
-        await repo.RecordUsageAsync(agentId, 200, 100, 2000, 20, 10, "deepseek-chat");
+        await repo.RecordUsageAsync(agentId, 200, 100, 2000, reasoning: 1500, lastRequestHit: 20, lastRequestMiss: 10, model: "deepseek-chat");
 
         usage = await repo.GetUsageAsync(agentId);
         Assert.Equal(300, usage.Hit);
         Assert.Equal(150, usage.Miss);
         Assert.Equal(3000, usage.Output);
+        Assert.Equal(2300, usage.Reasoning);
 
         var lastUsage = await repo.GetLastUsageAsync(agentId);
         Assert.Equal(200, lastUsage.Hit);
@@ -284,5 +350,26 @@ public class SessionRepositoryTests : IDisposable
         var next = MemoryBlock.UserMessage("after fork");
         await blocks.AppendBlocksAsync(clone, [next]);
         Assert.Equal(5, next.Number);
+    }
+
+    [Fact]
+    public async Task ForkSession_KeepsToolResult()
+    {
+        const string source = "fork-tool-source";
+        const string clone = "fork-tool-clone";
+
+        using var sessions = CreateRepo();
+        using var blocks = new BlockRepository(_db.ConnStr);
+
+        await sessions.EnsureSessionAsync(source);
+        var tool = MemoryBlock.ToolCall("bash", """{"command":"echo probe-ok"}""");
+        tool.ToolResult = "probe-ok";
+        await blocks.AppendBlocksAsync(source, [tool]);
+
+        await sessions.ForkSessionAsync(source, clone, "/clone");
+
+        var copied = Assert.Single(await blocks.LoadBlocksAsync(clone));
+        Assert.Equal(BlockType.tool, copied.Type);
+        Assert.Equal("probe-ok", copied.ToolResult);
     }
 }

@@ -64,7 +64,7 @@ internal static class SubAgentTool
     /// <summary>Shared runner: saves usage + block checkpoints, executes task, records delta cost into main
     /// session's usage, returns subagent's text response and block checkpoint (for caller to clean blocks
     /// that were created during this task).</summary>
-    private static async Task<(string Result, double BlockCheckpoint, long CkHit, long CkMiss, long CkOutput)> RunAgentTask(
+    private static async Task<(string Result, double BlockCheckpoint, long CkHit, long CkMiss, long CkOutput, long CkReasoning)> RunAgentTask(
         AgentScope scope, IAgentStore agentStore, IBlockStore blockStore, string agentId, string task,
         string? mainSessionId, string defaultModel, CancellationToken ct, bool ephemeral,
         string? cwd = null)
@@ -77,11 +77,13 @@ internal static class SubAgentTool
         chatOptions.AdditionalProperties ??= [];
         chatOptions.AdditionalProperties["isSubagent"] = "true";
         chatOptions.AdditionalProperties["ephemeral"] = ephemeral ? "true" : "false";
-        chatOptions.Tools = (await scope.ToolRegistry.GetBuiltinToolsAsync(agentId, !ephemeral)).ToList();
+        // Same base directory the turn itself uses (cwd → agent home → process cwd): the tools a
+        // subagent holds must resolve relative paths exactly where its transcript says it works.
+        chatOptions.Tools = (await scope.ToolRegistry.GetBuiltinToolsAsync(agentId, !ephemeral, cwd)).ToList();
 
         // ── Checkpoint: save block number + usage before task ──
         var blockCk = await agentStore.GetNextNumberAsync(agentId);
-        var (ckHit, ckMiss, ckOutput) = await agentStore.GetUsageAsync(agentId);
+        var (ckHit, ckMiss, ckOutput, ckReasoning) = await agentStore.GetUsageAsync(agentId);
 
         var sb = new StringBuilder();
         try
@@ -106,19 +108,19 @@ internal static class SubAgentTool
         {
             // Record delta usage even on cancellation — subagent did complete its last iteration,
             // usage is in DB via OnIterationRecorded, we just need to transfer delta to main session
-            await RecordSubAgentDeltaAsync(agentStore, agentId, mainSessionId, ckHit, ckMiss, ckOutput, resolvedModel);
+            await RecordSubAgentDeltaAsync(agentStore, agentId, mainSessionId, ckHit, ckMiss, ckOutput, ckReasoning, resolvedModel);
 
             // Return whatever text the model streamed before cancellation (discard only
             // the text that preceded a tool call — none was executed if we're here).
             // The caller (RunSubAgentTaskAsync) will still clean up ephemeral blocks
             // because it catches OCE separately and re-cleans.
-            return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput);
+            return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput, ckReasoning);
         }
 
         // ── Delta after task completes ──
-        await RecordSubAgentDeltaAsync(agentStore, agentId, mainSessionId, ckHit, ckMiss, ckOutput, resolvedModel);
+        await RecordSubAgentDeltaAsync(agentStore, agentId, mainSessionId, ckHit, ckMiss, ckOutput, ckReasoning, resolvedModel);
 
-        return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput);
+        return (sb.ToString().Trim(), blockCk, ckHit, ckMiss, ckOutput, ckReasoning);
     }
 
     /// <summary>Compute delta since checkpoint and record into main session's usage.
@@ -126,18 +128,19 @@ internal static class SubAgentTool
     /// the transfer is skipped; the agent's per-iteration usage is already on its own rows.</summary>
     private static async Task RecordSubAgentDeltaAsync(
         IAgentStore agentStore, string agentId, string? mainSessionId,
-        long ckHit, long ckMiss, long ckOutput, string? model)
+        long ckHit, long ckMiss, long ckOutput, long ckReasoning, string? model)
     {
         if (mainSessionId is null)
             return;
 
-        var (newHit, newMiss, newOutput) = await agentStore.GetUsageAsync(agentId);
+        var (newHit, newMiss, newOutput, newReasoning) = await agentStore.GetUsageAsync(agentId);
         var dHit = newHit - ckHit;
         var dMiss = newMiss - ckMiss;
         var dOutput = newOutput - ckOutput;
+        var dReasoning = newReasoning - ckReasoning;
 
         if (dHit > 0 || dMiss > 0 || dOutput > 0)
-            await agentStore.RecordUsageAsync(mainSessionId, dHit, dMiss, dOutput, model: model);
+            await agentStore.RecordUsageAsync(mainSessionId, dHit, dMiss, dOutput, dReasoning, model: model);
     }
 
     /// <summary>Ensure a scope is registered for the given agent, creating one if needed.</summary>
@@ -174,11 +177,11 @@ internal static class SubAgentTool
         // Record pending run — crash-safe: if process dies, this persists in DB
         var mode = ephemeral ? "run-dry" : "use";
         double? dryCk = null;
-        long ckHit = 0, ckMiss = 0, ckOutput = 0;
+        long ckHit = 0, ckMiss = 0, ckOutput = 0, ckReasoning = 0;
         if (ephemeral)
         {
             dryCk = await agentStore.GetNextNumberAsync(agentId);
-            (ckHit, ckMiss, ckOutput) = await agentStore.GetUsageAsync(agentId);
+            (ckHit, ckMiss, ckOutput, ckReasoning) = await agentStore.GetUsageAsync(agentId);
             await agentStore.SetPendingRunAsync(agentId, mode, dryCk);
         }
         else
@@ -190,13 +193,13 @@ internal static class SubAgentTool
         {
             return await subAgentManager.RunAsync(agentId, async s =>
             {
-                var (output, blockCk, ckHit, ckMiss, ckOutput) = await RunAgentTask(s, agentStore, blockStore, agentId, task, mainSessionId, defaultModel, ct, ephemeral, cwd);
+                var (output, blockCk, ckHit, ckMiss, ckOutput, ckReasoning) = await RunAgentTask(s, agentStore, blockStore, agentId, task, mainSessionId, defaultModel, ct, ephemeral, cwd);
                 if (ephemeral)
                 {
                     // Restore usage to checkpoint (before the run) instead of clearing everything
                     await agentStore.ClearUsageAsync(agentId);
                     if (ckHit > 0 || ckMiss > 0 || ckOutput > 0)
-                        await agentStore.RecordUsageAsync(agentId, ckHit, ckMiss, ckOutput);
+                        await agentStore.RecordUsageAsync(agentId, ckHit, ckMiss, ckOutput, ckReasoning, model: defaultModel);
                     await blockStore.DeleteBlocksSinceAsync(agentId, blockCk);
                 }
                 return output;
@@ -209,7 +212,7 @@ internal static class SubAgentTool
             {
                 await agentStore.ClearUsageAsync(agentId);
                 if (ckHit > 0 || ckMiss > 0 || ckOutput > 0)
-                    await agentStore.RecordUsageAsync(agentId, ckHit, ckMiss, ckOutput);
+                        await agentStore.RecordUsageAsync(agentId, ckHit, ckMiss, ckOutput, ckReasoning, model: defaultModel);
                 await blockStore.DeleteBlocksSinceAsync(agentId, dryCk.Value);
             }
             throw;
@@ -281,7 +284,7 @@ internal static class SubAgentTool
         return AIFunctionFactory.Create(async (
             [Description("Initial task/instruction for the subagent.")] string task,
             [Description("Agent name (optional — auto-generated GUID if omitted). If name is provided and the agent already exists, runs a dry-clean task (blocks cleared after). If the agent doesn't exist, creates a temporary one and deletes after.")] string? name = null,
-            string? cwd = null,
+            [Description("Working directory for this subagent. Its Glyphite.json/AGENTS.md are read from here, and relative paths in read_file/write_file/patch_file/search_glob/search_grep and the starting directory of its bash session resolve here. Defaults to the current agent's home directory.")] string? cwd = null,
             string? mode = null,
             CancellationToken ct = default) =>
         {
@@ -346,7 +349,7 @@ internal static class SubAgentTool
         return AIFunctionFactory.Create(async (
             [Description("Name of the subagent to execute the task on. Auto-created if not found.")] string name,
             [Description("Task/instruction for the subagent.")] string task,
-            string? cwd = null,
+            [Description("Working directory for this subagent. Its Glyphite.json/AGENTS.md are read from here, and relative paths in read_file/write_file/patch_file/search_glob/search_grep and the starting directory of its bash session resolve here. Defaults to the current agent's home directory.")] string? cwd = null,
             string? mode = null,
             CancellationToken ct = default) =>
         {

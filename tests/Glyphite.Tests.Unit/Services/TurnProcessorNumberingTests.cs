@@ -36,7 +36,7 @@ public class TurnProcessorNumberingTests : IDisposable
     {
         _compaction = new CompactionService(_db.Blocks, _db.Sessions, _cfg, _chat, NullLogger<CompactionService>.Instance);
 
-        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>())
+        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(Task.FromResult<IReadOnlyList<AITool>>([]));
         _configLoader.LoadConfigAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
             .Returns(Task.CompletedTask);
@@ -111,7 +111,7 @@ public class TurnProcessorNumberingTests : IDisposable
             await _db.Blocks.AppendBlocksAsync(AgentId, [MemoryBlock.Create(BlockType.todo, "from-tool")]);
             return "written";
         };
-        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>())
+        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(Task.FromResult<IReadOnlyList<AITool>>([AIFunctionFactory.Create(writeBlock, "write_block")]));
 
         var memory = new BlockMemoryProvider(

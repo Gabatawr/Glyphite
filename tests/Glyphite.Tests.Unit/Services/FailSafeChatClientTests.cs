@@ -214,23 +214,50 @@ public class FailSafeChatClientTests
         var client = new FailSafeChatClient(fake, 5, NullLogger.Instance);
         var options = new ChatOptions { Tools = [BashTool()] };
 
-        var deltas = new List<(long Hit, long Miss, long Output)>();
-        client.OnIterationRecorded = (hit, miss, output) =>
+        var deltas = new List<(long Hit, long Miss, long Output, long Reasoning)>();
+        client.OnIterationRecorded = (hit, miss, output, reasoning) =>
         {
-            deltas.Add((hit, miss, output));
+            deltas.Add((hit, miss, output, reasoning));
             return Task.CompletedTask;
         };
 
         await Consume(client, options);
 
         Assert.Equal(2, deltas.Count);
-        Assert.Equal((60, 40, 40), deltas[0]);
-        Assert.Equal((120, 80, 80), deltas[1]);
+        Assert.Equal((60, 40, 40, 0), deltas[0]);
+        Assert.Equal((120, 80, 80, 0), deltas[1]);
         Assert.Equal(180, client.TotalCacheHitTokens);
         Assert.Equal(120, client.TotalCacheMissTokens);
         Assert.Equal(120, client.TotalOutputTokens);
         Assert.Equal(120, client.LastHitTokens);
         Assert.Equal(80, client.LastMissTokens);
+    }
+
+    [Fact]
+    public async Task ReasoningTokens_TrackedSeparately_WhileOutputStaysBilled()
+    {
+        // completion_tokens already counts the thinking (real provider shape: 22 billed, 20 of them
+        // reasoning). Output must stay the billed number; reasoning only explains the split, so it is
+        // never added on top and never used as a measure of context growth.
+        using var doc = JsonDocument.Parse(
+            """{"usage":{"prompt_tokens":100,"completion_tokens":40,"completion_tokens_details":{"reasoning_tokens":30}}}""");
+        var fake = new FakeChatClient();
+        fake.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("done")]) { RawRepresentation = doc.RootElement }]);
+        var client = new FailSafeChatClient(fake, 5, NullLogger.Instance);
+
+        (long Hit, long Miss, long Output, long Reasoning) recorded = default;
+        client.OnIterationRecorded = (hit, miss, output, reasoning) =>
+        {
+            recorded = (hit, miss, output, reasoning);
+            return Task.CompletedTask;
+        };
+
+        await Consume(client, new ChatOptions());
+
+        Assert.Equal((0L, 100L, 40L, 30L), recorded);
+        Assert.Equal(40, client.TotalOutputTokens);      // unchanged — reasoning is already inside
+        Assert.Equal(30, client.TotalReasoningTokens);
+        Assert.Equal(30, client.LastReasoningTokens);
     }
 
     // ── Peek ──

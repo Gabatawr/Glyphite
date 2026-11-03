@@ -24,7 +24,7 @@ public class BashSessionManagerTests : IDisposable
             DiscoveryTimeoutMs = 2000,
             DefaultDirectory = _tempDir,
         };
-        _cfg.GetOptionsAsync<BashOptions>(BashOptions.Section).Returns(_opts);
+        _cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, Arg.Any<string?>()).Returns(_opts);
         _manager = new BashSessionManager(_cfg, _opts, NullLogger<BashSessionManager>.Instance, _tempDir);
     }
 
@@ -41,6 +41,46 @@ public class BashSessionManagerTests : IDisposable
         var output = await _manager.ExecuteAsync("agent-basic", "echo hello-world");
 
         Assert.Contains("hello-world", output);
+    }
+
+    /// <summary>
+    /// A subagent's own Glyphite.json is its config, so its Bash:DefaultDirectory must be honoured.
+    /// Reading BashOptions without the agent id silently pinned every shell to the global section,
+    /// which is why a subagent's shell started in the directory glyphite was launched from.
+    /// </summary>
+    [Fact]
+    public async Task Execute_UsesPerAgentDefaultDirectory()
+    {
+        var agentDir = Path.Combine(_tempDir, "agent-dir");
+        Directory.CreateDirectory(agentDir);
+        _cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, "agent-with-dir").Returns(new BashOptions
+        {
+            ExecutablePath = "bash",
+            DiscoveryTimeoutMs = 2000,
+            DefaultDirectory = agentDir,
+        });
+
+        var output = await _manager.ExecuteAsync("agent-with-dir", "pwd");
+
+        Assert.Contains(agentDir, output);
+    }
+
+    /// <summary>No explicit default → the agent's home is the starting directory (a subagent's cwd).</summary>
+    [Fact]
+    public async Task Execute_FallsBackToAgentHome()
+    {
+        var home = Path.Combine(_tempDir, "agent-home");
+        Directory.CreateDirectory(home);
+        var agents = Substitute.For<IAgentStore>();
+        agents.GetAgentHomePathAsync("agent-in-home").Returns(home);
+        var opts = new BashOptions { ExecutablePath = "bash", DiscoveryTimeoutMs = 2000 };
+        _cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, "agent-in-home").Returns(opts);
+        using var manager = new BashSessionManager(
+            _cfg, opts, NullLogger<BashSessionManager>.Instance, _tempDir, agents);
+
+        var output = await manager.ExecuteAsync("agent-in-home", "pwd");
+
+        Assert.Contains(home, output);
     }
 
     [Fact]

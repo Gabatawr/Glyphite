@@ -187,6 +187,50 @@ public class ToolConfigDecoratorTests
         Assert.Equal(10_000, ((string)result!).Length);
     }
 
+    // ── The shape real tools actually return ──
+
+    [Fact]
+    public async Task Invoke_MaxSize_TruncatesResultsFromARealToolFactory()
+    {
+        // AIFunctionFactory yields a JsonElement, not a string. A plain `result is string` test
+        // matched no tool at all, so `maxSize` was dead configuration: one 2.6 MB fetch_web page
+        // went into the history whole and every later request died on the context limit.
+        var inner = AIFunctionFactory.Create(() => new string('q', 50_000), "real_tool");
+        var decorated = new ToolConfigDecorator(inner, peekDefault: false, contentMaxSizeDefault: 1000, timeoutSecondsDefault: -1);
+
+        var result = await decorated.InvokeAsync(Args());
+
+        var text = Assert.IsType<string>(result);
+        Assert.Contains("[Content truncated at 1000 chars. Full result length: 50000]", text);
+        Assert.True(text.Length < 1300, $"got {text.Length} chars");
+    }
+
+    [Fact]
+    public async Task Invoke_MaxSize_RealToolResultUnderLimit_IsLeftAlone()
+    {
+        var inner = AIFunctionFactory.Create(() => "small", "real_tool");
+        var decorated = new ToolConfigDecorator(inner, peekDefault: false, contentMaxSizeDefault: 1000, timeoutSecondsDefault: -1);
+
+        var result = await decorated.InvokeAsync(Args());
+
+        Assert.Equal("small", result?.ToString());
+    }
+
+    [Fact]
+    public void ResultText_ReadsStringsAndJsonStringsOnly()
+    {
+        using var jsonString = JsonDocument.Parse("\"abc\"");
+        using var jsonObject = JsonDocument.Parse("""{"a":1}""");
+
+        Assert.Equal("abc", ToolConfigDecorator.ResultText("abc"));
+        Assert.Equal("abc", ToolConfigDecorator.ResultText(jsonString.RootElement.Clone()));
+
+        // Structured and non-text results are not text — they must stay untouched.
+        Assert.Null(ToolConfigDecorator.ResultText(jsonObject.RootElement.Clone()));
+        Assert.Null(ToolConfigDecorator.ResultText(42));
+        Assert.Null(ToolConfigDecorator.ResultText(null));
+    }
+
     // ── Truncate (shared with the streaming pipeline) ──
 
     [Fact]
@@ -231,5 +275,54 @@ public class ToolConfigDecoratorTests
         {
             try { Directory.Delete(tmpDir, recursive: true); } catch { /* best-effort */ }
         }
+    }
+
+    // ── extra_cfg: what counts as an override ──
+
+    private static JsonElement Cfg(string json) => JsonDocument.Parse(json).RootElement.Clone();
+
+    private static ToolConfigDecorator Decorator(
+        bool peekDefault, int contentMaxSizeDefault = -1, int timeoutSecondsDefault = 0) =>
+        new(new CapturingFunction(), peekDefault, contentMaxSizeDefault, timeoutSecondsDefault);
+
+    [Fact]
+    public void OverridesFrom_ValueEqualToTheDefault_IsNotAnOverride()
+    {
+        var overrides = Decorator(peekDefault: true).OverridesFrom(Cfg("""{"peek":true}"""));
+
+        Assert.Empty(overrides);
+    }
+
+    [Fact]
+    public void OverridesFrom_ReportsOnlyFieldsThatDifferFromDefaults()
+    {
+        // timeout 30 is this tool's own default, so it says nothing; the other two differ.
+        var overrides = Decorator(peekDefault: true, contentMaxSizeDefault: -1, timeoutSecondsDefault: 30)
+            .OverridesFrom(Cfg("""{"peek":false,"maxSize":100,"timeout":30}"""));
+
+        Assert.Equal(2, overrides.Count);
+        Assert.Equal(false, overrides["peek"]);
+        Assert.Equal(100, overrides["maxSize"]);
+    }
+
+    [Fact]
+    public void OverridesFrom_SentinelValues_MatchTheirDefaults()
+    {
+        var decorator = Decorator(peekDefault: false, contentMaxSizeDefault: -1, timeoutSecondsDefault: 0);
+
+        Assert.Empty(decorator.OverridesFrom(Cfg("""{"maxSize":-1}""")));   // unlimited is the default
+        Assert.Empty(decorator.OverridesFrom(Cfg("""{"timeout":0}""")));    // 0 means "no timeout"
+        Assert.Equal(0, decorator.OverridesFrom(Cfg("""{"maxSize":0}"""))["maxSize"]);   // 0 = hide differs
+        Assert.Equal(5, decorator.OverridesFrom(Cfg("""{"timeout":5}"""))["timeout"]);
+    }
+
+    [Fact]
+    public void OverridesFrom_IgnoresUnknownKeysAndNonObjects()
+    {
+        var decorator = Decorator(peekDefault: false, contentMaxSizeDefault: 100, timeoutSecondsDefault: 0);
+
+        Assert.Empty(decorator.OverridesFrom(Cfg("""{"whatever":1}""")));
+        Assert.Empty(decorator.OverridesFrom(Cfg("\"not-an-object\"")));
+        Assert.Empty(decorator.OverridesFrom(Cfg("""{"maxSize":100}""")));  // equals this tool's default
     }
 }

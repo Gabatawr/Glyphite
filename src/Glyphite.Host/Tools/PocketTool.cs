@@ -204,12 +204,17 @@ public static class PocketTool
             var cmd = Substitute(entry.Cmd, values, entry.Args);
             var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, agentId);
             var dedupOpts = await cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, agentId);
-            // Approved entries skip the interactive confirmation at run time (checked once at add);
-            // hard block-checks (forbidden commands/directories) still apply.
+
+            // Approval was granted for the template as it was written. A substituted command is a
+            // different command — the values come from the model, and a `raw` argument is inserted
+            // unquoted — so it goes through the same runtime gates as a hand-written bash call.
+            // Hard block-checks (forbidden commands/directories) apply either way.
+            var unsubstituted = string.Equals(cmd, entry.Cmd, StringComparison.Ordinal);
+
             return await BashTool.ExecuteBash(
                 cmd, entry.Cwd, timeoutMs: null, bashManager, agentId,
                 dedupOpts, bashOpts, kvStore, isSubAgent, safetyChecker, ct,
-                skipInteractiveConfirm: entry.Approved);
+                skipInteractiveConfirm: entry.Approved && unsubstituted);
         };
 
     /// <summary>Replace {arg} placeholders in the command template with values (shell-quoted unless raw).</summary>
@@ -690,7 +695,10 @@ public static class PocketTool
     /// One-time safety pre-flight for a command template at add time: forbidden-command/directory
     /// hard blocks, then an interactive confirmation (OK/Stop/Check) when the template matches a
     /// CheckRequireCommands pattern, with an optional AI safety verdict for the Check choice.
-    /// Mirrors the runtime checks in <see cref="BashTool.ExecuteBash"/>.
+    ///
+    /// Detection goes through <see cref="CommandAnalyzer"/> — the same reader the runtime uses — so a
+    /// template is judged by what it actually runs (<c>cd x &amp;&amp; rm -rf y</c>), not by its first
+    /// word. And the prompt is asked once, however many patterns matched.
     /// </summary>
     private static async Task<(bool Ok, string? Error)> PreflightCheckAsync(
         IConfigService cfg, IKVStore kvStore, bool isSubAgent, ISafetyChecker? safetyChecker,
@@ -699,53 +707,51 @@ public static class PocketTool
         var bashOpts = await cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, agentId);
         var trimmed = entry.Cmd.Trim();
 
-        foreach (var forbidden in bashOpts.ForbiddenCommands)
-        {
-            if (string.IsNullOrEmpty(forbidden)) continue;
-            if (trimmed.Equals(forbidden, StringComparison.OrdinalIgnoreCase) ||
-                trimmed.StartsWith(forbidden + " ", StringComparison.OrdinalIgnoreCase))
-                return (false, $"Error: command blocked — '{entry.Cmd}' matches forbidden pattern '{forbidden}'. Try an alternative approach.");
-        }
+        if (CommandAnalyzer.FindMatch(trimmed, bashOpts.ForbiddenCommands) is { } forbidden)
+            return (false, $"Error: command blocked — '{entry.Cmd}' matches forbidden pattern '{forbidden}'. Try an alternative approach.");
 
-        if (!string.IsNullOrEmpty(entry.Cwd))
+        if (!string.IsNullOrEmpty(entry.Cwd) &&
+            PathGuard.BlockReason(entry.Cwd, bashOpts.ForbiddenDirectories, bashOpts.DefaultDirectory) is { } reason)
+            return (false, $"Error: directory blocked — '{entry.Cwd}' {reason}. Try an alternative approach.");
+
+        if (CommandAnalyzer.FindMatch(trimmed, bashOpts.CheckRequireCommands) is not null)
         {
-            var normalizedWorkdir = entry.Cwd.Replace('\\', '/').TrimEnd('/');
-            foreach (var forbiddenDir in bashOpts.ForbiddenDirectories)
+            var timeoutMs = bashOpts.CheckRequireCommandsTimeout * 1000;
+
+            var choice = await InteractiveConfirmation.ShowAsync(
+                trimmed, timeoutMs, kvStore, agentId, isSubAgent, ct);
+
+            switch (choice)
             {
-                if (string.IsNullOrEmpty(forbiddenDir)) continue;
-                var normalizedForbidden = forbiddenDir.Replace('\\', '/').TrimEnd('/');
-                if (normalizedWorkdir.Equals(normalizedForbidden, StringComparison.OrdinalIgnoreCase) ||
-                    normalizedWorkdir.StartsWith(normalizedForbidden + "/", StringComparison.OrdinalIgnoreCase))
-                    return (false, $"Error: directory blocked — '{entry.Cwd}' matches blocked path '{forbiddenDir}'. Try an alternative approach.");
-            }
-        }
+                case InteractiveConfirmation.Choice.Stop:
+                    return (false, $"Error: command blocked by user — '{entry.Cmd}' requires explicit approval. Choose a different command or ask the user.");
 
-        foreach (var check in bashOpts.CheckRequireCommands)
-        {
-            if (string.IsNullOrEmpty(check)) continue;
-            if (trimmed.Equals(check, StringComparison.OrdinalIgnoreCase) ||
-                trimmed.StartsWith(check + " ", StringComparison.OrdinalIgnoreCase))
-            {
-                var choice = await InteractiveConfirmation.ShowAsync(
-                    trimmed, bashOpts.CheckRequireCommandsTimeout * 1000, kvStore, agentId, isSubAgent, ct);
+                case InteractiveConfirmation.Choice.Check:
+                    var verdict = safetyChecker is not null
+                        ? await safetyChecker.CheckAsync(agentId, trimmed, ct)
+                        : SafetyVerdict.Unavailable("no safety checker configured");
 
-                switch (choice)
-                {
-                    case InteractiveConfirmation.Choice.Stop:
-                        return (false, $"Error: command blocked by user — '{entry.Cmd}' requires explicit approval. Choose a different command or ask the user.");
-                    case InteractiveConfirmation.Choice.Check:
-                        if (safetyChecker is not null)
-                        {
-                            var verdict = await safetyChecker.CheckAsync(agentId, trimmed, ct);
-                            if (!verdict.Allow)
-                                return (false, $"Error: command blocked by safety check — '{entry.Cmd}' — {verdict.Why}");
-                        }
+                    if (verdict.Inconclusive)
+                    {
+                        // Nothing has judged this template yet, and the entry is about to become
+                        // pre-approved for every future run — so the human, not a timer, decides.
+                        var fallback = await InteractiveConfirmation.ShowAsync(
+                            trimmed, timeoutMs, kvStore, agentId, isSubAgent, ct,
+                            noAutoSelect: true, note: "safety check unavailable");
+
+                        if (fallback != InteractiveConfirmation.Choice.Ok)
+                            return (false, $"Error: safety check unavailable ({verdict.Why}) and no approval — '{entry.Cmd}' was not saved.");
+
                         break;
-                    case InteractiveConfirmation.Choice.Ok:
-                    default:
-                        break;
-                }
-                break; // confirmed — no need to check remaining patterns
+                    }
+
+                    if (!verdict.Allow)
+                        return (false, $"Error: command blocked by safety check — '{entry.Cmd}' — {verdict.Why}");
+                    break;
+
+                case InteractiveConfirmation.Choice.Ok:
+                default:
+                    break;
             }
         }
 

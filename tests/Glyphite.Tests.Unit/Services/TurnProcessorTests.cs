@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Images;
@@ -31,7 +32,7 @@ public class TurnProcessorTests : IDisposable
         _memory.CurrentExecutedIds.Returns(new AsyncLocal<HashSet<string>?>());
         _memory.BuildContextAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<int?>())
             .Returns(Task.FromResult(new List<ChatMessage>()));
-        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>())
+        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(Task.FromResult<IReadOnlyList<AITool>>([]));
         _configLoader.LoadConfigAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
             .Returns(Task.CompletedTask);
@@ -76,6 +77,26 @@ public class TurnProcessorTests : IDisposable
         return events;
     }
 // ── Turn lifecycle ──
+
+    /// <summary>
+    /// The tools a turn hands the model must resolve relative paths against the agent's own directory
+    /// (a subagent's cwd), not the directory the process happens to run in.
+    /// </summary>
+    [Fact]
+    public async Task AgentCwd_IsTheBaseDirectoryOfTheTools()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("hi")])]);
+
+        var processor = CreateProcessor();
+        await foreach (var _ in processor.ProcessAsync(
+            AgentId, "hello", new ChatOptions(), default, agentCwd: "/tmp/some-agent-dir"))
+        {
+        }
+
+        await _tools.Received(1).GetBuiltinToolsAsync(AgentId, Arg.Any<bool>(), "/tmp/some-agent-dir");
+    }
 
     [Fact]
     public async Task LastIterationUsage_PopulatedAfterTurn()
@@ -135,6 +156,152 @@ public class TurnProcessorTests : IDisposable
         Assert.Contains(blocks, b => b.Type == BlockType.user_message && b.Content == "hello");
         Assert.Contains(blocks, b => b.Type == BlockType.agent_message && b.Content == "hi there");
         Assert.Contains(blocks, b => b.Type == BlockType.turn);
+    }
+
+    [Fact]
+    public async Task TurnMarker_SeparatesBillingOutputFromContextSize()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+        using var doc = JsonDocument.Parse(
+            """{"usage":{"prompt_tokens":500,"completion_tokens":60,"completion_tokens_details":{"reasoning_tokens":45}}}""");
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("hi")]) { RawRepresentation = doc.RootElement }]);
+
+        await RunTurnAsync();
+
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
+        var marker = Assert.Single(blocks, b => b.Type == BlockType.turn);
+        using var parsed = JsonDocument.Parse(marker.Content);
+        var root = parsed.RootElement;
+
+        Assert.Equal(500, root.GetProperty("miss").GetInt64());       // prompt = the only context measure
+        Assert.Equal(60, root.GetProperty("out_").GetInt64());        // billed output, reasoning inside
+        Assert.Equal(45, root.GetProperty("reasoning").GetInt64());   // ...of which hidden thinking
+
+        // `stored*` answers a different question: how much of this turn actually sits in the
+        // history. It is measured from the blocks (same ruler as compaction), so it can never be
+        // confused with the bill.
+        var modelOutput = blocks
+            .Where(b => b.Type is BlockType.agent_message or BlockType.agent_reasoning)
+            .ToList();
+        Assert.Equal(CompactionService.EstimateZoneTokens(modelOutput), root.GetProperty("stored").GetInt64());
+        Assert.Equal(0, root.GetProperty("stored_reasoning").GetInt64()); // no reasoning in this response
+        Assert.True(root.GetProperty("stored").GetInt64() < root.GetProperty("out_").GetInt64());
+    }
+
+    [Fact]
+    public async Task TurnMarker_StoredReasoning_IsMeasuredFromTheReasoningBlock()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+        _chat.QueueStream([
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent(new string('t', 400))]),
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextContent(new string('a', 200))]),
+        ]);
+
+        await RunTurnAsync();
+
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
+        var marker = Assert.Single(blocks, b => b.Type == BlockType.turn);
+        using var parsed = JsonDocument.Parse(marker.Content);
+        var root = parsed.RootElement;
+
+        var reasoningSize = CompactionService.EstimateZoneTokens(
+            blocks.Where(b => b.Type == BlockType.agent_reasoning).ToList());
+        var textSize = CompactionService.EstimateZoneTokens(
+            blocks.Where(b => b.Type == BlockType.agent_message).ToList());
+
+        Assert.True(reasoningSize > 0);
+        Assert.Equal(reasoningSize, root.GetProperty("stored_reasoning").GetInt64());
+        Assert.Equal(textSize, root.GetProperty("stored_text").GetInt64());
+        // Each part floors its own division by 4, so the parts can lag the total by a token or two.
+        Assert.InRange(root.GetProperty("stored").GetInt64(), reasoningSize + textSize - 2, reasoningSize + textSize);
+    }
+
+    [Fact]
+    public async Task TurnMarker_StoredParts_AddUpToTheFootprintInHistory()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+
+        // A real tool, so the turn writes a tool block with a result in it.
+        var bash = AIFunctionFactory.Create((string command) => Task.FromResult("ok"), "bash");
+        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(Task.FromResult<IReadOnlyList<AITool>>([bash]));
+
+        // Iteration 1: thinking + a tool call. Iteration 2: thinking + the answer.
+        _chat.QueueStream([
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent(new string('t', 200))]),
+            new ChatResponseUpdate(ChatRole.Assistant,
+                [new FunctionCallContent("c1", "bash", new Dictionary<string, object?> { ["command"] = "ls" })]),
+        ]);
+        _chat.QueueStream([
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextReasoningContent(new string('u', 100))]),
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("done")]),
+        ]);
+
+        await RunTurnAsync();
+
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
+        var marker = Assert.Single(blocks, b => b.Type == BlockType.turn);
+        using var parsed = JsonDocument.Parse(marker.Content);
+        var root = parsed.RootElement;
+
+        var parts = root.GetProperty("stored_reasoning").GetInt64()
+                  + root.GetProperty("stored_text").GetInt64()
+                  + root.GetProperty("stored_tool").GetInt64();
+        Assert.True(root.GetProperty("stored_reasoning").GetInt64() > 0);
+        Assert.True(root.GetProperty("stored_text").GetInt64() > 0);
+        Assert.True(root.GetProperty("stored_tool").GetInt64() > 0);
+        // Per-part flooring: the three parts add up to `stored` within a token or two.
+        var stored = root.GetProperty("stored").GetInt64();
+        Assert.InRange(parts, stored - 2, stored);
+
+        // The recorded footprint is the footprint of the blocks that were actually persisted.
+        var modelOutput = blocks
+            .Where(b => b.Type is BlockType.agent_message or BlockType.agent_reasoning or BlockType.tool)
+            .ToList();
+        Assert.Equal(CompactionService.EstimateZoneTokens(modelOutput), root.GetProperty("stored").GetInt64());
+    }
+
+    [Fact]
+    public async Task TurnMarker_ContextIsTheLastIterationPrompt_NotTheSumOverIterations()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+
+        var bash = AIFunctionFactory.Create((string command) => Task.FromResult("ok"), "bash");
+        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
+            .Returns(Task.FromResult<IReadOnlyList<AITool>>([bash]));
+
+        // Two iterations, each with its own prompt: 1000 tokens, then 1200 (600 of them cached).
+        using var first = JsonDocument.Parse(
+            """{"usage":{"prompt_tokens":1000,"prompt_tokens_details":{"cached_tokens":400},"completion_tokens":50}}""");
+        using var second = JsonDocument.Parse(
+            """{"usage":{"prompt_tokens":1200,"prompt_tokens_details":{"cached_tokens":600},"completion_tokens":30}}""");
+
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant,
+            [new FunctionCallContent("c1", "bash", new Dictionary<string, object?> { ["command"] = "ls" })])
+            { RawRepresentation = first.RootElement }]);
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("done")])
+            { RawRepresentation = second.RootElement }]);
+
+        await RunTurnAsync();
+
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
+        var marker = Assert.Single(blocks, b => b.Type == BlockType.turn);
+        using var parsed = JsonDocument.Parse(marker.Content);
+        var root = parsed.RootElement;
+
+        // Billing is summed over the turn's iterations: 1000 + 1200 prompt tokens.
+        Assert.Equal(2200, root.GetProperty("hit").GetInt64() + root.GetProperty("miss").GetInt64());
+        Assert.Equal(80, root.GetProperty("out_").GetInt64());
+
+        // Context is the prompt of the last iteration only — the number the prompt counter shows and
+        // the compaction threshold reads. Reading `hit`/`miss` as "context" would double it.
+        Assert.Equal(1200, root.GetProperty("context").GetInt64());
+        Assert.True(root.GetProperty("context").GetInt64()
+                    < root.GetProperty("hit").GetInt64() + root.GetProperty("miss").GetInt64());
     }
 // ── Images ──
 
@@ -213,7 +380,7 @@ public class TurnProcessorTests : IDisposable
 
         // The real tool, sharing the sink the turn seeds with its own attachments.
         var images = new ImageAttachmentSink();
-        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>())
+        _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(Task.FromResult<IReadOnlyList<AITool>>(
                 [ImageTool.AsViewImageFunction(new ImageLoader(), images, _cfg)]));
 
@@ -299,5 +466,78 @@ public class TurnProcessorTests : IDisposable
         var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
         var reasoning = blocks.First(b => b.Type == BlockType.agent_reasoning);
         Assert.Equal("SHORT", reasoning.Content);
+    }
+
+    /// <summary>
+    /// Reasoning is kept as history on purpose, so compression is its only brake — but the newest
+    /// turn must survive: it is the model's working memory for the next step.
+    /// </summary>
+    [Fact]
+    public async Task ReasoningCompression_SkipsTheNewestTurn()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions(compression: new CompressionOptions
+        {
+            AutoCompress = false,
+            AutoCompressReasoning = true,
+            AutoCompressReasoningMaxSize = 100,
+        });
+
+        var oldReasoning = MemoryBlock.AgentReasoning(new string('o', 500));
+        var newReasoning = MemoryBlock.AgentReasoning(new string('n', 500));
+        await _db.Blocks.AppendBlocksAsync(AgentId,
+        [
+            MemoryBlock.UserMessage("q0"),
+            oldReasoning,
+            MemoryBlock.TurnMarker(),
+            MemoryBlock.UserMessage("q1"),
+            newReasoning,
+        ]);
+        // Two summaries are queued, only one may be consumed: a second summarization call would
+        // mean the newest turn's reasoning was rewritten — exactly what must not happen.
+        _chat.QueueResponse(new ChatResponse([new ChatMessage(ChatRole.Assistant, "OLD-SUMMARY")]));
+        _chat.QueueResponse(new ChatResponse([new ChatMessage(ChatRole.Assistant, "NEW-SUMMARY")]));
+
+        var events = await RunTurnAsync();
+
+        var autoTool = Assert.Single(events.OfType<AutoToolTurnEvent>(), e => e.Name == "compress_reasoning");
+        Assert.Contains("\"count\":1", autoTool.Args);
+
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
+        Assert.Equal("OLD-SUMMARY", blocks.First(b => b.Number == oldReasoning.Number).Content);
+        Assert.Equal(new string('n', 500), blocks.First(b => b.Number == newReasoning.Number).Content);
+        Assert.Equal(1, _chat.ResponseCallCount);
+    }
+
+    /// <summary>A subagent's turns open with <c>agent_task</c>, not <c>user_message</c> — the boundary must follow either.</summary>
+    [Fact]
+    public async Task ReasoningCompression_UsesAgentTaskAsTheNewestTurnBoundary()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions(compression: new CompressionOptions
+        {
+            AutoCompress = false,
+            AutoCompressReasoning = true,
+            AutoCompressReasoningMaxSize = 100,
+        });
+
+        var oldReasoning = MemoryBlock.AgentReasoning(new string('o', 500));
+        var newReasoning = MemoryBlock.AgentReasoning(new string('n', 500));
+        await _db.Blocks.AppendBlocksAsync(AgentId,
+        [
+            MemoryBlock.AgentTask("task 0"),
+            oldReasoning,
+            MemoryBlock.TurnMarker(),
+            MemoryBlock.AgentTask("task 1"),
+            newReasoning,
+        ]);
+        _chat.QueueResponse(new ChatResponse([new ChatMessage(ChatRole.Assistant, "OLD-SUMMARY")]));
+        _chat.QueueResponse(new ChatResponse([new ChatMessage(ChatRole.Assistant, "NEW-SUMMARY")]));
+
+        await RunTurnAsync();
+
+        var blocks = await _db.Blocks.LoadBlocksAsync(AgentId);
+        Assert.Equal("OLD-SUMMARY", blocks.First(b => b.Number == oldReasoning.Number).Content);
+        Assert.Equal(new string('n', 500), blocks.First(b => b.Number == newReasoning.Number).Content);
     }
 }

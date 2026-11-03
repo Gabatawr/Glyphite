@@ -80,7 +80,7 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
         await _blockStore.AppendBlocksAsync(agentId, [MemoryBlock.SystemError(error)]);
     }
 
-    public async Task<(long Hit, long Miss, long Output)> GetUsageAsync(string agentId)
+    public async Task<(long Hit, long Miss, long Output, long Reasoning)> GetUsageAsync(string agentId)
         => await _agentStore.GetUsageAsync(agentId);
 
     // ── ID lifecycle ──

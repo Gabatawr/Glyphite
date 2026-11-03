@@ -20,6 +20,11 @@ internal sealed class TurnContext
     private readonly IAgentStore _agentStore;
     private readonly ILogger _logger;
     private readonly int _writeFileMaxSize;
+    private readonly string? _baseDir;
+    private readonly IReadOnlyList<AITool>? _tools;
+
+    /// <summary>The single config-wrapper parameter — execution plumbing, never a tool argument.</summary>
+    private const string ExtraCfgParamName = "extra_cfg";
 
     private static readonly string TmpDir = Path.Combine(AppContext.BaseDirectory, "tmp");
 
@@ -29,6 +34,12 @@ internal sealed class TurnContext
     public StringBuilder TextAccum { get; } = new();
     public Dictionary<string, (string name, string args, bool isPeek, double blockNumber)> PendingToolCalls { get; } = new();
     public FailSafeChatClient FailSafeClient { get; }
+
+    /// <summary>Blocks the model itself wrote during this turn — reasoning, answer text and tool-call
+    /// arguments. Their rendered size is what the turn actually occupies in the stored history, which
+    /// is a different number from the billed completion count: the provider charges for thinking it
+    /// never hands back, so billing is always larger. The turn marker records both.</summary>
+    public List<MemoryBlock> StoredBlocks { get; } = [];
 
     private static readonly Dictionary<string, string[]> FileToolCleanArgs = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -44,7 +55,9 @@ internal sealed class TurnContext
         string sessionId,
         string modelStr,
         FailSafeChatClient failSafeClient,
-        int writeFileMaxSize = ToolExecutionDefaults.ContentMaxSize)
+        int writeFileMaxSize = ToolExecutionDefaults.ContentMaxSize,
+        string? baseDir = null,
+        IReadOnlyList<AITool>? tools = null)
     {
         _blockStore = blockStore;
         _agentStore = agentStore;
@@ -53,6 +66,8 @@ internal sealed class TurnContext
         ModelStr = modelStr;
         FailSafeClient = failSafeClient;
         _writeFileMaxSize = writeFileMaxSize;
+        _baseDir = baseDir;
+        _tools = tools;
     }
 
     public async Task<List<TurnEvent>> ProcessUpdate(ChatResponseUpdate update)
@@ -90,6 +105,7 @@ internal sealed class TurnContext
             if (isPeek)
                 callBlock.Data = new() { ["peek"] = true };
             await _blockStore.AppendBlocksAsync(SessionId, [callBlock]);
+            StoredBlocks.Add(callBlock);
 
             var callId = fcc.CallId ?? Guid.NewGuid().ToString("N");
             PendingToolCalls[callId] = (fcc.Name, args, isPeek, callBlock.Number);
@@ -125,7 +141,12 @@ internal sealed class TurnContext
                         string fileContent;
                         if (name == "write_file")
                         {
-                            try { fileContent = await File.ReadAllTextAsync(fPath); }
+                            try
+                            {
+                                // Same resolution rule as write_file itself: a relative path is relative to
+                                // the agent's directory, not to whatever directory glyphite was launched in.
+                                fileContent = await File.ReadAllTextAsync(OSHelper.ResolvePath(fPath, _baseDir));
+                            }
                             catch { _logger.LogWarning("Failed to read written file"); fileContent = output; /* fallback to raw output */ }
                             // The decorator truncates the tool's returned string, but we re-read the file
                             // to show the LLM what was written — apply the same limit so context can't blow up.
@@ -150,14 +171,23 @@ internal sealed class TurnContext
 
                 async Task EmitToolResult(string emitOutput, string[]? cleanKeys)
                 {
+                    var cleanedArgs = BuildStoredArgs(name, args, cleanKeys);
+
                     if (!string.IsNullOrEmpty(emitOutput))
                         await _blockStore.UpdateBlockToolResultAsync(SessionId, callBlockNumber, emitOutput);
 
-                    if (cleanKeys is not null)
+                    if (cleanedArgs is not null)
+                        await _blockStore.UpdateBlockAsync(SessionId, callBlockNumber, content: cleanedArgs);
+
+                    // Keep the in-memory copy in step with the store: the turn marker measures these
+                    // blocks after the turn is over and must record the sizes that were persisted.
+                    var stored = StoredBlocks.FirstOrDefault(b => b.Number == callBlockNumber);
+                    if (stored is not null)
                     {
-                        var cleanedArgs = CleanToolArgs(args, cleanKeys);
+                        if (!string.IsNullOrEmpty(emitOutput))
+                            stored.ToolResult = emitOutput;
                         if (cleanedArgs is not null)
-                            await _blockStore.UpdateBlockAsync(SessionId, callBlockNumber, content: cleanedArgs);
+                            stored.Content = cleanedArgs;
                     }
 
                     events.Add(new ToolResultTurnEvent(name, emitOutput));
@@ -168,6 +198,7 @@ internal sealed class TurnContext
                 var block = MemoryBlock.ToolCall("unknown", output, model: ModelStr);
                 block.ToolResult = output;
                 await _blockStore.AppendBlocksAsync(SessionId, [block]);
+                StoredBlocks.Add(block);
             }
         }
 
@@ -179,8 +210,9 @@ internal sealed class TurnContext
         if (ReasoningAccum.Length == 0) return;
         var fullReasoning = ReasoningAccum.ToString();
         ReasoningAccum.Clear();
-        await _blockStore.AppendBlocksAsync(SessionId,
-            [MemoryBlock.AgentReasoning(fullReasoning, model: ModelStr)]);
+        var block = MemoryBlock.AgentReasoning(fullReasoning, model: ModelStr);
+        await _blockStore.AppendBlocksAsync(SessionId, [block]);
+        StoredBlocks.Add(block);
     }
 
     public async Task FlushText()
@@ -188,8 +220,9 @@ internal sealed class TurnContext
         if (TextAccum.Length == 0) return;
         var fullText = TextAccum.ToString();
         TextAccum.Clear();
-        await _blockStore.AppendBlocksAsync(SessionId,
-            [MemoryBlock.AgentMessage(fullText, model: ModelStr)]);
+        var block = MemoryBlock.AgentMessage(fullText, model: ModelStr);
+        await _blockStore.AppendBlocksAsync(SessionId, [block]);
+        StoredBlocks.Add(block);
     }
 
     public async Task FlushAll()
@@ -198,30 +231,52 @@ internal sealed class TurnContext
         await FlushText();
     }
 
-    public string? CleanToolArgs(string argsJson, params string[] keys)
+    /// <summary>Arguments as they are stored in the block. Two kinds of noise are dropped: bulk payload
+    /// that already lives in the tool result (<c>content</c>, patch halves), and <c>extra_cfg</c> fields
+    /// that merely restate the tool's own defaults. A real override stays — "ran with a 5s timeout" is
+    /// part of how the call was made, while "peek: true" on a tool that peeks by default is not.
+    /// Returns null when nothing changed, so the caller can skip the write.</summary>
+    public string? BuildStoredArgs(string name, string argsJson, string[]? cleanKeys)
     {
         try
         {
             using var doc = JsonDocument.Parse(argsJson);
-            var dict = new Dictionary<string, JsonElement?>();
+            var props = new Dictionary<string, JsonElement?>();
             foreach (var prop in doc.RootElement.EnumerateObject())
-                dict[prop.Name] = prop.Value;
+                props[prop.Name] = prop.Value;
 
-            foreach (var key in keys)
-                dict.Remove(key);
+            foreach (var key in cleanKeys ?? [])
+                props.Remove(key);
+
+            // No tool instance means no defaults to compare against (a tool that went away mid-turn);
+            // then extra_cfg is kept as passed rather than hiding something we cannot judge.
+            if (props.TryGetValue(ExtraCfgParamName, out var cfg)
+                && cfg is { ValueKind: JsonValueKind.Object }
+                && FindConfigTool(name) is { } configTool)
+            {
+                var overrides = configTool.OverridesFrom(cfg.Value);
+                if (overrides.Count == 0)
+                    props.Remove(ExtraCfgParamName);
+                else
+                    props[ExtraCfgParamName] = JsonSerializer.SerializeToElement(overrides);
+            }
 
             var cleaned = JsonSerializer.Serialize(
-                dict.ToDictionary(kv => kv.Key, kv => (object?)kv.Value),
+                props.ToDictionary(kv => kv.Key, kv => (object?)kv.Value),
                 new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
             return cleaned == argsJson ? null : cleaned;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "CleanToolArgs failed");
+            _logger.LogWarning(ex, "BuildStoredArgs failed");
             return null;
         }
     }
+
+    private ToolConfigDecorator? FindConfigTool(string name) =>
+        _tools?.OfType<ToolConfigDecorator>()
+              .FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
 
 
 }

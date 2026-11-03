@@ -53,9 +53,14 @@ public class BlockRepository : RepositoryBase, IBlockStore
 
     // ── Shared SQL ──
 
+    /// <summary>
+    /// Every column <see cref="MapFromBlock"/> produces must appear here: a mapped-but-unlisted
+    /// column is silently dropped on insert (that is how tool results used to disappear on append,
+    /// on compaction and on fork).
+    /// </summary>
     private const string SqlInsertBlock = """
-        INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, is_deleted, is_compressed)
-        VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, 0, @IsCompressed)
+        INSERT INTO blocks (agent_id, number, type, created_at, updated_at, content, tool_name, data, model, tool_result, is_deleted, is_compressed)
+        VALUES (@sid, @Number, @Type, @CreatedAt, @UpdatedAt, @Content, @ToolName, @Data, @Model, @tool_result, 0, @IsCompressed)
         """;
 
     private const string SqlSoftDeleteBlock = "UPDATE blocks SET is_deleted = 1 WHERE agent_id = @sid AND number = @num AND type != 'agent_data'";

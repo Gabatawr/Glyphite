@@ -170,19 +170,59 @@ public class PocketToolTests
         await bash.Received(1).ExecuteAsync(AgentId, "pwd", "/tmp/project", Arg.Any<int?>(), Arg.Any<CancellationToken>());
     }
 
+    // ── Approval covers the template, not whatever gets substituted into it ──
+
+    [Fact]
+    public async Task Runner_ApprovedEntry_WithSubstitution_GoesThroughTheGatesAgain()
+    {
+        var (runner, _, safety) = CreateRunnerHarness(checkRequired: ["deploy"]);
+        var entry = Entry("t", "deploy {env}", MakeArg("env"));
+
+        await runner(entry, new Dictionary<string, object?> { ["env"] = "prod" }, CancellationToken.None);
+
+        // The entry was approved as `deploy {env}` at add time; `deploy prod` is a different command,
+        // carrying a value the model chose, so it is checked at run time like a hand-written call.
+        await safety.Received(1).CheckAsync(AgentId, "deploy prod", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Runner_ApprovedEntry_WithoutSubstitution_SkipsTheGates()
+    {
+        var (runner, _, safety) = CreateRunnerHarness(checkRequired: ["deploy"]);
+        var entry = Entry("t", "deploy");
+
+        await runner(entry, new Dictionary<string, object?>(), CancellationToken.None);
+
+        // Nothing was substituted: the command is exactly what the human approved once.
+        await safety.DidNotReceive().CheckAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
     // ── Helpers ──
 
-    private static (PocketTool.PocketRunner Runner, IBashSessionManager Bash, IConfigService Cfg) CreateRunnerHarness()
+    private static (PocketTool.PocketRunner Runner, IBashSessionManager Bash, ISafetyChecker Safety) CreateRunnerHarness(
+        string[]? checkRequired = null)
     {
         var bash = Substitute.For<IBashSessionManager>();
         bash.ExecuteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns("ok");
+
+        var safety = Substitute.For<ISafetyChecker>();
+        safety.CheckAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new SafetyVerdict(true, "")));
+
         var cfg = Substitute.For<IConfigService>();
-        cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, Arg.Any<string?>()).Returns(new BashOptions());
+        cfg.GetOptionsAsync<BashOptions>(BashOptions.Section, Arg.Any<string?>())
+            .Returns(new BashOptions
+            {
+                CheckRequireCommands = checkRequired ?? [],
+                // 0s: when a test does trigger the prompt, it must resolve at once instead of waiting
+                // for a keystroke that will never come under a redirected console.
+                CheckRequireCommandsTimeout = 0,
+            });
         cfg.GetOptionsAsync<ContentDedupOptions>(ContentDedupOptions.Section, Arg.Any<string?>()).Returns(new ContentDedupOptions());
         var kv = Substitute.For<IKVStore>();
-        var runner = PocketTool.CreateRunner(bash, cfg, kv, isSubAgent: false, safetyChecker: null, agentId: AgentId);
-        return (runner, bash, cfg);
+        var runner = PocketTool.CreateRunner(bash, cfg, kv, isSubAgent: false, safetyChecker: safety, agentId: AgentId);
+        return (runner, bash, safety);
     }
 
     private static PocketTool.PocketEntry Entry(string name, string cmd = "echo hi", params PocketTool.PocketArg[] args) => new()

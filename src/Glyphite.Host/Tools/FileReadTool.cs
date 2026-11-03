@@ -23,9 +23,7 @@ public static class FileReadTool
         bool? gitDelete = null
     )
     {
-        path = OSHelper.NormalizePath(path);
-        if (!Path.IsPathRooted(path))
-            path = Path.GetFullPath(Path.Combine(defaultDirectory ?? Directory.GetCurrentDirectory(), path));
+        path = OSHelper.ResolvePath(path, defaultDirectory);
 
         if (!File.Exists(path))
             return $"Error: File not found: {path}";

@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Linq;
 using System.Text;
 using Glyphite.Abstractions.Interfaces;
@@ -61,7 +60,10 @@ public class CompactionService
     /// <summary>Evaluate compaction status without executing compaction. Loads blocks, classifies zones,
     /// picks strategy, and returns threshold/mode info. Use at end-of-turn for prompt coloring or in /compression command.
     /// When <paramref name="isManual"/> is false (auto-caller), returns WillCompact=false if AutoCompress is disabled
-    /// in config. Manual callers (/compression) pass isManual:true to always get full status regardless of AutoCompress.</summary>
+    /// in config, and skips the zone classification while the last request is still below the threshold — the
+    /// auto path runs every turn and would discard that work. When no usage has been recorded yet (fresh or forked
+    /// session) the threshold is compared against an estimate of the history size, so a clone that starts out large
+    /// still compacts. Manual callers (/compression) always get full status.</summary>
     public async Task<CompactionStatus> EvaluateCompactionStatusAsync(string agentId, int contextWindow, bool isManual = false)
     {
         var compOpts = await _cfgService.GetOptionsAsync<CompressionOptions>(CompressionOptions.Section, agentId);
@@ -74,13 +76,27 @@ public class CompactionService
 
         var threshold = (int)(compOpts.AutoThreshold / 100.0 * contextWindow);
 
-        // Check threshold via last usage
+        // The auto path runs on every turn. While there is a usage figure and it fits, there is
+        // nothing to decide — skip the block-table read and the zone classification below.
         var lastUsage = await _agentStore.GetLastUsageAsync(agentId);
         var lastRequestTokens = lastUsage.LastHit + lastUsage.LastMiss;
+        if (!isManual && lastRequestTokens > 0 && lastRequestTokens < threshold)
+            return new CompactionStatus(false, false, strategy, "none");
+
+        var blocks = await _blockStore.LoadBlocksAsync(agentId);
+
+        // A forked session has no usage rows — ForkSessionAsync copies blocks, not session_usage — and
+        // a cleared counter looks the same. With nothing to compare, the threshold used to answer
+        // "never compact", even for a clone that starts out bigger than the window. Fall back to the
+        // size of the history itself: a lower bound, since a real request also carries the system
+        // prompt and tool schemas, so the estimate errs towards not compacting rather than compacting
+        // on a guess.
+        if (lastRequestTokens == 0)
+            lastRequestTokens = EstimateZoneTokens(blocks);
+
         var isThresholdExceeded = lastRequestTokens >= threshold;
 
         // Classify zones to determine if compaction will actually happen
-        var blocks = await _blockStore.LoadBlocksAsync(agentId);
         var turnGroups = GroupByTurns(blocks);
         var zoneClass = ClassifyZones(turnGroups, threshold);
 
@@ -121,7 +137,9 @@ public class CompactionService
     /// When false, uses a zone-specific structured template (## Topics, ## Key Actions, ## Results, ## State Changes, ## Open / Carried Over).
     /// Returns the summary text and usage stats from the LLM call.
     /// </summary>
-    internal static async Task<(string? Summary, long Hit, long Miss, long Output)> SummarizeZoneAsync(
+    /// <summary>Summarize a zone of blocks. Returns the summary text and the usage of the
+    /// summarization call: <c>Output</c> is billed and already includes <c>Reasoning</c>.</summary>
+    internal static async Task<(string? Summary, long Hit, long Miss, long Output, long Reasoning)> SummarizeZoneAsync(
         string agentId,
         List<MemoryBlock> blocks,
         string? model,
@@ -201,7 +219,7 @@ public class CompactionService
             var assistantMsg = response.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
             var text = assistantMsg?.Text?.Trim();
 
-            long hit = 0, miss = 0, output = 0;
+            long hit = 0, miss = 0, output = 0, reasoning = 0;
 
             if (response.RawRepresentation is not null)
             {
@@ -210,19 +228,19 @@ public class CompactionService
                     using var doc = UsageParser.Normalize(response.RawRepresentation);
                     if (doc is not null)
                     {
-                        (hit, miss, output) = UsageParser.Parse(doc);
+                        (hit, miss, output, reasoning) = UsageParser.Parse(doc);
                         if (hit > 0 || miss > 0 || output > 0)
-                            await agentStore.RecordUsageAsync(agentId, hit, miss, output, model: model);
+                            await agentStore.RecordUsageAsync(agentId, hit, miss, output, reasoning, model: model);
                     }
                 }
                 catch { logger.LogWarning("Failed to parse usage from summarization response"); }
             }
 
-            return (string.IsNullOrEmpty(text) ? null : text, hit, miss, output);
+            return (string.IsNullOrEmpty(text) ? null : text, hit, miss, output, reasoning);
         }
         catch
         {
-            return (null, 0, 0, 0);
+            return (null, 0, 0, 0, 0);
         }
     }
 
@@ -329,10 +347,14 @@ public class CompactionService
         toCompressGroups.Reverse();
 
         var isHardMode = false;
-        var compressedTokens = SumCompressedOutput(compressedGroups, logger);
+        // Measure what the old summaries occupy in the context, not how many tokens the model spent
+        // writing them: turn markers record generation tokens (reasoning models include hidden ones),
+        // which runs 1.3-2.7x larger than the summary text itself. Safe zones are measured this way
+        // too, so both escalation ladders now use the same ruler.
+        var compressedTokens = compressedGroups.Sum(EstimateZoneTokens);
         if (compressedTokens >= (int)(2.0 / 3.0 * threshold) && compressedGroups.Count > 0)
         {
-            logger?.LogInformation("Hard mode: {CompressedTokens} compressed tokens >= 2/3 of threshold {Threshold}, recompressing {Count} compressed zones",
+            logger?.LogInformation("Hard mode: compressed zones occupy {CompressedTokens} tokens >= 2/3 of threshold {Threshold}, recompressing {Count} zones",
                 compressedTokens, threshold, compressedGroups.Count);
             toCompressGroups.InsertRange(0, compressedGroups);
             compressedGroups.Clear();
@@ -349,28 +371,6 @@ public class CompactionService
 
         return new ZoneClassification(safeGroups, compressedGroups, toCompressGroups,
             isHardMode, isSafeHardMode);
-    }
-
-    /// <summary>Sum output tokens from turn markers in compressed groups (hard-mode threshold check).</summary>
-    public static long SumCompressedOutput(List<List<MemoryBlock>> compressedGroups, ILogger? logger = null)
-    {
-        long total = 0;
-        foreach (var group in compressedGroups)
-            foreach (var block in group)
-                if (block.Type == BlockType.turn && !string.IsNullOrEmpty(block.Content))
-                {
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(block.Content);
-                        if (doc.RootElement.TryGetProperty("out_", out var outProp) && outProp.TryGetInt64(out var outVal))
-                            total += outVal;
-                    }
-                    catch (Exception ex)
-                    {
-                        logger?.LogDebug(ex, "Failed to parse turn marker JSON in compaction output");
-                    }
-                }
-        return total;
     }
 
     /// <summary>Estimate token count for a turn group by rendering blocks to context strings and dividing by 4.</summary>

@@ -262,4 +262,47 @@ public class BlockRepositoryTests : IDisposable
         Assert.Equal(2, userBlocks.Count);
         Assert.All(userBlocks, b => Assert.Equal(BlockType.user_message, b.Type));
     }
+
+    // ── Payload round-trip: every column MapFromBlock maps must reach the insert ──
+
+    [Fact]
+    public async Task AppendBlocks_KeepsToolResult()
+    {
+        const string agentId = "test-agent-tool-result";
+        using var sessionRepo = CreateSessionRepo();
+        await sessionRepo.EnsureSessionAsync(agentId);
+
+        using var repo = CreateBlockRepo();
+        var block = MemoryBlock.ToolCall("bash", """{"command":"ls"}""");
+        block.ToolResult = "file1\nfile2";
+
+        await repo.AppendBlocksAsync(agentId, [block]);
+
+        var loaded = Assert.Single(await repo.LoadBlocksAsync(agentId));
+        Assert.Equal("file1\nfile2", loaded.ToolResult);
+    }
+
+    [Fact]
+    public async Task ReplaceBlocksSince_KeepsToolResult()
+    {
+        const string agentId = "test-agent-tool-result-replace";
+        using var sessionRepo = CreateSessionRepo();
+        await sessionRepo.EnsureSessionAsync(agentId);
+
+        using var repo = CreateBlockRepo();
+        await repo.AppendBlocksAsync(agentId, [
+            MemoryBlock.AgentData("agent", agentId),
+            MemoryBlock.UserMessage("question"),
+        ]);
+
+        // Compaction re-inserts preserved turns through the same insert statement.
+        var preserved = MemoryBlock.ToolCall("bash", """{"command":"ls"}""");
+        preserved.ToolResult = "probe-ok";
+
+        await repo.ReplaceBlocksSinceAsync(agentId, fromNumber: 2, [preserved], nextNumber: 3);
+
+        var loaded = await repo.LoadBlocksAsync(agentId);
+        var tool = Assert.Single(loaded, b => b.Type == BlockType.tool);
+        Assert.Equal("probe-ok", tool.ToolResult);
+    }
 }

@@ -18,9 +18,7 @@ public static class FilePatchTool
         if (string.IsNullOrEmpty(old))
             return "Error: 'old' is required. Use write_file to create a new file or append content.";
 
-        path = OSHelper.NormalizePath(path);
-        if (!Path.IsPathRooted(path))
-            path = Path.GetFullPath(Path.Combine(defaultDirectory ?? Directory.GetCurrentDirectory(), path));
+        path = OSHelper.ResolvePath(path, defaultDirectory);
 
         if (!File.Exists(path))
             return $"Error: File not found: {path}";

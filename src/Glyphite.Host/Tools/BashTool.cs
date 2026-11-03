@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Services;
+using Glyphite.Host.Utils;
 using Microsoft.Extensions.AI;
 using static Glyphite.Host.Tools.InteractiveConfirmation;
 
@@ -9,6 +10,10 @@ namespace Glyphite.Host.Tools;
 
 public static class BashTool
 {
+    /// <summary>
+    /// Run a shell command behind the safety gates, then execute it.
+    /// See <see cref="GateAsync"/> for the gates themselves.
+    /// </summary>
     public static async Task<string> ExecuteBash(
         string command,
         string? workdir,
@@ -21,76 +26,13 @@ public static class BashTool
         bool isSubAgent = false,
         ISafetyChecker? safetyChecker = null,
         CancellationToken ct = default,
-        bool skipInteractiveConfirm = false)
+        bool skipInteractiveConfirm = false,
+        IConfirmationUi? confirmation = null)
     {
-        var trimmed = command.Trim();
-        foreach (var forbidden in bashOpts.ForbiddenCommands)
-        {
-            if (string.IsNullOrEmpty(forbidden)) continue;
-            if (trimmed.Equals(forbidden, StringComparison.OrdinalIgnoreCase) ||
-                trimmed.StartsWith(forbidden + " ", StringComparison.OrdinalIgnoreCase))
-            {
-                return $"Command forbidden: '{command}' - matches blocked pattern '{forbidden}'. Try an alternative approach.";
-            }
-        }
+        if (await GateAsync(manager, command, workdir, bashOpts, kvStore, agentId, isSubAgent,
+                safetyChecker, skipInteractiveConfirm, confirmation, ct) is { } blocked)
+            return blocked;
 
-        if (!string.IsNullOrEmpty(workdir))
-        {
-            var normalizedWorkdir = workdir.Replace('\\', '/').TrimEnd('/');
-            foreach (var forbiddenDir in bashOpts.ForbiddenDirectories)
-            {
-                if (string.IsNullOrEmpty(forbiddenDir)) continue;
-                var normalizedForbidden = forbiddenDir.Replace('\\', '/').TrimEnd('/');
-                if (normalizedWorkdir.Equals(normalizedForbidden, StringComparison.OrdinalIgnoreCase) ||
-                    normalizedWorkdir.StartsWith(normalizedForbidden + "/", StringComparison.OrdinalIgnoreCase))
-                {
-                    return $"Directory forbidden: '{workdir}' - matches blocked path '{forbiddenDir}'. Try an alternative approach.";
-                }
-            }
-        }
-
-        // CheckRequireCommands — interactive confirmation for dangerous commands
-        if (bashOpts.CheckRequireCommands.Length > 0)
-        {
-            foreach (var check in bashOpts.CheckRequireCommands)
-            {
-                if (string.IsNullOrEmpty(check)) continue;
-                if (trimmed.Equals(check, StringComparison.OrdinalIgnoreCase) ||
-                    trimmed.StartsWith(check + " ", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Command was already approved at add time (e.g. pocket tool) — skip the per-call prompt.
-                    if (skipInteractiveConfirm)
-                        goto execute;
-
-                    var choice = await InteractiveConfirmation.ShowAsync(
-                        trimmed,
-                        bashOpts.CheckRequireCommandsTimeout * 1000,
-                        kvStore,
-                        agentId,
-                        isSubAgent,
-                        ct);
-
-                    switch (choice)
-                    {
-                        case Choice.Stop:
-                            return $"Command blocked by user: '{command}' - requires explicit approval. Model should reconsider or ask the user for clarification.";
-                        case Choice.Check:
-                            if (safetyChecker is not null)
-                            {
-                                var verdict = await safetyChecker.CheckAsync(agentId, trimmed, ct);
-                                if (!verdict.Allow)
-                                    return $"Command blocked by safety check: '{command}' - {verdict.Why}";
-                            }
-                            goto execute;
-                        case Choice.Ok:
-                        default:
-                            goto execute;
-                    }
-                }
-            }
-        }
-
-        execute:
         try
         {
             timeoutMs ??= 120_000;
@@ -104,6 +46,117 @@ public static class BashTool
         catch (Exception ex)
         {
             return $"Error: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Base directory for a relative <c>workdir</c>: the directory the shell will actually start in.
+    /// The manager owns the full precedence (per-agent <c>Bash:DefaultDirectory</c> → agent home →
+    /// process default); the per-agent options are checked first because a configured value needs no
+    /// lookup. A failed lookup falls back to the process directory — the same last resort the shell
+    /// uses — instead of blocking a command for a reason the user cannot see.
+    /// </summary>
+    private static async Task<string?> StartDirectoryAsync(
+        IBashSessionManager manager, string agentId, BashOptions bashOpts, CancellationToken ct)
+    {
+        if (!string.IsNullOrEmpty(bashOpts.DefaultDirectory))
+            return bashOpts.DefaultDirectory;
+
+        try
+        {
+            return await manager.GetStartDirectoryAsync(agentId, ct);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The safety gates shared by the foreground and background paths.
+    /// Returns null when the command may run, or the message to hand back to the model.
+    ///
+    /// Three invariants, each of which used to be violated:
+    /// <list type="number">
+    ///   <item><b>Match the command, not the first word.</b> Patterns are looked up through
+    ///         <see cref="CommandAnalyzer"/>, so <c>cd /tmp &amp;&amp; sudo reboot</c>,
+    ///         <c>FOO=1 rm -rf ~</c> and <c>bash -c "rm -rf /"</c> are all seen for what they are.</item>
+    ///   <item><b>One question per command.</b> However many patterns matched and wherever they sit,
+    ///         the human is asked once, about the whole string.</item>
+    ///   <item><b>A broken checker is not an approval.</b> When the AI check cannot reach a verdict,
+    ///         the decision goes back to the human with the timer off, so silence never means yes.</item>
+    /// </list>
+    /// </summary>
+    private static async Task<string?> GateAsync(
+        IBashSessionManager manager,
+        string command,
+        string? workdir,
+        BashOptions bashOpts,
+        IKVStore? kvStore,
+        string agentId,
+        bool isSubAgent,
+        ISafetyChecker? safetyChecker,
+        bool skipInteractiveConfirm,
+        IConfirmationUi? confirmation,
+        CancellationToken ct)
+    {
+        var trimmed = command.Trim();
+
+        // ── 1. Hard block: a forbidden command anywhere in the string ──
+        if (CommandAnalyzer.FindMatch(trimmed, bashOpts.ForbiddenCommands) is { } forbidden)
+            return $"Command forbidden: '{command}' - matches blocked pattern '{forbidden}'. Try an alternative approach.";
+
+        // ── 2. Forbidden directories ──
+        // Compared as paths, not as strings: a relative workdir resolves against the directory the
+        // shell will actually start in, so ".." cannot slip past an absolute rule (see PathGuard).
+        if (!string.IsNullOrEmpty(workdir))
+        {
+            var startDir = await StartDirectoryAsync(manager, agentId, bashOpts, ct);
+            if (PathGuard.BlockReason(workdir, bashOpts.ForbiddenDirectories, startDir) is { } reason)
+                return $"Directory forbidden: '{workdir}' - {reason}. Try an alternative approach.";
+        }
+
+        // ── 3. Confirmation patterns: at most ONE prompt, for the whole command ──
+        // An approved template (pocket tool, checked when it was created) skips the prompt — but only
+        // when nothing was substituted into it; see PocketTool.CreateRunner.
+        if (skipInteractiveConfirm || CommandAnalyzer.FindMatch(trimmed, bashOpts.CheckRequireCommands) is null)
+            return null;
+
+        var ui = confirmation ?? ConsoleConfirmationUi.Instance;
+        var timeoutMs = bashOpts.CheckRequireCommandsTimeout * 1000;
+
+        var choice = await ui.AskAsync(trimmed, timeoutMs, kvStore, agentId, isSubAgent,
+            noAutoSelect: false, note: null, ct);
+
+        switch (choice)
+        {
+            case Choice.Stop:
+                return $"Command blocked by user: '{command}' - requires explicit approval. Model should reconsider or ask the user for clarification.";
+
+            case Choice.Check:
+                var verdict = safetyChecker is not null
+                    ? await safetyChecker.CheckAsync(agentId, trimmed, ct)
+                    : SafetyVerdict.Unavailable("no safety checker configured");
+
+                if (verdict.Inconclusive)
+                {
+                    // The checker failed, so nobody has judged the command yet. Ask the human — with the
+                    // timer off: an automatic choice here would be an automatic "yes".
+                    var fallback = await ui.AskAsync(trimmed, timeoutMs, kvStore, agentId, isSubAgent,
+                        noAutoSelect: true, note: "safety check unavailable", ct);
+
+                    if (fallback != Choice.Ok)
+                        return $"Command blocked: safety check unavailable ({verdict.Why}) and no human approval - '{command}'. "
+                             + "Model should ask the user for clarification.";
+
+                    return null;
+                }
+
+                return verdict.Allow ? null : $"Command blocked by safety check: '{command}' - {verdict.Why}";
+
+            case Choice.Ok:
+            default:
+                return null;
         }
     }
 
@@ -121,7 +174,12 @@ public static class BashTool
 
             if (back == true)
             {
-                var taskId = manager.StartBackgroundAsync(agentId, command, workdir, timeoutMs);
+                // A detached command is still a command: it passes the same gates before anything spawns.
+                if (await GateAsync(manager, command, workdir, bashOpts, kvStore, agentId, isSubAgent,
+                        safetyChecker, skipInteractiveConfirm: false, confirmation: null, ct) is { } blocked)
+                    return blocked;
+
+                var taskId = await manager.StartBackgroundAsync(agentId, command, workdir, timeoutMs);
                 return $"Background task started: {taskId}\nUse `bash_back` with action=\"wait\" or \"partial\" to retrieve output.";
             }
 
