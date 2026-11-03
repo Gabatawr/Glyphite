@@ -3,23 +3,44 @@ using System.Text.Json;
 using Glyphite.Abstractions.Interfaces;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Primitives;
 
 namespace Glyphite.Host.Services;
 
-public class ConfigService : IConfigService
+public class ConfigService : IConfigService, IDisposable
 {
     private readonly IConfigStore _store;
     private readonly IConfiguration _appConfig;
     private readonly ILogger<ConfigService> _logger;
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _overlays = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, Dictionary<string, string>> _configCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-agent overrides only — <b>not</b> the merged view. Global keys are deliberately kept
+    /// out of this cache: they come from <see cref="_appConfig"/>, which hot-reloads, and caching them
+    /// together with the session part pinned every per-agent read to whatever the file said when the
+    /// agent first asked. The cache now holds only what is expensive (a DB round-trip).</summary>
+    private readonly ConcurrentDictionary<string, Dictionary<string, string>> _sessionCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly IDisposable? _reloadSubscription;
+    private readonly object _globalGate = new();
+    private volatile bool _globalStale = true;
+    private Dictionary<string, string>? _globalConfig;
 
     public ConfigService(IConfigStore store, IConfiguration appConfig, ILogger<ConfigService>? logger = null)
     {
         _store = store;
         _appConfig = appConfig;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConfigService>.Instance;
+
+        // `AddJsonFile(reloadOnChange: true)` updates `_appConfig` in place and announces it only through
+        // the reload token — nothing else says "the file changed". Without this subscription the flattened
+        // snapshot below would keep startup values forever, which is exactly how an edited Glyphite.json
+        // looked ignored.
+        _reloadSubscription = ChangeToken.OnChange(
+            () => _appConfig.GetReloadToken(),
+            () => _globalStale = true);
     }
+
+    public void Dispose() => _reloadSubscription?.Dispose();
 
     public void SetSessionOverlay(string sessionId, Dictionary<string, string> config)
     {
@@ -86,61 +107,65 @@ public class ConfigService : IConfigService
 
     public void InvalidateCache(string? agentId = null)
     {
+        // Global values need no hook here: they are re-read when the reload token fires.
         if (agentId is null)
-            _configCache.Clear();
+            _sessionCache.Clear();
         else
-            _configCache.TryRemove(agentId, out _);
+            _sessionCache.TryRemove(agentId, out _);
     }
 
-    public Task<Dictionary<string, string>> GetConfigAsync(string? agentId = null)
+    public async Task<Dictionary<string, string>> GetConfigAsync(string? agentId = null)
     {
+        // Always a copy — callers own the result and merge into it.
+        var merged = new Dictionary<string, string>(GetGlobalConfig(), StringComparer.OrdinalIgnoreCase);
         if (agentId is null)
-        {
-            // Global config: read hot-reloaded IConfiguration directly (no DB round-trip)
-            return Task.FromResult(FlattenConfig(_appConfig));
-        }
+            return merged;
 
-        // Session-scoped config: DB + overlay
-        if (_configCache.TryGetValue(agentId, out var cached))
-            return Task.FromResult(cached);
+        var overrides = _sessionCache.TryGetValue(agentId, out var cached)
+            ? cached
+            : await LoadSessionOverridesAsync(agentId);
 
-        return GetSessionConfigAsync(agentId);
+        foreach (var (key, value) in overrides)
+            merged[key] = value;
+        return merged;
     }
 
-    private async Task<Dictionary<string, string>> GetSessionConfigAsync(string agentId)
+    /// <summary>Global keys as the files have them right now. <c>_appConfig</c> is a live view, so the only
+    /// thing worth remembering is the flattened form plus a flag that it went stale.</summary>
+    private Dictionary<string, string> GetGlobalConfig()
     {
-        // 1. Start with global config from IConfiguration (hot-reload)
-        var merged = FlattenConfig(_appConfig);
+        if (!_globalStale && _globalConfig is { } cached)
+            return cached;
 
-        // 2. If overlay exists, it already includes DB session keys + file overrides
-        //    from SessionConfigLoader → skip loading DB session keys separately.
-        var hasOverlay = _overlays.ContainsKey(agentId);
-
-        if (!hasOverlay)
+        lock (_globalGate)
         {
-            // Get DB keys: GetMergedConfigAsync returns global + session.
-            // We need only session-scoped keys (agent-specific overrides).
-            // Stale global keys from DB must NOT override fresh IConfiguration.
-            var dbAll = await _store.GetMergedConfigAsync(agentId);
-            var dbGlobal = await _store.GetMergedConfigAsync(null);
+            if (!_globalStale && _globalConfig is { } snapshot)
+                return snapshot;
 
-            // Apply only session-scoped keys (those NOT in global scope)
-            foreach (var (key, value) in dbAll)
-            {
-                if (!dbGlobal.ContainsKey(key))
-                    merged[key] = value;
-            }
+            // Take the token *before* flattening: a reload landing mid-walk would otherwise be baked into
+            // a half-old snapshot with no second event left to correct it.
+            var token = _appConfig.GetReloadToken();
+            var flattened = FlattenConfig(_appConfig);
+            _globalConfig = flattened;
+            _globalStale = token.HasChanged;
+            return flattened;
         }
+    }
 
-        // 3. Apply in-memory overlay (agent not at home, from SessionConfigLoader)
+    /// <summary>What one agent overrides, cached: its DB session rows, or the loader's in-memory overlay
+    /// when the agent is not at home (that overlay already carries those rows <i>and</i> its own directory
+    /// files). Global keys are never part of this — see <see cref="_sessionCache"/>.</summary>
+    private async Task<Dictionary<string, string>> LoadSessionOverridesAsync(string agentId)
+    {
+        Dictionary<string, string> overrides;
+
         if (_overlays.TryGetValue(agentId, out var overlay))
-        {
-            foreach (var (key, value) in overlay)
-                merged[key] = value;
-        }
+            overrides = new Dictionary<string, string>(overlay, StringComparer.OrdinalIgnoreCase);
+        else
+            overrides = await _store.GetSessionConfigAsync(agentId);
 
-        _configCache[agentId] = merged;
-        return merged;
+        _sessionCache[agentId] = overrides;
+        return overrides;
     }
 
     public async Task<ConfigDiffResult> UpdateConfigAsync(
@@ -223,18 +248,6 @@ public class ConfigService : IConfigService
     private void Log(string message)
     {
         _logger.LogInformation("{ConfigMessage}", message);
-    }
-
-    private static string MaskValue(string key, string value)
-    {
-        if (key.Contains("ApiKey", StringComparison.OrdinalIgnoreCase) ||
-            key.Contains("Secret", StringComparison.OrdinalIgnoreCase) ||
-            key.Contains("Password", StringComparison.OrdinalIgnoreCase) ||
-            key.Contains("Token", StringComparison.OrdinalIgnoreCase))
-        {
-            return value.Length <= 8 ? "****" : $"{value[..4]}...{value[^4..]}";
-        }
-        return value;
     }
 
     private static Dictionary<string, string> FlattenConfig(IConfiguration config, string prefix = "")

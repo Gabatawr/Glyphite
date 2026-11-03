@@ -187,14 +187,19 @@ public sealed class ToolConfigDecorator : AIFunction
     };
 
     /// <summary>
-    /// Truncates a tool result string to <paramref name="contentMaxSize"/> chars.
-    /// With a tmp dir, saves the full output to a file and shows 1/3 top + 2/3 bottom;
-    /// without it, keeps the first N chars and appends a notice.
-    /// Shared with the streaming pipeline so re-read file content obeys the same limit.
+    /// Truncates a tool result so that the <b>whole returned view</b> fits in
+    /// <paramref name="contentMaxSize"/> chars. With a tmp dir the full output is written to a file
+    /// and the model sees 1/3 from the top plus 2/3 from the bottom around a notice; without one, the
+    /// first chars plus a shorter notice.
+    ///
+    /// The notice is part of the budget, not an addition to it: a tool result is re-sent with every
+    /// later request, so "max size" has to be a ceiling. It used to hold only approximately —
+    /// <c>maxSize</c> chars of content plus ~120 chars of notice — which for a small limit is a
+    /// multiple of the limit.
     /// </summary>
     internal static string Truncate(string result, int contentMaxSize, string tmpDir, string toolName, string? agentId)
     {
-        if (contentMaxSize >= int.MaxValue || result.Length <= contentMaxSize)
+        if (contentMaxSize < 0 || contentMaxSize >= int.MaxValue || result.Length <= contentMaxSize)
             return result;
 
         if (!string.IsNullOrEmpty(tmpDir))
@@ -206,23 +211,29 @@ public sealed class ToolConfigDecorator : AIFunction
             var outPath = Path.Combine(agentTmp, $"{safeName}_{timestamp}.out");
             File.WriteAllText(outPath, result);
 
-            // Build truncated view: 1/3 from top + notice + 2/3 from bottom
-            var topChars = contentMaxSize / 3;
-            var bottomChars = contentMaxSize - topChars;
-
-            ReadOnlySpan<char> span = result.AsSpan();
-            var top = span[..topChars];
-            var bottom = span[^bottomChars..];
-
-            var note = $"[Output truncated: showing 1/3 ({topChars} chars) and 2/3 ({bottomChars} chars) of {result.Length} total]\n" +
+            // No per-part char counters in the notice: their width would depend on the split, which
+            // would depend on the notice length. The total and the path are what the reader needs.
+            var note = $"[Output truncated: {result.Length} chars total — showing the first third and the last two thirds]\n" +
                        $"[Full output saved to: {outPath}]\n";
 
-            return string.Concat(top.ToString(), "\n", note, bottom.ToString());
+            // 1 char is the "\n" joining the head to the notice.
+            var budget = contentMaxSize - note.Length - 1;
+            if (budget <= 0)
+                return note[..Math.Clamp(contentMaxSize, 0, note.Length)];
+
+            var topChars = budget / 3;
+            var bottomChars = budget - topChars;
+
+            ReadOnlySpan<char> span = result.AsSpan();
+            return string.Concat(span[..topChars].ToString(), "\n", note, span[^bottomChars..].ToString());
         }
 
-        // No tmp dir configured — simple truncation
-        return result[..contentMaxSize] +
-            $"\n\n[Content truncated at {contentMaxSize} chars. Full result length: {result.Length}]";
+        // No tmp dir configured — the first chars plus as much of the notice as fits.
+        var simpleNote = $"\n\n[Content truncated at {contentMaxSize} chars. Full result length: {result.Length}]";
+        if (simpleNote.Length >= contentMaxSize)
+            return simpleNote[..Math.Clamp(contentMaxSize, 0, simpleNote.Length)];
+
+        return result[..(contentMaxSize - simpleNote.Length)] + simpleNote;
     }
 
     private static string SanitizeForPath(string input)

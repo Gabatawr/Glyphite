@@ -109,7 +109,8 @@ You are a specialized QA agent. Always run tests before and after changes.
 - **Host** — service implementations (TurnProcessor + phases, FailSafeChatClient, ToolExecutor,
   UsageTracker, SessionRepository, BlockRepository, ConfigRepository, BlockMemoryProvider,
   SessionConfigLoader, SubAgentManager, RepositoryBase), tools (SubAgentTool, TodoTool, ToolRegistry,
-  ImageTool, PocketTool, etc.), images (`ImageLoader`, `ImageFormats`, `ImageAttachmentSink`), utils
+  ImageTool, the pocket set — see "Pocket tools: the module boundary" below — etc.), images
+  (`ImageLoader`, `ImageFormats`, `ImageAttachmentSink`), utils
   (UsageParser, BlockTypeIcon, ToolCallHelper), MCP, DI wiring
 - **Cli** — UI only (ChatRepl + partials, SessionManager + Commands partial, InputHistory,
   ConsoleRenderer, AgentPicker). No persistence logic. Config loading unified via
@@ -135,16 +136,53 @@ Measured before the fix, with four live `subagent_run` calls: config and `AGENTS
 resolved to the directory glyphite was launched from. The asymmetry is expensive — it looks like the
 model ignoring instructions, while the tools were simply pointed elsewhere.
 
+### One `ChatOptions` per session
+
+`ChatOptions` is created once per session and handed to every turn and every tool iteration, so
+anything that mutates it must be idempotent. This bit `AgentChatClient`: it pushes
+`AdditionalProperties` into the SDK request by wrapping `RawRepresentationFactory`, and wrapping on
+every call stacked one more layer on every iteration on the same object — measured at 1000 calls → a
+1000-deep chain, with each request re-running all the previous layers. The wrapper is now a named
+`PatchOptionsFactory` that recognises its own delegate target, so the chain stays one layer deep and a
+foreign factory is still chained exactly once. `ReasoningEffort` has the same shape: it is assigned
+into the shared options and "sticks" after being removed from config (`TODO.md`).
+
+### Config: only the session part is cached
+
+`ConfigService` merges two layers: global keys from `IConfiguration` (the files, `reloadOnChange: true`)
+and that agent's own overrides (DB `scope = 'session'` rows, or the loader's in-memory overlay when the
+agent is away from home). The cache used to hold the **merged** view per agent and was invalidated only
+by writes through the service itself, so `AddJsonFile` could reload all it liked — `Bash`, `Search`,
+`Todo`, `WebFetch`, `Compression`, `Image`, `ContentDedup` kept the values they first saw. Now:
+
+- the cache holds **only the session part** — the expensive DB round-trip, nothing else;
+- the global snapshot is dropped when `IConfiguration.GetReloadToken()` fires, and the token is read
+  *before* flattening, so a reload landing mid-walk is not baked into a half-old snapshot;
+- `IConfigStore.GetSessionConfigAsync` is a scope filter, not a subtraction of global keys — a session row
+  that shadows a global key of the same name is legitimate, and subtracting dropped it;
+- two things are resolved per turn instead of remembered: the model (`chatOptions.ModelId` ← the agent's
+  DB row ?? `LLM.Model`) and `BlockMemoryProvider`'s `Agent:AgentName` (through `IConfigService`, not an
+  `IOptions` snapshot).
+
+The provider client is the exception: endpoint, key and model are captured when the SDK client is built,
+so `LazyChatClient` takes a settings key, rebuilds when it changes and disposes the client it replaces.
+It stays a process-wide singleton bound to the **file** — an agent's own `LLM:Endpoint` / `LLM:ApiKey` in
+session scope does not reach it (`TODO.md`).
+
 ## Peek flow
 
-Two levels of peek cleanup, both in `BlockRepository.cs`:
+Two cleanups at two different levels — the request list and the database:
 
-1. **Inter-iteration** (`ClearPeekMarkersAsync(includeReasoning: false)`) — cleans tool/file peek
-   blocks between tool batches (`RemovePeekBlocksAsync` + set `tool_result = NULL`).
-2. **Start-of-turn** (`RemovePeekBlocksAsync(includeReasoning: true)`) — cleans ALL peek blocks from
-   DB (safety net before new turn).
+1. **After each iteration** `FailSafeChatClient` calls `ToolExecutor.CleanupPeekTools(messageList)`:
+   every tool response whose call id was marked peek is rewritten to `(peek)` in the request, so the
+   model sees the result exactly once and the next iteration does not re-send it.
+2. **End of turn** `TurnProcessor` calls `ClearPeekMarkersAsync(agentId, includeReasoning: false)`:
+   peek blocks lose `$.peek` and their `tool_result` (`type != 'agent_reasoning'`), and the in-memory
+   `StoredBlocks` are wiped the same way so the turn marker measures what the history actually keeps.
 
-Both are separate from the `FailSafeClient` messageList cleanup — DB and in-memory are independent.
+`$.peek` is only ever written on tool-call blocks (`TurnProcessor.Streaming.cs`), never on reasoning,
+so there is nothing to clean for reasoning — which is why the old broad "remove all peek blocks" API
+was dead and has been deleted rather than wired up.
 
 ## Images
 
@@ -176,6 +214,10 @@ user message. The sink is `Clear`ed at the start of every turn.
 enforced by `ToolConfigDecorator.InvokeCoreAsync`: `-1` = unlimited, `0` = hide, `N` = 1/3 head +
 notice + 2/3 tail, with the full output written to `<tmp>/<agent>/<tool>_<ts>.out`.
 
+The notice is part of the budget, not an addition to it: the returned view never exceeds `maxSize`.
+It used to be `maxSize` chars of content *plus* ~120 chars of notice — for a small limit that is a
+multiple of the limit, and the whole point of the value is to cap what a re-sent tool result occupies.
+
 The trap that made this dead configuration: `AIFunctionFactory` returns a **`JsonElement`**, not a
 `string`, so a `result is string` test matched no tool at all. `ToolConfigDecorator.ResultText`
 normalizes the string kind first — keep it that way, and never test the raw `object?` for `string`.
@@ -205,6 +247,24 @@ A tool-call block keeps the model's arguments minus two kinds of noise, in `Turn
 history should not hand it back as if the tool had been asked for it. When no tool instance is known (a
 tool that vanished mid-turn), the argument is kept as passed — showing plumbing beats guessing wrongly
 about defaults.
+
+### Pocket tools: the module boundary
+
+The pocket subsystem was one 915-line static class with ~20 responsibilities; it is now five pieces,
+and the split lines are the seams worth keeping:
+
+| File | Holds | May use |
+|---|---|---|
+| `PocketEntry.cs` | `PocketArg`/`PocketEntry`, naming rules (`_pocket` suffix, name/category validation) | — |
+| `PocketStore.cs` | vault keys, scopes incl. the `__global__` sentinel, load/save/delete, the stored JSON | `PocketEntry` |
+| `PocketSchema.cs` | arg JSON in/out, `{arg}` substitution, shell quoting, model JSON schema, entry cards | `PocketEntry`, `PocketStore.JsonOpts` |
+| `PocketExecution.cs` | the runner and the materialized native `AIFunction` | `PocketSchema`, `BashTool` |
+| `PocketCommands.cs` + `.Edit.cs` | the five `pocket_*` tools, handlers, add-time pre-flight | all of the above |
+
+Two invariants keep it from collapsing back: **only `PocketStore` touches `IKVStore`** (so the stored
+format has one home and `SaveAsync` can never disagree with `KeyFor`), and **only `PocketExecution`
+touches bash**. Substitution and quoting are `internal` and tested directly — that is where injection
+bugs live, and through bash they were unreachable.
 
 ## Command safety
 
@@ -265,6 +325,28 @@ human who starts navigating cannot be auto-selected; a human who walks away afte
 The AI path may not lean on any of this: when the checker cannot decide, the prompt is raised with
 `noAutoSelect: true` and waits for a real keystroke, so neither the timer nor a remembered `OK` can
 approve a command nobody judged.
+
+## REPL input area
+
+The prompt line (`> ` plus the usage panel) is drawn and redrawn without ever asking the terminal
+where the cursor is. That is not a style preference:
+
+- **`Console.CursorTop` is a blocking stdin read on Unix.** It writes a Device Status Report
+  (`ESC[6n`) and then waits for the terminal's reply from stdin, with no timeout. The failure modes
+  are exactly the two that used to be reported: the reply never arrives → the app hangs with the
+  last answer on screen and no prompt; the reply arrives but is consumed late → its own bytes are
+  then read as keystrokes (`ESC` clears the line, `[41;1R` is typed into it).
+- **We know the geometry without asking.** The input area is the last thing on screen and we wrote
+  every row of it, so it is redrawn with relative moves only — `ESC[<n>A` / `ESC[<n>B` to reach a
+  row, `\r` + `ESC[<n>C` for a column, `ESC[J` (erase below) to drop the tail of a previously longer
+  input. `_promptRows` / `_cursorRow` count the rows currently used. Scrolling needs no correction
+  either: a scroll shifts both the content and the cursor by the same amount, so relative math holds.
+- **An empty line is a no-op.** `HandleCommandAsync` must not index a `Split` result that came from
+  `""` — `Split(…, RemoveEmptyEntries)` returns an empty array, and `parts[0]` used to crash the REPL
+  on a plain Enter.
+- **The answer's tail is flushed when generation ends**, not when the turn ends: `UsageTurnEvent`
+  (the first finalize event) flushes the buffered partial line, so the last line of the answer and the
+  prompt no longer wait for `FlushAll`, peek cleanup and the turn marker.
 
 ## Schema
 
@@ -371,6 +453,13 @@ summary quality *is* history quality. `fibo` (default) summarizes in Fibonacci-s
 (`1, 1, 2, 3, 5…` turns, `O(log n)` calls); `struct` (off by default) sends the whole history in a
 single structured call and is all-or-nothing on failure. Both escalate to `hard` mode when
 already-compressed history outweighs 2/3 of the threshold.
+
+The auto path runs every turn, so it short-circuits: while a recorded usage figure exists and the last
+request fits under the threshold, it returns before reading the block table or classifying zones. A
+forked session has no `session_usage` rows (a fork copies blocks, not usage), so with nothing to
+compare the threshold falls back to `EstimateZoneTokens(blocks)` — a deliberate lower bound, since a
+real request also carries the system prompt and tool schemas; it errs towards not compacting rather
+than compacting on a guess.
 
 ### Reasoning in the context (deliberate)
 

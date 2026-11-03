@@ -20,7 +20,6 @@ public partial class SessionManager
 
     private AgentScope? _currentScope;
     private readonly string _cwd;
-    private LlmOptions? _cachedLlm;
 
     public SessionManager(
         IAgentStore agentStore,
@@ -47,13 +46,11 @@ public partial class SessionManager
     public string AgentName => AgentId;
     public AgentScope? CurrentScope => _currentScope;
 
-    /// <summary>Load fresh LlmOptions from config (hot-reloaded).</summary>
+    /// <summary>LLM options as the config has them right now — no cache: a field would freeze the model
+    /// list and the default model until the next scope switch, so an edited `LLM:Models` stayed invisible
+    /// to `/models`.</summary>
     public async Task<LlmOptions> GetLlmOptsAsync()
-    {
-        if (_cachedLlm is null)
-            _cachedLlm = await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section);
-        return _cachedLlm;
-    }
+        => await _cfgService.GetOptionsAsync<LlmOptions>(LlmOptions.Section);
 
     /// <summary>Get the default model from config.</summary>
     public async Task<string> GetDefaultModelAsync()
@@ -73,7 +70,6 @@ public partial class SessionManager
     {
         _currentScope?.Dispose();
         _currentScope = _scopeFactory.CreateScope();
-        _cachedLlm = null; // invalidate — will reload on next access
     }
 
     public async Task<(long Hit, long Miss, long Output, long LastHit, long LastMiss)> ResetSessionStateAsync()

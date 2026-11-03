@@ -13,6 +13,12 @@ public partial class ChatRepl
 {
     private async Task<bool> HandleCommandAsync(string input)
     {
+        // An empty (or blank) line is not a command: Split with RemoveEmptyEntries would return
+        // an empty array and parts[0] below would throw. The caller decides what an empty line
+        // means — it is a no-op, not an error.
+        if (string.IsNullOrWhiteSpace(input))
+            return false;
+
         var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var cmd = parts[0];
         var arg = parts.Length > 1 ? parts[1] : null;

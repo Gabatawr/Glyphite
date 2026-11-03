@@ -118,7 +118,7 @@ public static class BashTool
 
         // ── 3. Confirmation patterns: at most ONE prompt, for the whole command ──
         // An approved template (pocket tool, checked when it was created) skips the prompt — but only
-        // when nothing was substituted into it; see PocketTool.CreateRunner.
+        // when nothing was substituted into it; see PocketExecution.CreateRunner.
         if (skipInteractiveConfirm || CommandAnalyzer.FindMatch(trimmed, bashOpts.CheckRequireCommands) is null)
             return null;
 

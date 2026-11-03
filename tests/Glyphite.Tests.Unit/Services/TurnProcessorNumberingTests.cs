@@ -67,10 +67,7 @@ public class TurnProcessorNumberingTests : IDisposable
         await _db.Sessions.EnsureSessionAsync(AgentId);
 
         // A real provider (not a substitute): building the context is what creates agent_data.
-        var memory = new BlockMemoryProvider(
-            _db.Sessions, _db.Blocks, _cfg,
-            new MemoryOptions(), new AgentOptions { MaxToolIterations = 5, AgentName = AgentId },
-            "test-model", null);
+        var memory = new BlockMemoryProvider(_db.Sessions, _db.Blocks, _cfg, "test-model");
 
         var processor = new TurnProcessor(
             _db.Sessions, _db.Blocks, memory, _chat, _tools, _cfg,
@@ -114,10 +111,7 @@ public class TurnProcessorNumberingTests : IDisposable
         _tools.GetBuiltinToolsAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<string?>())
             .Returns(Task.FromResult<IReadOnlyList<AITool>>([AIFunctionFactory.Create(writeBlock, "write_block")]));
 
-        var memory = new BlockMemoryProvider(
-            _db.Sessions, _db.Blocks, _cfg,
-            new MemoryOptions(), new AgentOptions { MaxToolIterations = 5, AgentName = AgentId },
-            "test-model", null);
+        var memory = new BlockMemoryProvider(_db.Sessions, _db.Blocks, _cfg, "test-model");
 
         var processor = new TurnProcessor(
             _db.Sessions, _db.Blocks, memory, _chat, _tools, _cfg,

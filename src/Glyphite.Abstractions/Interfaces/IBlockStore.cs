@@ -18,7 +18,6 @@ public interface IBlockStore
     Task UpdateBlockDataAsync(string agentId, double number, Dictionary<string, object>? data);
     Task UpdateBlockToolResultAsync(string agentId, double number, string? toolResult);
     Task UpdateBlockContentAsync(string agentId, double number, string content);
-    Task<int> RemovePeekBlocksAsync(string agentId, bool includeReasoning = true);
     Task<int> ClearPeekMarkersAsync(string agentId, bool includeReasoning = true);
     Task<Dictionary<string, int>> GetPeekBlockStatsAsync(string agentId, bool includeReasoning = true);
     Task<int> RemoveBlocksAsync(string agentId, Predicate<MemoryBlock> match);

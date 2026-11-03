@@ -11,8 +11,10 @@ public partial class ChatRepl
     private int _historyIndex = -1;
     private string? _pendingInput;
     private int _lastBufferLen;
-    private int _promptLine;
-    private int _maxVisualLine;
+
+    // Input area geometry, kept in rows *relative to the prompt* — see "Display" at the bottom.
+    private int _promptRows = 1;  // how many visual rows the input area currently occupies
+    private int _cursorRow;       // 0-based row of the cursor inside that area
 
     private string? _tabCompletionPrefix;  // partial text that triggered completion
     private int _tabCompletionIndex;       // current index in matches
@@ -135,9 +137,10 @@ public partial class ChatRepl
         _historyIndex = _inputHistory.Count;
         _pendingInput = null;
 
-        _promptLine = Console.CursorTop;
-        _maxVisualLine = _promptLine;
-        Console.SetCursorPosition(0, _promptLine);
+        // The caller left the cursor at column 0 of a fresh line — the prompt starts there.
+        _promptRows = 1;
+        _cursorRow = 0;
+        Console.Write('\r');
         WriteColoredPrompt();
         Console.ResetColor();
 
@@ -193,6 +196,7 @@ public partial class ChatRepl
         var text = new string(buffer.ToArray());
         if (text.Length > 0)
             await CopyToClipboardAsync(text);
+        GotoEndOfInput();
         Console.WriteLine();
         return "";
     }
@@ -249,6 +253,7 @@ public partial class ChatRepl
     private string? HandleEnter(List<char> buffer)
     {
         var input = new string(buffer.ToArray());
+        GotoEndOfInput();
         Console.WriteLine();
         if (!string.IsNullOrWhiteSpace(input))
         {
@@ -274,7 +279,6 @@ public partial class ChatRepl
             _historyIndex = _inputHistory.Count;
             _pendingInput = null;
             ClearFromPromptToBottom();
-            Console.SetCursorPosition(0, _promptLine);
             WriteColoredPrompt();
             Console.ResetColor();
             _lastBufferLen = 0;
@@ -480,104 +484,91 @@ public partial class ChatRepl
 
     // ── Display ──
 
+    // The input area is redrawn with relative cursor moves only. Nothing here may ask the
+    // terminal where the cursor is: Console.CursorTop on Unix writes a Device Status Report
+    // query (ESC[6n) and then blocks reading the reply from stdin. Lose that reply and the app
+    // hangs with the answer on screen and no prompt; consume it late and its own bytes show up
+    // as typed text ("[41;1R" after "> "). We wrote every row ourselves, so we can count them.
+
+    private static void MoveUp(int rows)
+    {
+        if (rows > 0) Console.Write($"\u001b[{rows}A");
+    }
+
+    private static void MoveDown(int rows)
+    {
+        if (rows > 0) Console.Write($"\u001b[{rows}B");
+    }
+
+    /// <summary>Erase from the cursor down — everything below the input area is ours.</summary>
+    private static void EraseBelow() => Console.Write("\u001b[J");
+
+    /// <summary>Column 0 of the input area's first row.</summary>
+    private void GotoPromptStart()
+    {
+        MoveUp(_cursorRow);
+        Console.Write('\r');
+        _cursorRow = 0;
+    }
+
+    /// <summary>Last row of the input area, so the transcript continues below all of it.</summary>
+    private void GotoEndOfInput()
+    {
+        MoveDown(_promptRows - 1 - _cursorRow);
+        Console.Write('\r');
+        _cursorRow = _promptRows - 1;
+    }
+
     private void Redraw(string text, int pos = -1)
     {
-        var bufWidth = Console.BufferWidth;
-        var bufHeight = Console.BufferHeight;
-        var promptLen = _promptPrefix.Length + text.Length;
-        var lineCount = (promptLen + bufWidth - 1) / bufWidth; // ceil
+        var width = Math.Max(1, Console.BufferWidth);
+        var textLen = _promptPrefix.Length + text.Length;
 
-        // Old visual range to clear
-        var oldMaxLine = _maxVisualLine;
-
-        // New range — _promptLine is fixed (input start point),
-        // _maxVisualLine computed via ceil
-        _maxVisualLine = _promptLine + lineCount - 1;
-
-        // If new text is shorter — clear stale lines below BEFORE writing
-        if (_maxVisualLine < oldMaxLine)
-        {
-            for (var line = _maxVisualLine + 1; line <= oldMaxLine; line++)
-            {
-                Console.SetCursorPosition(0, line);
-                Console.Write(new string(' ', bufWidth));
-            }
-        }
-
-        // Write: prompt + text with fixed _promptLine
-        Console.SetCursorPosition(0, _promptLine);
+        GotoPromptStart();
         WriteColoredPrompt();
         Console.ResetColor();
         Console.Write(text);
+        EraseBelow(); // a previously longer input left rows below this one
 
-        // If text causes terminal scroll (overflowing buffer) —
-        // adjust _promptLine by actual cursor position.
-        // Otherwise subsequent Redraw calls write on the wrong line
-        // and "eat" history above.
-        var actualLastLine = Console.CursorTop;
-        var expectedLastLine = _promptLine + lineCount - 1;
-        if (actualLastLine != expectedLastLine)
-        {
-            // Scroll moved content up — recalculate _promptLine
-            var oldPromptLine = _promptLine;
-            _promptLine = actualLastLine - (lineCount - 1);
-            if (_promptLine < 0) _promptLine = 0;
-            _maxVisualLine = _promptLine + lineCount - 1;
+        // Row of the last written character: terminals wrap lazily, so text that exactly fills
+        // its last row still ends on that row instead of starting a new one.
+        var endRow = textLen > 0 ? (textLen - 1) / width : 0;
+        var endCol = textLen % width;
 
-            // If _promptLine shifted down — clear stale rows
-            // between old and new position (when scrolling up normally
-            // _promptLine becomes smaller than oldPromptLine —
-            // nothing to clear there, terminal already shifted content).
-            if (_promptLine > oldPromptLine)
-            {
-                for (var line = _promptLine; line < oldPromptLine && line < bufHeight; line++)
-                {
-                    Console.SetCursorPosition(0, line);
-                    Console.Write(new string(' ', bufWidth));
-                }
-            }
-        }
+        var target = pos >= 0 ? _promptPrefix.Length + pos : textLen;
+        var targetRow = Math.Min(target / width, endRow);
+        var targetCol = target % width;
+        if (target == textLen && textLen > 0 && endCol == 0)
+            targetCol = width - 1; // the wrap is pending: the cursor visually sits on the last column
 
-        // Tail of last line — if text shortened on the same line
-        var endCol = promptLen % bufWidth;
-        if (endCol > 0)
-        {
-            Console.SetCursorPosition(endCol, _maxVisualLine);
-            Console.Write(new string(' ', bufWidth - endCol));
-        }
-
+        _promptRows = endRow + 1;
+        _cursorRow = targetRow;
         _lastBufferLen = text.Length;
 
-        // Cursor to position pos
-        if (pos >= 0)
-        {
-            var col = _promptPrefix.Length + pos;
-            var line = _promptLine + col / bufWidth;
-            if (line >= bufHeight) line = bufHeight - 1;
-            Console.SetCursorPosition(col % bufWidth, line);
-        }
+        MoveUp(endRow - targetRow);
+        Console.Write('\r');
+        if (targetCol > 0) Console.Write($"\u001b[{targetCol}C");
     }
 
     private void ClearFromPromptToBottom()
     {
-        var bufWidth = Console.BufferWidth;
-        var bufHeight = Console.BufferHeight;
-        for (var line = _promptLine; line <= _maxVisualLine && line < bufHeight; line++)
-        {
-            Console.SetCursorPosition(0, line);
-            Console.Write(new string(' ', bufWidth));
-        }
-        _maxVisualLine = _promptLine;
+        GotoPromptStart();
+        EraseBelow();
+        _promptRows = 1;
     }
 
     private void MoveCursor(int pos)
     {
-        var col = _promptPrefix.Length + pos;
-        var bufWidth = Console.BufferWidth;
-        var bufHeight = Console.BufferHeight;
-        var line = _promptLine + col / bufWidth;
-        if (line >= bufHeight) line = bufHeight - 1;
-        Console.SetCursorPosition(col % bufWidth, line);
+        var width = Math.Max(1, Console.BufferWidth);
+        var target = _promptPrefix.Length + pos;
+        var row = Math.Min(target / width, _promptRows - 1);
+        var col = target % width;
+
+        if (row > _cursorRow) MoveDown(row - _cursorRow);
+        else MoveUp(_cursorRow - row);
+        Console.Write('\r');
+        if (col > 0) Console.Write($"\u001b[{col}C");
+        _cursorRow = row;
     }
 
     private void WriteColoredPrompt()

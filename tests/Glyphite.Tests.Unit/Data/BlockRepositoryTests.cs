@@ -1,6 +1,7 @@
 using Glyphite.Abstractions.Models;
 using Glyphite.Host.Data;
 using Glyphite.Tests.Unit.Support;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace Glyphite.Tests.Unit.Data;
@@ -13,6 +14,33 @@ public class BlockRepositoryTests : IDisposable
 
     private BlockRepository CreateBlockRepo() => new(_db.ConnStr);
     private SessionRepository CreateSessionRepo() => new(_db.ConnStr);
+
+    /// <summary>
+    /// The read behind every turn is <c>WHERE agent_id = ? AND is_deleted = 0 ORDER BY number</c>. The
+    /// index has to end in <c>number</c>, otherwise SQLite sorts the result on every single turn; the
+    /// old two-column index is a prefix of it and is dropped instead of being maintained for nothing.
+    /// </summary>
+    [Fact]
+    public void Initialize_IndexesTheMainRead()
+    {
+        using var repo = CreateBlockRepo();
+        using var conn = new SqliteConnection(_db.ConnStr);
+        conn.Open();
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA index_info('idx_blocks_agent_deleted_number')";
+        using (var reader = cmd.ExecuteReader())
+        {
+            var columns = new List<string>();
+            while (reader.Read())
+                columns.Add(reader.GetString(2)); // PRAGMA index_info: seqno, cid, name
+
+            Assert.Equal(new[] { "agent_id", "is_deleted", "number" }, columns);
+        }
+
+        cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_blocks_agent_deleted'";
+        Assert.Equal(0L, (long)cmd.ExecuteScalar()!);
+    }
 // ── CRUD ──
 
     [Fact]

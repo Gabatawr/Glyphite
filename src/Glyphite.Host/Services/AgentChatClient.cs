@@ -58,32 +58,63 @@ public sealed class AgentChatClient : DelegatingChatClient
     }
 
     /// <summary>
+    /// The factory that turns <see cref="ChatOptions"/> into the SDK's raw
+    /// <see cref="ChatCompletionOptions"/>, applying <c>AdditionalProperties</c> as a
+    /// <see cref="JsonPatch"/> (MEAI never copies them into the request body).
+    ///
+    /// It is a named type rather than a lambda so that <see cref="ApplyClientOptions"/> can recognise
+    /// its own work: a <see cref="ChatOptions"/> instance lives for the whole session and is handed to
+    /// every request, so wrapping it per call stacked one more layer on every iteration — the chain
+    /// grew without bound and each request re-ran all the earlier layers.
+    /// </summary>
+    private sealed class PatchOptionsFactory
+    {
+        /// <summary>The factory that existed before this wrapper, captured exactly once.</summary>
+        public Func<IChatClient, object?>? Inner { get; init; }
+
+        /// <summary>The options this wrapper belongs to — the identity used by the idempotence check.</summary>
+        public ChatOptions Options { get; }
+
+        public PatchOptionsFactory(ChatOptions options) => Options = options;
+
+        public object? Invoke(IChatClient client)
+        {
+#pragma warning disable SCME0001 // JsonPatch is experimental
+            var sdkOptions = Inner?.Invoke(client) as OpenAI.Chat.ChatCompletionOptions
+                ?? new OpenAI.Chat.ChatCompletionOptions();
+
+            // Read live, not captured: AdditionalProperties is mutated between requests.
+            if (Options.AdditionalProperties is { } props)
+            {
+                foreach (var kvp in props)
+                    ApplyToPatch(ref sdkOptions.Patch, kvp.Key, kvp.Value);
+            }
+
+            return sdkOptions;
+#pragma warning restore SCME0001
+        }
+    }
+
+    /// <summary>
     /// Converts <see cref="ChatOptions.AdditionalProperties"/> entries into
     /// <see cref="ChatCompletionOptions.Patch"/> entries so they actually
     /// reach the HTTP request body.
     /// MEAI doesn't copy <c>AdditionalProperties</c> into the SDK options,
     /// so <see cref="JsonPatch"/> is the only path to the HTTP request.
+    /// Idempotent: wrapping the same options twice is a no-op.
     /// </summary>
     private static ChatOptions ApplyClientOptions(ChatOptions options)
     {
         if (options.AdditionalProperties is null || options.AdditionalProperties.Count == 0)
             return options;
 
-        // Chain with any existing factory
-        var existingFactory = options.RawRepresentationFactory;
-        options.RawRepresentationFactory = target =>
-        {
-#pragma warning disable SCME0001 // JsonPatch is experimental
-            var sdkOptions = existingFactory?.Invoke(target) as OpenAI.Chat.ChatCompletionOptions
-                ?? new OpenAI.Chat.ChatCompletionOptions();
+        // Already ours — the wrapper reads AdditionalProperties live, so there is nothing to add.
+        if (options.RawRepresentationFactory?.Target is PatchOptionsFactory own
+            && ReferenceEquals(own.Options, options))
+            return options;
 
-            foreach (var kvp in options.AdditionalProperties)
-                ApplyToPatch(ref sdkOptions.Patch, kvp.Key, kvp.Value);
-
-            return sdkOptions;
-#pragma warning restore SCME0001
-        };
-
+        var factory = new PatchOptionsFactory(options) { Inner = options.RawRepresentationFactory };
+        options.RawRepresentationFactory = factory.Invoke;
         return options;
     }
 

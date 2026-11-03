@@ -133,7 +133,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 
 | Tool | Description |
 |------|-------------|
-| `bash` | Execute shell commands with timeout and output limits. `back=true` runs as a background process and returns a taskId immediately. Commands matching `CheckRequireCommands` trigger the interactive confirmation panel |
+| `bash` | Execute shell commands with timeout and output limits. `back=true` runs as a background process and returns a taskId immediately. Commands matching `CheckRequireCommands` trigger the interactive confirmation panel. `workdir` must not fall under `Bash:ForbiddenDirectories`; a relative one resolves from the shell's start directory |
 | `bash_back` | Manage background bash tasks: `list`, `wait` (block until done, kills on timeout), `partial` (poll current output without killing) |
 | `read_file` | Read a file with line numbers, `offset`/`limit` for partial reads, auto-dedup for logs, and git awareness — lines differing from `HEAD` are marked with `+` (plus a summary in the header), and `git_delete=true` appends the deleted lines from the diff |
 | `write_file` | Create / overwrite a file |
@@ -141,7 +141,7 @@ All tools are available to the AI agent and can be invoked in conversation:
 | `view_image` | Load a picture (local path, `http(s)` URL, `file://` or `data:` URL) so the model can actually see it. See [Images](#images) |
 | `search_glob` | Find files by glob pattern |
 | `search_grep` | Search text inside files, with `around` for N context lines per match and content dedup |
-| `fetch_web` | HTTP request (GET/POST) with text extraction. Refuses images with a pointer to `view_image` |
+| `fetch_web` | HTTP request (GET/POST) with text extraction. The download and the returned text are bounded separately (`WebFetch:MaxDownloadBytes`, `WebFetch:MaxContentChars`), and `<script>`/`<style>` bodies are dropped — one unbounded page would otherwise be re-sent on every later request. Refuses images with a pointer to `view_image` |
 | `kvstore` | Key-value store for agent data. Two scopes: `vault` (persistent table) and `config` (agent config + session overrides). `get`/`set` with glob masks (`*`/`?`), TTL (vault only), dry-run confirm flow for masked sets. Empty value = delete. Ephemeral (subagent_run) agents use memory only — no DB leaks |
 | `todo` | Create, update, or list todo lists — title as immutable ID for multi-list support. `create(title, items)`, `update(title, items)`, `list(title?)`. Statuses: pending, in_progress, done, cancelled, blocked. Update by index or by text (no index = match by text, new text = add item) |
 | `memory` | Memory statistics: `stats` (block type distribution, token usage, cache stats, cost) |
@@ -224,6 +224,15 @@ Subagents enable the main agent to delegate tasks to specialized worker agents.
 
 The subagent has access to the `memory` tool (`stats`), allowing it to inspect memory statistics.
 Subagents **do not** have access to `subagent_*` tools (prevents recursive agent creation).
+
+### Working directory (`cwd`)
+
+`cwd` is the subagent's **home**, not just a config hint: its `Glyphite.json` and `AGENTS.md` are read
+from there, and it is the base directory for every path-taking tool (`read_file`, `write_file`,
+`patch_file`, `search_glob`, `search_grep`, `view_image`) — a relative path resolves inside the
+subagent's own directory instead of the directory glyphite was launched from. `bash` starts in the
+agent's `Bash:DefaultDirectory`, else its home, else the process default. Default: the current
+agent's home directory.
 
 ### Escape cancellation
 
@@ -403,7 +412,7 @@ strategies are available, toggled via the `Strategies` dictionary flags:
 {
   "Compression": {
     "AutoCompress": true,
-    "AutoThreshold": 20,
+    "AutoThreshold": 25,
     "Strategies": {
       "fibo": true,
       "struct": false
@@ -412,8 +421,11 @@ strategies are available, toggled via the `Strategies` dictionary flags:
 }
 ```
 
-- **Trigger:** when the last request's tokens exceed `AutoThreshold`% of the context window (e.g. 20%
-  of 1M = 200K tokens)
+- **Trigger:** when the last request's tokens exceed `AutoThreshold`% of the context window (e.g. 25%
+  of 1M = 250K tokens)
+- **Forked session:** a fork copies blocks but not `session_usage`, so while no usage exists the
+  threshold is compared against an estimate of the history itself — a lower bound, because a real
+  request also carries the system prompt and tool schemas
 - **Strategy selection:** if one strategy is enabled — it's used. If both — one is picked randomly each
   turn (visible in `[AutoTool: compression]`)
 
@@ -450,18 +462,19 @@ strategies are available, toggled via the `Strategies` dictionary flags:
 
 ### Reasoning auto-compaction
 
-Large `agent_reasoning` blocks are compacted separately, after each turn. This replaces the old "peek
-reasoning" system.
+Large `agent_reasoning` blocks are compacted separately, after each turn — but never from the newest
+turn, whose reasoning is the working memory the next step was planned on.
 
 ```json
 "Compression": {
   "AutoCompressReasoning": true,
-  "AutoCompressReasoningMaxSize": 6000
+  "AutoCompressReasoningMaxSize": 8000
 }
 ```
 
-- **Trigger:** after each turn, all `agent_reasoning` blocks > `AutoCompressReasoningMaxSize` chars are
-  compacted
+- **Trigger:** after each turn, `agent_reasoning` blocks **older than the newest turn** and larger than
+  `AutoCompressReasoningMaxSize` chars are compacted. The newest-turn boundary is the latest
+  `user_message` (or `agent_task`); a history with neither compacts everything, as before
 - **Process:** blocks are compacted **in parallel** by the LLM, each reduced to ~`maxSize/4/2` tokens
   (~750 chars)
 - **Result:** a new summary `agent_reasoning` block replaces the original; `AutoTool: compress_reasoning`
@@ -523,7 +536,10 @@ automatically on the next turn. No restart needed.
 
 ## Config hot-reload
 
-All configuration is reloaded from disk every turn — no `/reload` command needed:
+Config is a stack of layers, each winning over the one below it: **session**
+(`scope = 'session'` rows, or the agent's own directory config while it is away from home) →
+`./Glyphite.json` → `~/.glyphite/Glyphite.json` → built-in defaults. Files are re-read every turn — no
+`/reload` command needed:
 
 | Section | Applied to | Refresh mechanism |
 |---------|-----------|-------------------|
@@ -542,6 +558,15 @@ All configuration is reloaded from disk every turn — no `/reload` command need
 | `Image.*` | Image limits and URL handling | per-call via `ImageTool` / per-turn via `TurnProcessor` |
 
 Changes are reflected immediately on the next user turn — no restart required.
+
+Two details worth knowing:
+
+- **`LLM.Model` is per turn.** It is re-read from the agent's own row (what `/models` writes) with
+  `LLM.Model` as the fallback, so picking a model applies to the very next turn — no `/new` needed.
+- **`LLM.Endpoint` / `LLM.ApiKey` are tied to the provider client**, which is built once and rebuilt only
+  when the *file* value changes. Putting them in an agent's own config (session scope) does not move the
+  client: it is a process-wide singleton. `Agent.*` (including `AgentName`) is read from the merged config
+  per turn.
 
 ## ToolStreaming
 

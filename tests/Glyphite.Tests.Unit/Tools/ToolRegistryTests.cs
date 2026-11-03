@@ -114,6 +114,8 @@ public class ToolRegistryTests : IDisposable
         var cfgStore = Substitute.For<IConfigStore>();
         cfgStore.GetMergedConfigAsync(Arg.Any<string?>())
             .Returns(Task.FromResult(new Dictionary<string, string>()));
+        cfgStore.GetSessionConfigAsync(Arg.Any<string>())
+            .Returns(Task.FromResult(new Dictionary<string, string>()));
         cfgStore.GetConfigAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string?>())
             .Returns(Task.FromResult<string?>(null));
         var cfg = new ConfigService(cfgStore, configuration.GetSection("Glyphite"));

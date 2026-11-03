@@ -3,6 +3,103 @@
 All notable changes to Glyphite are documented here, newest first. Versions come from
 `version.txt`, bumped by `./publish.sh`.
 
+## [1.4.75] — 2026-11-03
+
+Covers 1.4.5–1.4.75 (patch releases since the 1.4.0 entry).
+
+### Added
+
+- **Per-agent working directory** — `subagent_run` / `subagent_use` `cwd` is the agent's home *and*
+  the base directory of its path-taking tools (`read_file`, `write_file`, `patch_file`, `search_glob`,
+  `search_grep`, `view_image`). A per-agent `Bash:DefaultDirectory` / `ExecutablePath` is honoured for
+  foreground and background commands alike
+- `CommandAnalyzer` — the safety gate reads the command that actually runs: separators (`;`, `&&`,
+  `||`, `|`, `&`, newlines, parentheses), `$(…)` / backticks, `FOO=bar` prefixes, wrappers (`sudo`,
+  `env`, `nohup`, `timeout`, `xargs`, …) and recursion into `bash -c "…"`. Patterns anchor at segment
+  start, and however many patterns match, the human is asked once about the whole string
+- `PathGuard` — one directory check shared by `bash`, `bash_back` and `pocket_add`
+- `SafetyVerdict.Inconclusive` — the AI checker no longer degrades to `Allow`; the human decides with
+  the timer off (`noAutoSelect`), and only an explicit `OK` approves
+- Turn markers carry three separate rulers: `context` (the last request's prompt), `stored` /
+  `stored_reasoning` / `stored_text` / `stored_tool` (rendered size of what the turn wrote) and billed
+  `hit` / `miss` / `out_` / `reasoning`
+
+### Fixed
+
+- **Block numbers came from five independent writers** — a todo block could share a number with a bash
+  block. `AppendBlocksAsync` now allocates inside the write lock and transaction from
+  `max(sessions.next_number, MAX(number)+1)`; a stale counter self-heals, soft-deleted rows count as
+  taken, and `ForkSessionAsync` syncs the counter and `is_compressed`
+- **Compaction could delete the oldest turn without a summary** — the first turn was folded into the
+  `agent_data` group and `ClassifyZones` skipped it. `agent_data` is always its own leading group,
+  zones are ranked from the newest, and a trailing turn without a marker is kept
+- **A forked session never compacted** — a fork copies blocks but not `session_usage`, so the
+  threshold compared against zero; it now falls back to an estimate of the history
+- **`ForbiddenDirectories: ["/"]` blocked every absolute `workdir`** while `../etc` passed:
+  `"/".TrimEnd('/')` became `""`. Paths are canonicalized, matched on a segment boundary, and a
+  relative `workdir` resolves from the directory the shell really starts in
+- **A subagent's `cwd` reached its config but not its tools** — bash opened in the launch directory and
+  `write_file("x.txt")` wrote there; `write_file`'s re-read also used the model's raw argument, so it
+  could show a same-named file from another directory
+- **`extra_cfg` leaked into history** — fields that merely restate a tool's own defaults are dropped;
+  a real override (`peek:false`, `timeout:5`) is kept
+- **`fetch_web` was unbounded** — one docs page (2.6M chars, nearly all script) pushed a session past
+  the context window; the download and the text are bounded separately and `<script>` / `<style>`
+  bodies dropped
+- **`pocket_run` inherited "approved" after substitution** — a pre-approved template with a
+  substituted argument no longer skips the interactive confirmation
+- **`AgentChatClient` stacked a new `RawRepresentationFactory` layer on every request** —
+  `ChatOptions` lives for the whole session, so the wrapping chain grew 1:1 with calls and every
+  request re-ran all the earlier layers (measured: 1000 calls → a 1000-deep chain). The wrapper is a
+  named factory that recognises its own delegate target now, so the chain stays one layer deep; a
+  foreign factory is still chained exactly once
+- **`maxSize` was a limit only approximately** — the truncation notice was appended on top of the full
+  budget (~120 chars), so a small limit could be exceeded several times over. The notice now comes out
+  of the budget: the returned view never exceeds `maxSize`, and `-1` is handled as "unlimited" instead
+  of reaching the splitter
+- **Reasoning effort outlived its setting** — it was applied to the session-wide `ChatOptions` and
+  never cleared, so removing `LLM:ReasoningEffort` from the config kept the old effort in force; the
+  key is now authoritative on every turn
+- **Reasoning auto-compaction no longer rewrites the newest turn's reasoning**
+- **Edits to `Glyphite.json` never reached a per-agent reader** — `ConfigService` cached the *merged*
+  view (file values included) per agent and invalidated it only on writes through itself, so the reload
+  token that `AddJsonFile` fires changed nothing: `Bash`, `Search`, `Todo`, `WebFetch`, `Compression`,
+  `Image` and `ContentDedup` kept the values they first saw until a restart. The cache now holds only the
+  session part; the file is merged fresh every read, with the flattened snapshot dropped when the reload
+  token fires
+- **Picking a model with `/models` did nothing until `/new`** — the pick is written to the agent's row,
+  but the model had been copied into the session-long `ChatOptions` at startup and won over the config.
+  It is resolved from the agent row (falling back to `LLM.Model`) at the start of every turn now
+- **The provider client kept the endpoint, key and model it was built with** — `LazyChatClient` takes a
+  settings key and rebuilds the client when it changes, disposing the one it replaces, so editing
+  `LLM.Endpoint` / `LLM.ApiKey` / `LLM.Model` applies without a restart
+- **`Agent.AgentName` waited for `/new`** — `BlockMemoryProvider` read it from an `IOptions` snapshot
+  taken at scope creation; it goes through `IConfigService` on every context build now
+- **Session config cost two queries and could lose a key** — `ConfigService` and `SessionConfigLoader`
+  merged the agent's config with the global one and subtracted, which cost two round-trips and dropped
+  any session row that shared a name with a global key. `IConfigStore.GetSessionConfigAsync` filters by
+  scope instead
+- `out_` already contains `reasoning` and says nothing about history size; `/stats` shows the split
+  instead of summing them
+- **The REPL asked the terminal where its cursor was** — on Unix `Console.CursorTop` is not an ioctl:
+  it writes a Device Status Report (`ESC[6n`) and then blocks reading the reply from stdin. Lose that
+  reply and the app sits with the answer on screen and no prompt; read it late and its own bytes turn
+  up as typed text (`[41;1R` after `> `). The input area is redrawn with relative cursor moves now and
+  the rows it occupies are counted from what we wrote — the terminal is never queried
+- **The last line of an answer waited for the whole turn to finish** — streaming buffers per line, so
+  a trailing line without a newline was flushed only after `FlushAll`, peek cleanup and the turn
+  marker. It is flushed when generation ends (`UsageTurnEvent`), so neither the answer's tail nor the
+  prompt waits on DB work
+- **Enter on an empty prompt killed the REPL** — `input.Split(…, RemoveEmptyEntries)` returns an empty
+  array for `""`, and the next line indexed `parts[0]`. Empty and whitespace-only lines are a no-op now
+
+### Changed
+
+- `IToolRegistry.GetBuiltinToolsAsync(..., baseDir)` and `IBashSessionManager.GetStartDirectoryAsync`
+  are new; `IBashSessionManager.StartBackgroundAsync` is now async and no longer uses the startup
+  snapshot of `BashOptions`
+- `Compression:AutoCompressReasoningMaxSize` default 6000 → 8000
+
 ## [1.4.0] — 2026-10-01
 
 Covers 1.4.0–1.4.4 (published as patch bumps) together with the 1.3.25–1.3.99 development line.

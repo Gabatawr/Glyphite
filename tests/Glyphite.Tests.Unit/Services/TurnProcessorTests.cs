@@ -76,7 +76,32 @@ public class TurnProcessorTests : IDisposable
             events.Add(e);
         return events;
     }
-// ── Turn lifecycle ──
+    [Fact]
+    public async Task Model_IsReReadFromTheAgentOnEveryTurn()
+    {
+        // `/models` writes the pick to the DB. The model used to be copied into `chatOptions` once, at
+        // session start, so a mid-session pick never reached a request — it waited for `/new`.
+        SetupOptions();
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        await _db.Sessions.SetAgentModelAsync(AgentId, "first-model");
+
+        var chatOptions = new ChatOptions();
+        await DrainTurnAsync(chatOptions);
+        Assert.Equal("first-model", chatOptions.ModelId);
+
+        await _db.Sessions.SetAgentModelAsync(AgentId, "second-model");
+        await DrainTurnAsync(chatOptions);
+        Assert.Equal("second-model", chatOptions.ModelId);
+    }
+
+    private async Task DrainTurnAsync(ChatOptions chatOptions, string input = "hello")
+    {
+        await foreach (var _ in CreateProcessor().ProcessAsync(AgentId, input, chatOptions, default))
+        {
+        }
+    }
+
+    // ── Turn lifecycle ──
 
     /// <summary>
     /// The tools a turn hands the model must resolve relative paths against the agent's own directory
@@ -96,6 +121,51 @@ public class TurnProcessorTests : IDisposable
         }
 
         await _tools.Received(1).GetBuiltinToolsAsync(AgentId, Arg.Any<bool>(), "/tmp/some-agent-dir");
+    }
+
+    [Fact]
+    public async Task ReasoningEffort_FromConfig_IsApplied()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions(llm: new LlmOptions
+        {
+            Endpoint = "http://localhost",
+            ApiKey = "test-key",
+            Model = "test-model",
+            ContextWindow = 100_000,
+            Models = [new LlmModel { Name = "test-model" }],
+            ReasoningEffort = "high",
+        });
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("hi")])]);
+        var options = new ChatOptions();
+
+        var processor = CreateProcessor();
+        await foreach (var _ in processor.ProcessAsync(AgentId, "hello", options, default))
+        {
+        }
+
+        Assert.Equal(ReasoningEffort.High, options.Reasoning?.Effort);
+    }
+
+    /// <summary>
+    /// <see cref="ChatOptions"/> is created once per session and reused every turn. An effort applied
+    /// from the config therefore used to outlive the setting: the provider kept being told to think
+    /// hard long after the key was removed from Glyphite.json.
+    /// </summary>
+    [Fact]
+    public async Task ReasoningEffort_RemovedFromConfig_DoesNotOutliveTheSetting()
+    {
+        await _db.Sessions.EnsureSessionAsync(AgentId);
+        SetupOptions();
+        _chat.QueueStream([new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("hi")])]);
+        var options = new ChatOptions { Reasoning = new ReasoningOptions { Effort = ReasoningEffort.High } };
+
+        var processor = CreateProcessor();
+        await foreach (var _ in processor.ProcessAsync(AgentId, "hello", options, default))
+        {
+        }
+
+        Assert.Null(options.Reasoning);
     }
 
     [Fact]

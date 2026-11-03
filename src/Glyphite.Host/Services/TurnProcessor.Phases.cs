@@ -49,15 +49,25 @@ public partial class TurnProcessor
         if (string.IsNullOrWhiteSpace(llmOpts.ApiKey))
             return (null, "LLM API key is not configured. Open Glyphite.json in the current directory and set LLM:ApiKey.");
 
-        // Apply reasoning effort from config (None = suppress, null = let provider decide)
+        // Apply reasoning effort from config (None = suppress, null = let provider decide).
+        // `chatOptions` is created once per session and reused every turn, so the "absent" case must
+        // clear what an earlier turn set — otherwise a removed setting keeps working.
         if (llmOpts.ReasoningEffort is { } effortStr
             && Enum.TryParse<ReasoningEffort>(effortStr, ignoreCase: true, out var parsedEffort))
         {
             chatOptions.Reasoning ??= new ReasoningOptions();
             chatOptions.Reasoning.Effort = parsedEffort;
         }
+        else
+        {
+            chatOptions.Reasoning = null;
+        }
 
-        var modelStr = chatOptions.ModelId ?? llmOpts.Model;
+        // The agent's own model (whatever `/models` stored) wins over the config default — but both are
+        // re-read every turn. `chatOptions` lives for the whole session, so keeping the model there froze
+        // it at session start: neither a new pick nor an edited `LLM:Model` ever reached the request.
+        chatOptions.ModelId = await _agentStore.GetAgentModelAsync(agentId) ?? llmOpts.Model;
+        var modelStr = chatOptions.ModelId;
         _logger.LogInformation("Turn start session {SessionId}, model {Model}", agentId, modelStr);
 
         // ── Build system instructions (system-prompt.md + AGENTS.md + Glyphite.{agentId}.md) ──

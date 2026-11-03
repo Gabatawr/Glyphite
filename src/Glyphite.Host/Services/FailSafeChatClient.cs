@@ -36,7 +36,6 @@ public sealed class FailSafeChatClient : DelegatingChatClient
     public long LastMissTokens => _usageTracker.LastMissTokens;
     public long LastReasoningTokens => _usageTracker.LastReasoningTokens;
 
-    public IReadOnlyList<ChatMessage>? LastMessages { get; private set; }
     public Action<long, long, long, long>? OnUsage { get; set; }
 
     /// <summary>Called after each iteration's usage is recorded, with per-iteration values
@@ -174,7 +173,6 @@ public sealed class FailSafeChatClient : DelegatingChatClient
                     if (finalContents.Count > 0)
                         messageList.Add(new ChatMessage(ChatRole.Assistant, finalContents));
                 }
-                LastMessages = messageList.AsReadOnly();
                 yield break;
             }
 

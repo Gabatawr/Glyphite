@@ -22,6 +22,9 @@
     </PackageReference>
     <PackageReference Include="NSubstitute" Version="5.3.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
+    <!-- Hot-reload tests read a real JSON file and call Reload(): the point is that the file is a live
+         source, which an in-memory provider cannot prove. -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.9" />
   </ItemGroup>
 
   <ItemGroup>

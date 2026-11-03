@@ -32,7 +32,12 @@ public class BlockRepository : RepositoryBase, IBlockStore
                 is_compressed INTEGER NOT NULL DEFAULT 0
             );
             """);
-        _conn.Execute("CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted ON blocks(agent_id, is_deleted)");
+        // Covers the read that runs on every turn:
+        //   WHERE agent_id = ? AND is_deleted = 0 ORDER BY number
+        // The wider key lets SQLite return the rows already ordered instead of sorting them. The old
+        // two-column index is a prefix of this one, so it is dropped rather than paid for on writes.
+        _conn.Execute("CREATE INDEX IF NOT EXISTS idx_blocks_agent_deleted_number ON blocks(agent_id, is_deleted, number)");
+        _conn.Execute("DROP INDEX IF EXISTS idx_blocks_agent_deleted");
         ApplyMigrations();
     }
 
@@ -246,21 +251,6 @@ public class BlockRepository : RepositoryBase, IBlockStore
     }
 
     // ── Peek blocks ──
-
-    public async Task<int> RemovePeekBlocksAsync(string agentId, bool includeReasoning = true)
-    {
-        return await WithLockAsync(async () =>
-        {
-            if (!includeReasoning) return 0;
-            var sql = """
-                UPDATE blocks SET is_deleted = 1
-                WHERE agent_id = @sid AND is_deleted = 0
-                  AND data IS NOT NULL AND json_extract(data, '$.peek') = 1
-                  AND type = 'agent_reasoning'
-                """;
-            return await _conn.ExecuteAsync(sql, new { sid = agentId });
-        });
-    }
 
     public async Task<int> ClearPeekMarkersAsync(string agentId, bool includeReasoning = true)
     {

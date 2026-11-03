@@ -97,7 +97,7 @@ public class ToolRegistry : IToolRegistry
         };
 
         // Pocket tools: per-agent toolbox of user-defined aliases (available for all agents)
-        foreach (var pocketFn in PocketTool.AsManagementFunctions(
+        foreach (var pocketFn in PocketCommands.AsManagementFunctions(
                      _kvStore, _cfgService, _bashManager, _subAgentManager, _safetyChecker, agentId, isSubAgent))
         {
             tools.Add(WrapWithConfig(pocketFn, toolExec, pocketFn.Name, _tmpDir, agentId));
@@ -126,22 +126,22 @@ public class ToolRegistry : IToolRegistry
         // Native names carry the "_pocket" suffix; skipped when that name collides with an already-registered tool.
         // Local favorites are materialized first — a local entry shadows a global one with the same native name;
         // a materialized global (shared) entry appears as a native tool for all agents.
-        async Task AddMaterialized(PocketTool.PocketEntry entry, bool isGlobal)
+        async Task AddMaterialized(PocketEntry entry, bool isGlobal)
         {
             if (!entry.Materialize) return;
 
-            var nativeName = PocketTool.MaterializedName(entry.Name);
+            var nativeName = PocketEntry.MaterializedName(entry.Name);
             if (tools.Any(t => string.Equals(t.Name, nativeName, StringComparison.OrdinalIgnoreCase)))
                 return;
 
-            var runner = PocketTool.CreateRunner(_bashManager, _cfgService, _kvStore, isSubAgent, _safetyChecker, agentId);
-            tools.Add(WrapWithConfig(PocketTool.AsPocketFunction(entry, runner, isGlobal), toolExec, nativeName, _tmpDir, agentId));
+            var runner = PocketExecution.CreateRunner(_bashManager, _cfgService, _kvStore, isSubAgent, _safetyChecker, agentId);
+            tools.Add(WrapWithConfig(PocketExecution.AsPocketFunction(entry, runner, isGlobal), toolExec, nativeName, _tmpDir, agentId));
         }
 
-        foreach (var entry in await PocketTool.LoadEntriesAsync(_kvStore, agentId))
+        foreach (var entry in await PocketStore.LoadEntriesAsync(_kvStore, agentId))
             await AddMaterialized(entry, isGlobal: false);
 
-        foreach (var entry in await PocketTool.LoadGlobalEntriesAsync(_kvStore))
+        foreach (var entry in await PocketStore.LoadGlobalEntriesAsync(_kvStore))
             await AddMaterialized(entry, isGlobal: true);
 
         return tools;

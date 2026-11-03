@@ -13,10 +13,18 @@ public class BlockMemoryProviderTests
     private readonly IAgentStore _agents = Substitute.For<IAgentStore>();
     private readonly IBlockStore _blocks = Substitute.For<IBlockStore>();
     private readonly IConfigService _cfg = Substitute.For<IConfigService>();
-    private readonly AgentOptions _agentOpts = new() { AgentName = "test-agent", MaxToolIterations = 5 };
+
+    public BlockMemoryProviderTests()
+    {
+        UseAgentName("test-agent");
+    }
+
+    private void UseAgentName(string name)
+        => _cfg.GetOptionsAsync<AgentOptions>(AgentOptions.Section, Arg.Any<string?>())
+            .Returns(new AgentOptions { AgentName = name, MaxToolIterations = 5 });
 
     private BlockMemoryProvider CreateProvider(string? defaultModel = null)
-        => new(_agents, _blocks, _cfg, new MemoryOptions(), _agentOpts, defaultModel);
+        => new(_agents, _blocks, _cfg, defaultModel);
 
     // ── Context building ──
 
@@ -59,8 +67,8 @@ public class BlockMemoryProviderTests
     public async Task BuildContext_AgentNameChanged_UpdatesAgentDataWithModel()
     {
         _blocks.LoadBlocksAsync(AgentId).Returns([Block(BlockType.agent_data, 1, "agent: old-name")]);
-        var provider = new BlockMemoryProvider(_agents, _blocks, _cfg, new MemoryOptions(),
-            new AgentOptions { AgentName = "new-name", MaxToolIterations = 5 }, defaultModel: null);
+        UseAgentName("new-name");
+        var provider = CreateProvider();
 
         await provider.BuildContextAsync(AgentId, model: "gpt-4");
 
@@ -85,12 +93,32 @@ public class BlockMemoryProviderTests
     {
         _blocks.LoadBlocksAsync(AgentId).Returns([Block(BlockType.agent_data, 1, "agent: old-name")]);
         _agents.GetAgentModelAsync(AgentId).Returns("stored-model");
-        var provider = new BlockMemoryProvider(_agents, _blocks, _cfg, new MemoryOptions(),
-            new AgentOptions { AgentName = "new-name", MaxToolIterations = 5 }, defaultModel: null);
+        UseAgentName("new-name");
+        var provider = CreateProvider();
 
         await provider.BuildContextAsync(AgentId);
 
         await _blocks.Received(1).UpdateBlockAsync(AgentId, 1, "agent: new-name", Arg.Any<Dictionary<string, object>>(), "stored-model");
+    }
+
+    [Fact]
+    public async Task BuildContext_ReadsAgentNameFromConfig_OnEveryCall()
+    {
+        _blocks.LoadBlocksAsync(AgentId).Returns([Block(BlockType.agent_data, 1, "agent: first")]);
+        UseAgentName("first");
+
+        // One instance for both calls: a snapshot taken in the constructor would pass the first
+        // assertion and fail the second, which is exactly the regression this guards.
+        var provider = CreateProvider();
+        await provider.BuildContextAsync(AgentId, model: "m");
+
+        // Config edited between turns — no restart, no `/new`: the next context build must see it.
+        UseAgentName("second");
+
+        await provider.BuildContextAsync(AgentId, model: "m");
+
+        await _blocks.Received(1).UpdateBlockAsync(
+            AgentId, 1, "agent: second", Arg.Any<Dictionary<string, object>>(), "m");
     }
 
     // ── Error storage ──

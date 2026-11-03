@@ -14,6 +14,8 @@ public class ConfigServiceTests
         var store = Substitute.For<IConfigStore>();
         store.GetMergedConfigAsync(Arg.Any<string?>())
             .Returns(Task.FromResult(new Dictionary<string, string>()));
+        store.GetSessionConfigAsync(Arg.Any<string>())
+            .Returns(Task.FromResult(new Dictionary<string, string>()));
         store.GetConfigAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string?>())
             .Returns(Task.FromResult<string?>(null));
         return store;
@@ -255,44 +257,83 @@ public class ConfigServiceTests
     }
 
     [Fact]
-    public async Task HotReload_Reflects_Changed_Config()
+    public async Task HotReload_WithAgentId_SeesTheEditedFile_OnTheNextRead()
+    {
+        // The bug this guards: the per-agent cache held the *merged* view (file values included), so
+        // editing Glyphite.json changed nothing for any agent until the process restarted. A file edit
+        // must be visible on the very next read. (The test that used to sit here rebuilt the whole
+        // service with a new config object, so it passed no matter what the cache did.)
+        var store = CreateStore();
+        var file = Path.Combine(Path.GetTempPath(), $"glyphite_cfg_{Guid.NewGuid():N}.json");
+
+        try
+        {
+            await File.WriteAllTextAsync(file, """{"Bash": {"ForbiddenCommands": ["shutdown"]}}""");
+            var root = new ConfigurationBuilder().AddJsonFile(file, optional: false, reloadOnChange: false).Build();
+            using var service = new ConfigService(store, root);
+
+            var before = await service.GetOptionsAsync<BashOptions>("Bash", "agent-1");
+            Assert.Equal(["shutdown"], before.ForbiddenCommands);
+
+            await File.WriteAllTextAsync(file, """{"Bash": {"ForbiddenCommands": ["rm -rf /"]}}""");
+            ((IConfigurationRoot)root).Reload();
+
+            var after = await service.GetOptionsAsync<BashOptions>("Bash", "agent-1");
+            Assert.Equal(["rm -rf /"], after.ForbiddenCommands);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public async Task SessionOverrides_AreCached_WhileTheFileStaysLive()
+    {
+        // Two promises at once: the DB round-trip happens once, and the session value still wins over the
+        // file. Caching the merged view kept the first promise and broke the second.
+        var store = CreateStore();
+        store.GetSessionConfigAsync("agent-1")
+            .Returns(Task.FromResult(new Dictionary<string, string> { ["Bash:DiscoveryTimeoutMs"] = "15000" }));
+
+        using var service = new ConfigService(store, BuildConfig(new Dictionary<string, string>
+        {
+            ["Bash:DiscoveryTimeoutMs"] = "5000"
+        }));
+
+        var first = await service.GetOptionsAsync<BashOptions>("Bash", "agent-1");
+        var second = await service.GetOptionsAsync<BashOptions>("Bash", "agent-1");
+
+        Assert.Equal(15000, first.DiscoveryTimeoutMs);
+        Assert.Equal(15000, second.DiscoveryTimeoutMs);
+        await store.Received(1).GetSessionConfigAsync("agent-1");
+    }
+
+    [Fact]
+    public async Task UpdateConfigAsync_ForcesTheSessionOverridesToBeReloaded()
     {
         var store = CreateStore();
+        using var service = new ConfigService(store, BuildConfig());
 
-        var config = BuildConfig(new Dictionary<string, string>
-        {
-            ["WebFetch:UserAgent"] = "TestBot/1.0"
-        });
+        await service.GetOptionsAsync<BashOptions>("Bash", "agent-1");
+        await store.Received(1).GetSessionConfigAsync("agent-1");
 
-        var service = new ConfigService(store, config);
+        await service.UpdateConfigAsync(
+            new Dictionary<string, string> { ["Bash:DiscoveryTimeoutMs"] = "1" }, "session", "agent-1");
 
-        var options1 = await service.GetOptionsAsync<WebFetchOptions>("WebFetch");
-        Assert.Equal("TestBot/1.0", options1.UserAgent);
-
-        // Simulate hot-reload by creating a new config with updated value
-        // and recreating the service (since IConfiguration is immutable in tests)
-        var newConfig = BuildConfig(new Dictionary<string, string>
-        {
-            ["WebFetch:UserAgent"] = "NewBot/2.0"
-        });
-
-        var service2 = new ConfigService(store, newConfig);
-
-        var options2 = await service2.GetOptionsAsync<WebFetchOptions>("WebFetch");
-        Assert.Equal("NewBot/2.0", options2.UserAgent);
+        await service.GetOptionsAsync<BashOptions>("Bash", "agent-1");
+        await store.Received(2).GetSessionConfigAsync("agent-1");
     }
 
     [Fact]
     public async Task SessionConfig_Uses_DB_Overrides()
     {
         var store = CreateStore();
-        store.GetMergedConfigAsync("session-1")
+        store.GetSessionConfigAsync("session-1")
             .Returns(Task.FromResult(new Dictionary<string, string>
             {
                 ["Bash:DiscoveryTimeoutMs"] = "15000"
             }));
-        store.GetMergedConfigAsync(null)
-            .Returns(Task.FromResult(new Dictionary<string, string>()));
 
         var config = BuildConfig(new Dictionary<string, string>
         {
@@ -314,10 +355,6 @@ public class ConfigServiceTests
     public async Task SessionOverlay_Takes_Precedence()
     {
         var store = CreateStore();
-        store.GetMergedConfigAsync("overlay-session")
-            .Returns(Task.FromResult(new Dictionary<string, string>()));
-        store.GetMergedConfigAsync(null)
-            .Returns(Task.FromResult(new Dictionary<string, string>()));
 
         var config = BuildConfig(new Dictionary<string, string>
         {
@@ -342,10 +379,6 @@ public class ConfigServiceTests
     public async Task ClearSessionOverlay_Removes_Override()
     {
         var store = CreateStore();
-        store.GetMergedConfigAsync("clear-overlay")
-            .Returns(Task.FromResult(new Dictionary<string, string>()));
-        store.GetMergedConfigAsync(null)
-            .Returns(Task.FromResult(new Dictionary<string, string>()));
 
         var config = BuildConfig(new Dictionary<string, string>
         {

@@ -27,8 +27,7 @@ public class SessionConfigLoaderTests : IDisposable
         _cwd = Path.Combine(_root, "cwd");
 
         _agents.GetAgentHomePathAsync(AgentId).Returns(_home);
-        _store.GetMergedConfigAsync(AgentId).Returns(new Dictionary<string, string>());
-        _store.GetMergedConfigAsync(null).Returns(new Dictionary<string, string>());
+        _store.GetSessionConfigAsync(AgentId).Returns(new Dictionary<string, string>());
     }
 
     public void Dispose()
@@ -68,7 +67,7 @@ public class SessionConfigLoaderTests : IDisposable
     public async Task HomeConfigChanged_UpdatesDb()
     {
         WriteGlyphite(_home, """{"Glyphite": {"Llm": {"ApiKey": "new-key"}}}""");
-        _store.GetMergedConfigAsync(AgentId).Returns(new Dictionary<string, string> { ["Llm:ApiKey"] = "old-key" });
+        _store.GetSessionConfigAsync(AgentId).Returns(new Dictionary<string, string> { ["Llm:ApiKey"] = "old-key" });
 
         await LoadAsync();
 
@@ -82,7 +81,7 @@ public class SessionConfigLoaderTests : IDisposable
     public async Task HomeConfigUnchanged_NoDbWrite()
     {
         WriteGlyphite(_home, """{"Glyphite": {"Llm": {"ApiKey": "same"}}}""");
-        _store.GetMergedConfigAsync(AgentId).Returns(new Dictionary<string, string> { ["Llm:ApiKey"] = "same" });
+        _store.GetSessionConfigAsync(AgentId).Returns(new Dictionary<string, string> { ["Llm:ApiKey"] = "same" });
 
         await LoadAsync();
 
@@ -98,7 +97,7 @@ public class SessionConfigLoaderTests : IDisposable
         Directory.CreateDirectory(_home);
         WriteGlyphite(_parent, """{"Glyphite": {"A": {"Db": "parent"}, "B": {"Parent": "parent"}}}""");
         WriteGlyphite(_cwd, """{"Glyphite": {"A": {"Db": "cwd"}}}""");
-        _store.GetMergedConfigAsync(AgentId).Returns(new Dictionary<string, string> { ["A:Db"] = "db" });
+        _store.GetSessionConfigAsync(AgentId).Returns(new Dictionary<string, string> { ["A:Db"] = "db" });
 
         await LoadAsync();
 

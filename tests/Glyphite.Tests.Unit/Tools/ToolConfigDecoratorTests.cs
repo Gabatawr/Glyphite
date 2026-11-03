@@ -137,10 +137,11 @@ public class ToolConfigDecoratorTests
             var result = await decorated.InvokeAsync(Args(("extra_cfg", ExtraCfg(("maxSize", 1000))))) as string;
 
             Assert.NotNull(result);
-            Assert.Contains("[Output truncated: showing 1/3", result);
+            Assert.True(result.Length <= 1000, $"view is {result.Length} chars");
+            Assert.Contains("[Output truncated: 10000 chars total", result);
             Assert.Contains("[Full output saved to:", result);
-            Assert.StartsWith(new string('x', 333), result);
-            Assert.EndsWith(new string('x', 667), result);
+            Assert.StartsWith("x", result);
+            Assert.EndsWith("x", result);
 
             var files = Directory.GetFiles(tmpDir, "*", SearchOption.AllDirectories);
             var file = Assert.Single(files);
@@ -161,7 +162,7 @@ public class ToolConfigDecoratorTests
         var result = await decorated.InvokeAsync(Args(("extra_cfg", ExtraCfg(("maxSize", 100))))) as string;
 
         Assert.NotNull(result);
-        Assert.StartsWith(new string('y', 100), result);
+        Assert.True(result.Length <= 100, $"view is {result.Length} chars");
         Assert.Contains("[Content truncated at 100 chars", result);
     }
 
@@ -246,7 +247,7 @@ public class ToolConfigDecoratorTests
     {
         var result = ToolConfigDecorator.Truncate(new string('x', 1000), contentMaxSize: 100, tmpDir: "", toolName: "write_file", agentId: "a");
 
-        Assert.StartsWith(new string('x', 100), result);
+        Assert.True(result.Length <= 100, $"view is {result.Length} chars");
         Assert.Contains("[Content truncated at 100 chars. Full result length: 1000]", result);
     }
 
@@ -260,11 +261,18 @@ public class ToolConfigDecoratorTests
             var full = new string('y', 900);
             var result = ToolConfigDecorator.Truncate(full, contentMaxSize: 300, tmpDir: tmpDir, toolName: "write_file", agentId: "test-agent");
 
-            Assert.Contains("[Output truncated: showing 1/3 (100 chars) and 2/3 (200 chars) of 900 total]", result);
+            Assert.True(result.Length <= 300, $"view is {result.Length} chars");
+            Assert.Contains("[Output truncated: 900 chars total", result);
             Assert.Contains("[Full output saved to:", result);
-            // 1/3 top + notice + 2/3 bottom
-            Assert.StartsWith(new string('y', 100), result);
-            Assert.EndsWith(new string('y', 200), result);
+
+            // 1/3 from the top, 2/3 from the bottom, the notice in between.
+            var head = result[..result.IndexOf("[Output truncated", StringComparison.Ordinal)].TrimEnd('\n');
+            var tail = result[(result.LastIndexOf(']') + 1)..].TrimStart('\n');
+            Assert.NotEmpty(head);
+            Assert.NotEmpty(tail);
+            Assert.All(head, ch => Assert.Equal('y', ch));
+            Assert.All(tail, ch => Assert.Equal('y', ch));
+            Assert.True(head.Length < tail.Length, "the tail keeps the larger share");
 
             // Full output is on disk
             var saved = Directory.GetFiles(Path.Combine(tmpDir, "test-agent"), "write_file_*.out");
@@ -275,6 +283,53 @@ public class ToolConfigDecoratorTests
         {
             try { Directory.Delete(tmpDir, recursive: true); } catch { /* best-effort */ }
         }
+    }
+
+    /// <summary>
+    /// A limit smaller than the notice is still a limit: with a 5-char budget the view cannot be
+    /// ~120 chars of notice plus content. This is the shape that used to be possible, because the
+    /// notice was appended after spending the whole budget on content.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(5)]
+    [InlineData(50)]
+    [InlineData(120)]
+    public void Truncate_SmallLimit_NeverExceedsIt(int maxSize)
+    {
+        var view = ToolConfigDecorator.Truncate(
+            new string('x', 1000), maxSize, tmpDir: "", toolName: "write_file", agentId: "a");
+
+        Assert.True(view.Length <= maxSize, $"view is {view.Length} chars, limit {maxSize}");
+    }
+
+    [Fact]
+    public void Truncate_TmpDir_NeverExceedsTheLimit()
+    {
+        var tmpDir = Path.Combine(Path.GetTempPath(), "GlyphiteTest_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            foreach (var maxSize in new[] { 0, 1, 5, 50, 120, 300, 1000 })
+            {
+                var view = ToolConfigDecorator.Truncate(new string('y', 5000), maxSize, tmpDir, "write_file", "a");
+                Assert.True(view.Length <= maxSize, $"view is {view.Length} chars, limit {maxSize}");
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(tmpDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>`-1` means unlimited (it is the sentinel the config uses), not "truncate to nothing".</summary>
+    [Fact]
+    public void Truncate_NegativeLimit_IsUnlimited()
+    {
+        var text = new string('x', 500);
+
+        Assert.Equal(text, ToolConfigDecorator.Truncate(text, -1, tmpDir: "", toolName: "write_file", agentId: "a"));
     }
 
     // ── extra_cfg: what counts as an override ──

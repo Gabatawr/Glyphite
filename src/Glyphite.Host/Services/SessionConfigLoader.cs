@@ -48,13 +48,8 @@ public class SessionConfigLoader : ISessionConfigLoader
             await ReadAndFlattenConfigFileAsync(Path.Combine(homePath, "Glyphite.json"), homeConfig);
             await ReadAndFlattenConfigFileAsync(Path.Combine(homePath, $"Glyphite.{agentId}.json"), homeConfig);
 
-            // Get existing DB session keys for comparison
-            var dbAll = await _configStore.GetMergedConfigAsync(agentId);
-            var dbGlobal = await _configStore.GetMergedConfigAsync(null);
-            var existingKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (key, value) in dbAll)
-                if (!dbGlobal.ContainsKey(key))
-                    existingKeys[key] = value;
+            // Existing DB session keys, for change detection
+            var existingKeys = await _configStore.GetSessionConfigAsync(agentId);
 
             // Change detection: only save if home config differs from DB
             var changed = existingKeys.Count != homeConfig.Count ||
@@ -77,11 +72,9 @@ public class SessionConfigLoader : ISessionConfigLoader
         var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         // 2a. Start with clean DB session keys (now only home-originated keys)
-        var dbAll2 = await _configStore.GetMergedConfigAsync(agentId);
-        var dbGlobal2 = await _configStore.GetMergedConfigAsync(null);
-        foreach (var (key, value) in dbAll2)
-            if (!dbGlobal2.ContainsKey(key))
-                merged[key] = value;
+        var dbSession = await _configStore.GetSessionConfigAsync(agentId);
+        foreach (var (key, value) in dbSession)
+            merged[key] = value;
 
         // 2b. Apply parent directory configs (override DB)
         await ReadAndFlattenConfigFileAsync(Path.Combine(parentCwd, "Glyphite.json"), merged);

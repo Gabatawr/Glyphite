@@ -63,14 +63,23 @@ public static class HostServiceCollectionExtensions
         // user-friendly error before any chat call is made.
         services.AddSingleton<IChatClient>(sp =>
         {
-            return new LazyChatClient(() =>
-            {
-                var llm = sp.GetRequiredService<IOptionsMonitor<LlmOptions>>().CurrentValue;
-                var client = new OpenAIClient(
-                    new ApiKeyCredential(llm.ApiKey),
-                    new OpenAIClientOptions { Endpoint = new Uri(llm.Endpoint) });
-                return client.GetChatClient(llm.Model).AsIChatClient();
-            });
+            // Endpoint, key and model are captured when the SDK client is built, so those three are also
+            // the cache key: editing any of them in Glyphite.json rebuilds the client on the next call
+            // instead of holding the startup values until restart.
+            return new LazyChatClient(
+                () =>
+                {
+                    var llm = sp.GetRequiredService<IOptionsMonitor<LlmOptions>>().CurrentValue;
+                    var client = new OpenAIClient(
+                        new ApiKeyCredential(llm.ApiKey),
+                        new OpenAIClientOptions { Endpoint = new Uri(llm.Endpoint) });
+                    return client.GetChatClient(llm.Model).AsIChatClient();
+                },
+                () =>
+                {
+                    var llm = sp.GetRequiredService<IOptionsMonitor<LlmOptions>>().CurrentValue;
+                    return $"{llm.Endpoint}|{llm.Model}|{llm.ApiKey}";
+                });
         });
 
         // ── Images ──
@@ -120,12 +129,11 @@ public static class HostServiceCollectionExtensions
         {
             var agentStore = sp.GetRequiredService<IAgentStore>();
             var blockStore = sp.GetRequiredService<IBlockStore>();
+            // No IOptions snapshot: `Agent:AgentName` is read through IConfigService on every context
+            // build, so an edit applies on the next turn instead of the next `/new`.
             var cfgService = sp.GetRequiredService<IConfigService>();
-            var memOpts = sp.GetRequiredService<IOptions<MemoryOptions>>().Value;
-            var agentOpts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
             var llm = sp.GetRequiredService<IOptions<LlmOptions>>().Value;
-            var compOpts = sp.GetRequiredService<IOptions<CompressionOptions>>().Value;
-            return new BlockMemoryProvider(agentStore, blockStore, cfgService, memOpts, agentOpts, llm.Model, compOpts);
+            return new BlockMemoryProvider(agentStore, blockStore, cfgService, llm.Model);
         });
         services.AddSingleton<ISafetyChecker, SafetyChecker>();
 

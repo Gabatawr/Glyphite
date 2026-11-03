@@ -95,6 +95,21 @@ public class ConfigRepository : RepositoryBase, IConfigStore
         return merged;
     }
 
+    /// <summary>Only this agent's <c>scope = 'session'</c> rows. The previous way of getting them —
+    /// merging the agent's config and the global config, then subtracting — cost two queries and could
+    /// not tell a session-only key from one that merely shared its name with a global row.</summary>
+    public async Task<Dictionary<string, string>> GetSessionConfigAsync(string agentId)
+    {
+        using var conn = CreateReadConnection();
+        var rows = await conn.QueryAsync<(string Key, string Value)>(
+            "SELECT key, value FROM config WHERE scope = 'session' AND agent_id = @sid",
+            new { sid = agentId });
+        var session = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in rows)
+            session[key] = value;
+        return session;
+    }
+
     // ── Internal helpers ──
 
     internal async Task<List<ConfigRow>> GetAllConfigAsync(string scope = "global", string? agentId = null)

@@ -1,48 +1,37 @@
-using System.Text.Encodings.Web;
 using Glyphite.Abstractions.Interfaces;
 using Glyphite.Abstractions.Models;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
 
 namespace Glyphite.Host.Memory;
 
-public class BlockMemoryState
-{
-    public string Id { get; set; } = Guid.NewGuid().ToString("N");
-    public double NextNumber { get; set; } = 1;
-    public List<MemoryBlock> Blocks { get; set; } = [];
-    public string? CurrentModel { get; set; }
-}
-
-public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvider
+/// <summary>
+/// The instance API over the block and agent stores. Everything that builds the context lives in
+/// <c>BlockMemoryProvider.Context.cs</c> and the counters in <c>BlockMemoryProvider.Metrics.cs</c>.
+///
+/// Deliberately <b>not</b> an <c>AIContextProvider</c>: the <c>ChatClientAgent</c> pipeline it would
+/// plug into is not used anywhere, and its lifecycle would store the same blocks
+/// <c>TurnProcessor</c> already writes — so the whole path was dead code that would duplicate data if
+/// it were ever switched on.
+/// </summary>
+public partial class BlockMemoryProvider : IBlockMemoryProvider
 {
     private readonly IAgentStore _agentStore;
     private readonly IBlockStore _blockStore;
-    private readonly IConfigService _cfgService;
-    private readonly ProviderSessionState<BlockMemoryState> _sessionState;
+    private readonly IConfigService _config;
     private readonly string? _defaultModel;
-    private readonly MemoryOptions _memOpts;
-    private readonly AgentOptions _agentOpts;
-    private readonly CompressionOptions? _compOpts;
-    private string? _defaultSessionId;
 
     public AsyncLocal<HashSet<string>?> CurrentExecutedIds { get; } = new();
 
-    public BlockMemoryProvider(IAgentStore agentStore, IBlockStore blockStore, IConfigService cfgService, MemoryOptions memOpts, AgentOptions agentOpts, string? defaultModel = null, CompressionOptions? compOpts = null)
+    public BlockMemoryProvider(
+        IAgentStore agentStore,
+        IBlockStore blockStore,
+        IConfigService config,
+        string? defaultModel = null)
     {
         _agentStore = agentStore;
         _blockStore = blockStore;
-        _cfgService = cfgService;
+        _config = config;
         _defaultModel = defaultModel;
-        _memOpts = memOpts;
-        _agentOpts = agentOpts;
-        _compOpts = compOpts;
-        _sessionState = new ProviderSessionState<BlockMemoryState>(
-            _ => new BlockMemoryState(),
-            GetType().Name);
     }
-
-    public override IReadOnlyList<string> StateKeys => [_sessionState.StateKey];
 
     // ── Instance API ──
 
@@ -82,101 +71,4 @@ public partial class BlockMemoryProvider : AIContextProvider, IBlockMemoryProvid
 
     public async Task<(long Hit, long Miss, long Output, long Reasoning)> GetUsageAsync(string agentId)
         => await _agentStore.GetUsageAsync(agentId);
-
-    // ── ID lifecycle ──
-
-    public async Task<string> GetOrCreateIdAsync(AgentSession? session)
-    {
-        var state = _sessionState.GetOrInitializeState(session);
-        state.CurrentModel ??= _defaultModel;
-        await _agentStore.EnsureSessionAsync(state.Id);
-        if (_defaultModel is not null && await _agentStore.GetAgentModelAsync(state.Id) is null)
-            await _agentStore.SetAgentModelAsync(state.Id, _defaultModel);
-        return state.Id;
-    }
-
-    public async Task<string> GetOrCreateIdAsync()
-    {
-        _defaultSessionId ??= Guid.NewGuid().ToString("N");
-        await _agentStore.EnsureSessionAsync(_defaultSessionId);
-        if (_defaultModel is not null && await _agentStore.GetAgentModelAsync(_defaultSessionId) is null)
-            await _agentStore.SetAgentModelAsync(_defaultSessionId, _defaultModel);
-        return _defaultSessionId;
-    }
-
-    // ── AIContextProvider lifecycle ──
-
-    protected override async ValueTask<AIContext> ProvideAIContextAsync(InvokingContext context, CancellationToken ct)
-    {
-        var state = _sessionState.GetOrInitializeState(context.Session);
-        state.CurrentModel ??= _defaultModel;
-
-        await _agentStore.EnsureSessionAsync(state.Id);
-
-        var blocks = await _blockStore.LoadBlocksAsync(state.Id);
-        if (blocks.Count > 0)
-        {
-            state.Blocks = blocks;
-            state.NextNumber = blocks.Max(b => b.Number) + 1;
-        }
-
-        if (state.Blocks.Count == 0)
-        {
-            var agentData = MemoryBlock.AgentData("agent", _agentOpts.AgentName);
-            await _blockStore.AppendBlocksAsync(state.Id, [agentData]);
-            state.Blocks.Add(agentData);
-        }
-
-        var messages = state.Blocks.Select(b =>
-            new ChatMessage(ChatRole.System, b.ToContextString()));
-
-        _sessionState.SaveState(context.Session, state);
-        return new AIContext { Messages = messages };
-    }
-
-    protected override async ValueTask StoreAIContextAsync(InvokedContext context, CancellationToken ct)
-    {
-        // Blocks are already saved incrementally in ChatRepl.ProcessInputAsync.
-        // This method would duplicate them, so we skip DB writes here.
-        // We still update the in-memory state so the NextNumber is consistent
-        // for subsequent turns.
-        var state = _sessionState.GetOrInitializeState(context.Session);
-
-        if (context.RequestMessages is { } reqMsgs)
-        {
-            foreach (var msg in reqMsgs)
-            {
-                if (msg.Role == ChatRole.User && !string.IsNullOrEmpty(msg.Text))
-                    AddBlock(state, MemoryBlock.UserMessage(msg.Text));
-            }
-        }
-
-        if (context.ResponseMessages is { } resMsgs)
-        {
-            foreach (var msg in resMsgs)
-            {
-                if (msg.Role == ChatRole.Assistant)
-                {
-                    foreach (var content in msg.Contents)
-                    {
-                        if (content is TextReasoningContent r && !string.IsNullOrEmpty(r.Text))
-                            AddBlock(state, MemoryBlock.AgentReasoning(r.Text, model: state.CurrentModel));
-                        else if (content is TextContent t && !string.IsNullOrEmpty(t.Text))
-                            AddBlock(state, MemoryBlock.AgentMessage(t.Text, model: state.CurrentModel));
-                    }
-                }
-            }
-        }
-
-        _sessionState.SaveState(context.Session, state);
-    }
-
-    // ── Helpers ──
-
-    private static void AddBlock(BlockMemoryState state, MemoryBlock block)
-    {
-        block.Number = state.NextNumber++;
-        state.Blocks.Add(block);
-    }
-
 }

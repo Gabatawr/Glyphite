@@ -269,12 +269,20 @@ public partial class ChatRepl
                         break;
 
                     case TurnErrorEvent err:
+                        FlushStreamBuffer();
+                        _liveChunkType = "";
                         Console.ForegroundColor = ConsoleColor.Red;
                         Console.WriteLine($"\n[!] {err.Message}");
                         Console.ResetColor();
                         break;
 
                     case UsageTurnEvent ue:
+                        // Generation is over: flush the pending partial line now, not after the
+                        // end-of-turn DB work (FlushAll, peek cleanup, turn marker). Otherwise the
+                        // answer's last line and the prompt both appear only once that finishes,
+                        // which reads as "the stream hangs on the last symbol".
+                        FlushStreamBuffer();
+                        _liveChunkType = "";
                         _lastTurnHit = ue.Usage.TotalHit;
                         _lastTurnMiss = ue.Usage.TotalMiss;
                         _lastTurnOutput = ue.Usage.TotalOutput;
@@ -282,6 +290,8 @@ public partial class ChatRepl
                         break;
 
                     case TurnCompleteEvent:
+                        FlushStreamBuffer();
+                        _liveChunkType = "";
                         break;
                 }
 

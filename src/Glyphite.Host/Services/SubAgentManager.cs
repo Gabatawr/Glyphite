@@ -85,9 +85,6 @@ public sealed class SubAgentManager
 
     // ── Results ──
 
-    public string? GetResult(string agentId) =>
-        _entries.TryGetValue(agentId, out var entry) ? entry.StoredResult : null;
-
     public List<SubAgentInfo> ListAll() =>
         _entries.Select(kv => new SubAgentInfo(kv.Key, kv.Value.CreatedAt)).ToList();
 
@@ -99,7 +96,6 @@ public sealed class SubAgentManager
     {
         public AgentScope Scope { get; } = scope;
         public SemaphoreSlim Semaphore { get; } = new(1, 1);
-        public string? StoredResult { get; set; }
         public DateTime CreatedAt { get; } = DateTime.UtcNow;
     }
 }
